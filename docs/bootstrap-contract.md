@@ -9,7 +9,10 @@ wrong deploys a broken suite onto a real machine.
 Everything here composes the components through their own documented CLIs
 (regista Plan 025/026, dossier 013/014, agent-notes 017, cairn 008, acb 005, wake
 004). agent-suite adds *ordering, idempotency, aggregation, and docs* — no
-component logic.
+component logic. The shared `install-harness` interface each component implements
+is defined in [`install-harness-contract.md`](install-harness-contract.md); the
+key-custody security model is in
+[`key-custody-threat-model.md`](key-custody-threat-model.md).
 
 ## 1. The install order (what `bootstrap` runs)
 
