@@ -46,5 +46,7 @@ COMPONENTS: tuple[Component, ...] = (
         Tier.PLUMBING,
         ("acb", "doctor", "--json"),
     ),
-    Component("agent-wake", "hraedon/agent-wake", Tier.PLUMBING, ("agent-wake", "doctor", "--json")),
+    Component(
+        "agent-wake", "hraedon/agent-wake", Tier.PLUMBING, ("agent-wake", "doctor", "--json")
+    ),
 )
