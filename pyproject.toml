@@ -1,0 +1,37 @@
+[project]
+name = "agent-suite"
+version = "0.0.1"
+description = "Deploy the agent suite as one system: bootstrap, compatibility lock, and health umbrella over regista + its faces."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Paul Merritt", email = "plm@hraedon.com" }]
+dependencies = []  # stdlib-only core
+
+[project.optional-dependencies]
+dev = ["ruff", "mypy", "pytest"]
+vault = ["hvac"]                     # HashiCorp Vault secret backend (edge only)
+azure = ["azure-identity", "azure-keyvault-secrets"]  # Azure Key Vault (edge only)
+windows = ["pywin32; sys_platform == 'win32'"]        # DPAPI / Credential Manager (edge only)
+
+[project.scripts]
+agent-suite = "agent_suite.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_suite"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

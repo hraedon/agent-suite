@@ -1,0 +1,34 @@
+# Operator config — holds real DSN hosts, project slugs, secret-backend refs.
+# Never committed; a placeholder-only suite.env.example is committed instead.
+suite.env
+*.env
+.env
+secrets/
+
+# Real deployment captures / component data — never committed
+samples/
+*.db
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# The generated lock is committed (it IS the release artifact); a local scratch is not
+SUITE.local.lock
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+uv.lock
+
+# Editors / OS
+.DS_Store
+*.swp
+.venv/
