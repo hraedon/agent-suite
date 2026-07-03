@@ -33,10 +33,10 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
         assert main([command.value]) == 0
 
 
-def test_lock_check_exits_zero_when_no_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lock_check_exits_nonzero_when_no_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_aggregate(monkeypatch, suite_ok=False)
     _stub_lock(monkeypatch)
-    assert main(["lock", "--check"]) == 0
+    assert main(["lock", "--check"]) == 1
 
 
 def test_lock_check_exits_nonzero_on_drift(monkeypatch: pytest.MonkeyPatch) -> None:

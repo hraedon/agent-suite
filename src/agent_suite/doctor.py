@@ -98,8 +98,17 @@ def _check_lock_drift(
     Uses the regista quad from ``regista version --json`` (not the doctor
     output, which lacks the full quad) so the schema/workflow/envelope versions
     are checked too — not just the library version.
+
+    A malformed lock file is a named state (``matches=False``), not a crash —
+    the doctor is read-only and must never traceback.
     """
-    existing = lock.load_lock_file(lock_path)
+    try:
+        existing = lock.load_lock_file(lock_path)
+    except ValueError as exc:
+        return lock.LockDriftResult(
+            matches=False,
+            note=f"SUITE.lock is unreadable: {exc}",
+        )
     component_versions: dict[str, str | None] = {r.component: r.version for r in reports}
     current_quad = lock.read_regista_quad(runner=version_runner, installed=version_installed)
     return lock.check_drift(

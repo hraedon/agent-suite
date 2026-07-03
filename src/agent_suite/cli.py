@@ -61,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(format_text(report))
             return 1 if (getattr(args, "exit_code", False) and not report.suite_ok) else 0
         case Command.LOCK:
+            import sys
+
             from agent_suite.doctor import aggregate
             from agent_suite.lock import (
                 check_drift,
@@ -78,7 +80,11 @@ def main(argv: list[str] | None = None) -> int:
             current_quad = read_regista_quad()
 
             if args.check:
-                existing = load_lock_file()
+                try:
+                    existing = load_lock_file()
+                except ValueError as exc:
+                    print(f"agent-suite lock --check: {exc}", file=sys.stderr)
+                    return 1
                 result = check_drift(
                     existing,
                     current_quad=current_quad,
@@ -92,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
                     from agent_suite.lock import format_drift_text
 
                     print(format_drift_text(result))
-                return 1 if not result.matches and result.matches is not None else 0
+                return 0 if result.matches else 1
             else:
                 lock = generate_lock(
                     component_versions=component_versions,

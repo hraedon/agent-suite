@@ -32,6 +32,16 @@ DEFAULT_LOCK_PATH = Path("SUITE.lock")
 _REGISTA_VERSION_CMD: tuple[str, ...] = ("regista", "version", "--json")
 
 
+def _suite_release() -> str:
+    """Derive the suite release from installed package metadata."""
+    try:
+        from importlib.metadata import version
+
+        return version("agent-suite")
+    except Exception:
+        return "0.0.1"
+
+
 class VersionRunner(Protocol):
     """Run a command and return the completed process (matches doctor.Runner)."""
 
@@ -228,13 +238,14 @@ def generate_lock(
     runner: VersionRunner = _default_runner,
     installed: Installed = _default_installed,
     components: tuple[Component, ...] = COMPONENTS,
-    release: str = "0.0.1",
+    release: str | None = None,
 ) -> SuiteLock:
     """Build a :class:`SuiteLock` from the current installed state.
 
     ``component_versions`` maps component ident → version (or ``None`` if
     absent). The regista quad is read from ``regista version --json``, not
-    hardcoded. Only installed components are pinned in the lock.
+    hardcoded. Only installed components are pinned in the lock. ``release``
+    defaults to the installed package version.
     """
     quad = read_regista_quad(runner=runner, installed=installed)
 
@@ -244,7 +255,11 @@ def generate_lock(
         if version is not None:
             pins[comp.ident] = ComponentPin(repo=comp.repo, version=version)
 
-    return SuiteLock(release=release, regista_quad=quad, components=pins)
+    return SuiteLock(
+        release=release if release is not None else _suite_release(),
+        regista_quad=quad,
+        components=pins,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +301,8 @@ def serialize_lock(lock: SuiteLock) -> str:
 
     lines.append("")
 
-    for ident, pin in lock.components.items():
+    for ident in sorted(lock.components):
+        pin = lock.components[ident]
         lines.append(f"[components.{ident}]")
         lines.append(f"repo = {_toml_escape(pin.repo)}")
         lines.append(f"version = {_toml_escape(pin.version)}")
@@ -321,8 +337,8 @@ def deserialize_lock(text: str) -> SuiteLock:
                 canonical_workflow_version=str(suite["regista_workflow_version"]),
                 envelope_version=int(suite["regista_envelope_version"]),
             )
-        except KeyError as exc:
-            raise ValueError(f"SUITE.lock: incomplete regista quad (missing {exc})") from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"SUITE.lock: invalid regista quad ({exc})") from exc
 
     raw_components = data.get("components", {})
     if not isinstance(raw_components, dict):
@@ -349,15 +365,27 @@ def deserialize_lock(text: str) -> SuiteLock:
 
 
 def load_lock_file(path: Path = DEFAULT_LOCK_PATH) -> SuiteLock | None:
-    """Load a lock file. Returns ``None`` if the file does not exist."""
-    if not path.exists():
+    """Load a lock file. Returns ``None`` if the file does not exist.
+
+    Raises ``ValueError`` if the file exists but is malformed (so the caller
+    can distinguish "no lock" from "bad lock").
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None
-    return deserialize_lock(path.read_text(encoding="utf-8"))
+    return deserialize_lock(text)
 
 
 def write_lock_file(lock: SuiteLock, path: Path = DEFAULT_LOCK_PATH) -> None:
-    """Write a lock file, creating or overwriting."""
-    path.write_text(serialize_lock(lock) + "\n", encoding="utf-8")
+    """Write a lock file atomically (temp + rename).
+
+    The temp file is created in the same directory so the rename is atomic
+    on POSIX. This prevents a partial write from corrupting an existing lock.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(serialize_lock(lock) + "\n", encoding="utf-8")
+    tmp.replace(path)
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +437,16 @@ def check_drift(
                 field="version_quad",
                 locked="pinned",
                 current="absent",
+            )
+        )
+    elif lock.regista_quad is None and current_quad is not None:
+        drift.append(
+            DriftEntry(
+                kind=DriftKind.UNEXPECTED_COMPONENT,
+                component="regista",
+                field="version_quad",
+                locked="(not pinned)",
+                current="present",
             )
         )
     # If the lock had no quad (regista was absent at generation time) and it's
