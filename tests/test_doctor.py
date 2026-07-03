@@ -111,7 +111,7 @@ def test_umbrella_shape_matches_contract() -> None:
     assert {"component", "tier", "status", "ok", "version", "detail", "regista", "checks"} <= set(
         comp
     )
-    assert d["lock"]["matches"] is None  # WI-2.1 not yet implemented
+    assert d["lock"]["matches"] is None  # no lock file in test env
 
 
 def test_version_and_regista_pass_through() -> None:
@@ -257,4 +257,75 @@ def test_format_text_round_trip() -> None:
     report = _aggregate_safe(installed=_installed_none(), runner=StubRunner({}))
     text = format_text(report)
     assert "suite: NOT OK" in text
-    assert "absent" in text
+    assert "lock:" in text
+
+
+# --- lock drift integration -------------------------------------------------
+
+
+def test_doctor_lock_section_reports_no_lock(tmp_path: Path) -> None:
+    report = _aggregate_safe(
+        installed=_installed_none(), runner=StubRunner({}), lock_path=tmp_path / "missing.lock"
+    )
+    assert report.lock.matches is None
+    assert "no SUITE.lock" in report.lock.note
+
+
+def test_doctor_lock_section_reports_drift(tmp_path: Path) -> None:
+    from agent_suite.lock import ComponentPin, SuiteLock, write_lock_file
+
+    locked = SuiteLock(
+        release="1.0.0",
+        regista_quad=None,
+        components={"regista": ComponentPin(repo="hraedon/regista", version="0.1.0")},
+    )
+    lock_path = tmp_path / "SUITE.lock"
+    write_lock_file(locked, lock_path)
+
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident, version="0.4.0") for c in COMPONENTS}
+    report = aggregate(
+        installed=_installed_all(),
+        runner=_runner_for(outputs),
+        lock_path=lock_path,
+        version_installed=lambda _: False,
+    )
+    assert report.lock.matches is False
+    assert any(
+        d.kind.value == "version_mismatch" and d.component == "regista"
+        for d in report.lock.drift
+    )
+
+
+def test_doctor_lock_section_reports_match(tmp_path: Path) -> None:
+    from agent_suite.lock import ComponentPin, SuiteLock, write_lock_file
+
+    locked = SuiteLock(
+        release="1.0.0",
+        regista_quad=None,
+        components={c.ident: ComponentPin(repo=c.repo, version="1.0.0") for c in COMPONENTS},
+    )
+    lock_path = tmp_path / "SUITE.lock"
+    write_lock_file(locked, lock_path)
+
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident, version="1.0.0") for c in COMPONENTS}
+    report = aggregate(
+        installed=_installed_all(),
+        runner=_runner_for(outputs),
+        lock_path=lock_path,
+        version_installed=lambda _: False,
+    )
+    assert report.lock.matches is True
+
+
+def test_doctor_survives_malformed_lock(tmp_path: Path) -> None:
+    lock_path = tmp_path / "SUITE.lock"
+    lock_path.write_text("not valid toml at all {{{")
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = aggregate(
+        installed=_installed_all(),
+        runner=_runner_for(outputs),
+        lock_path=lock_path,
+        version_installed=lambda _: False,
+    )
+    assert report.lock.matches is False
+    assert "unreadable" in report.lock.note

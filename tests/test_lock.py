@@ -167,7 +167,19 @@ def test_deserialize_rejects_non_string_version() -> None:
 
 def test_deserialize_rejects_incomplete_quad() -> None:
     text = "[suite]\nrelease='1.0'\nregista_library_version='0.4'\n"
-    with pytest.raises(ValueError, match="incomplete regista quad"):
+    with pytest.raises(ValueError, match="invalid regista quad"):
+        deserialize_lock(text)
+
+
+def test_deserialize_rejects_non_integer_quad() -> None:
+    text = (
+        "[suite]\nrelease='1.0'\n"
+        "regista_library_version='0.4'\n"
+        "regista_schema_version='not-a-number'\n"
+        "regista_workflow_version='2'\n"
+        "regista_envelope_version=4\n"
+    )
+    with pytest.raises(ValueError, match="invalid regista quad"):
         deserialize_lock(text)
 
 
@@ -429,6 +441,51 @@ def test_lock_without_quad_and_regista_still_absent_is_not_drift() -> None:
     )
     assert result.matches is True
     assert result.drift == []
+
+
+def test_lock_without_quad_but_regista_now_installed_is_drift() -> None:
+    """A lock generated without regista, but regista is now installed — drift."""
+    lock = SuiteLock(
+        release="1.0.0",
+        regista_quad=None,
+        components={"dossier": ComponentPin(repo="hraedon/dossier", version="1.0.0")},
+    )
+    result = check_drift(
+        lock,
+        current_quad=_QUAD,
+        component_versions={"dossier": "1.0.0", "regista": "0.4.0"},
+    )
+    assert result.matches is False
+    unexpected = [d for d in result.drift if d.kind is DriftKind.UNEXPECTED_COMPONENT]
+    assert any(d.component == "regista" and d.field == "version_quad" for d in unexpected)
+
+
+def test_serialize_sorts_component_keys() -> None:
+    lock = SuiteLock(
+        release="1.0.0",
+        regista_quad=None,
+        components={
+            "zebra": ComponentPin(repo="hraedon/zebra", version="1.0.0"),
+            "alpha": ComponentPin(repo="hraedon/alpha", version="1.0.0"),
+        },
+    )
+    text = serialize_lock(lock)
+    alpha_pos = text.index("[components.alpha]")
+    zebra_pos = text.index("[components.zebra]")
+    assert alpha_pos < zebra_pos
+
+
+def test_atomic_write_does_not_leave_partial(tmp_path: Path) -> None:
+    """write_lock_file uses temp+rename; no partial file on success."""
+    lock = SuiteLock(
+        release="1.0.0",
+        regista_quad=_QUAD,
+        components={"regista": ComponentPin(repo="hraedon/regista", version="0.4.0")},
+    )
+    path = tmp_path / "SUITE.lock"
+    write_lock_file(lock, path)
+    assert path.exists()
+    assert not (tmp_path / "SUITE.lock.tmp").exists()
 
 
 # ---------------------------------------------------------------------------
