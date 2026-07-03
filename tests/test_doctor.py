@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from typing import Callable, Mapping
 
 import pytest
@@ -10,10 +11,32 @@ from agent_suite.components import COMPONENTS, Component, Tier
 from agent_suite.doctor import (
     ComponentReport,
     ComponentStatus,
+    SuiteReport,
     _compute_suite_ok,
     aggregate,
     format_text,
 )
+
+
+def _aggregate_safe(
+    *,
+    installed: Callable[[str], bool],
+    runner: StubRunner,
+    components: tuple[Component, ...] = COMPONENTS,
+    lock_path: Path | None = None,
+) -> SuiteReport:
+    """Call aggregate() with lock-drift stubbed so tests don't shell out."""
+    import tempfile
+
+    if lock_path is None:
+        lock_path = Path(tempfile.mktemp())
+    return aggregate(
+        installed=installed,
+        runner=runner,
+        components=components,
+        lock_path=lock_path,
+        version_installed=lambda _: False,
+    )
 
 
 def _ok_json(component: str, version: str = "1.0.0") -> str:
@@ -73,7 +96,7 @@ def _component_by_cli(cli: str) -> Component:
 
 def test_all_ok_aggregates_green() -> None:
     outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
-    report = aggregate(installed=_installed_all(), runner=_runner_for(outputs))
+    report = _aggregate_safe(installed=_installed_all(), runner=_runner_for(outputs))
     assert report.suite_ok is True
     assert all(r.status is ComponentStatus.OK for r in report.components)
     assert len(report.components) == len(COMPONENTS)
@@ -81,7 +104,7 @@ def test_all_ok_aggregates_green() -> None:
 
 def test_umbrella_shape_matches_contract() -> None:
     outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
-    report = aggregate(installed=_installed_all(), runner=_runner_for(outputs))
+    report = _aggregate_safe(installed=_installed_all(), runner=_runner_for(outputs))
     d = report.to_dict()
     assert set(d) == {"suite_ok", "components", "lock"}
     comp = d["components"][0]
@@ -114,7 +137,7 @@ def test_absent_tier2_is_absent_not_failure() -> None:
     def installed(cli: str) -> bool:
         return cli != "agent-wake"
 
-    report = aggregate(installed=installed, runner=_runner_for(outputs))
+    report = _aggregate_safe(installed=installed, runner=_runner_for(outputs))
     wake_r = next(r for r in report.components if r.component == "agent-wake")
     assert wake_r.status is ComponentStatus.ABSENT
     assert wake_r.ok is False
@@ -127,14 +150,14 @@ def test_spine_absent_fails_suite() -> None:
     def installed(cli: str) -> bool:
         return cli != "regista"
 
-    report = aggregate(installed=installed, runner=_runner_for(outputs))
+    report = _aggregate_safe(installed=installed, runner=_runner_for(outputs))
     spine = next(r for r in report.components if r.tier is Tier.SPINE)
     assert spine.status is ComponentStatus.ABSENT
     assert report.suite_ok is False
 
 
 def test_all_absent_fails_suite() -> None:
-    report = aggregate(installed=_installed_none(), runner=StubRunner({}))
+    report = _aggregate_safe(installed=_installed_none(), runner=StubRunner({}))
     assert all(r.status is ComponentStatus.ABSENT for r in report.components)
     assert report.suite_ok is False
 
@@ -148,7 +171,7 @@ def test_unreachable_installed_is_failure() -> None:
     runner = StubRunner(
         {**{k: _completed(stdout=v) for k, v in outputs.items()}, "agent-notes": OSError("boom")}
     )
-    report = aggregate(installed=_installed_all(), runner=runner)
+    report = _aggregate_safe(installed=_installed_all(), runner=runner)
     r = next(x for x in report.components if x.component == "agent-notes")
     assert r.status is ComponentStatus.UNREACHABLE
     assert report.suite_ok is False
@@ -164,7 +187,7 @@ def test_nonzero_exit_is_failed() -> None:
             for k, v in outputs.items()
         }
     )
-    report = aggregate(installed=_installed_all(), runner=runner)
+    report = _aggregate_safe(installed=_installed_all(), runner=runner)
     r = next(x for x in report.components if x.tier is Tier.SPINE)
     assert r.status is ComponentStatus.FAILED
     assert report.suite_ok is False
@@ -176,7 +199,7 @@ def test_ok_false_is_failed() -> None:
     )
     base = {c.doctor_cmd[0]: _completed(stdout=_ok_json(c.ident)) for c in COMPONENTS}
     base["regista"] = _completed(stdout=bad)
-    report = aggregate(installed=_installed_all(), runner=StubRunner(base))
+    report = _aggregate_safe(installed=_installed_all(), runner=StubRunner(base))
     r = next(x for x in report.components if x.tier is Tier.SPINE)
     assert r.status is ComponentStatus.FAILED
 
@@ -184,7 +207,7 @@ def test_ok_false_is_failed() -> None:
 def test_non_json_stdout_is_failed() -> None:
     base = {c.doctor_cmd[0]: _completed(stdout=_ok_json(c.ident)) for c in COMPONENTS}
     base["regista"] = _completed(stdout="not json at all")
-    report = aggregate(installed=_installed_all(), runner=StubRunner(base))
+    report = _aggregate_safe(installed=_installed_all(), runner=StubRunner(base))
     r = next(x for x in report.components if x.tier is Tier.SPINE)
     assert r.status is ComponentStatus.FAILED
 
@@ -202,7 +225,7 @@ def test_degraded_not_failure() -> None:
     )
     base = {c.doctor_cmd[0]: _completed(stdout=_ok_json(c.ident)) for c in COMPONENTS}
     base["regista"] = _completed(stdout=degraded)
-    report = aggregate(installed=_installed_all(), runner=StubRunner(base))
+    report = _aggregate_safe(installed=_installed_all(), runner=StubRunner(base))
     r = next(x for x in report.components if x.tier is Tier.SPINE)
     assert r.status is ComponentStatus.DEGRADED
     assert report.suite_ok is True
@@ -214,7 +237,7 @@ def test_degraded_not_failure() -> None:
 def test_doctor_only_reads_never_writes() -> None:
     outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
     runner = StubRunner({k: _completed(stdout=v) for k, v in outputs.items()})
-    aggregate(installed=_installed_all(), runner=runner)
+    _aggregate_safe(installed=_installed_all(), runner=runner)
     # Every call is exactly the component's `doctor --json` invocation — no writes.
     expected = [c.doctor_cmd for c in COMPONENTS]
     assert runner.calls == expected
@@ -231,7 +254,7 @@ def test_status_enum_dispatch_is_total(status: ComponentStatus) -> None:
 
 
 def test_format_text_round_trip() -> None:
-    report = aggregate(installed=_installed_none(), runner=StubRunner({}))
+    report = _aggregate_safe(installed=_installed_none(), runner=StubRunner({}))
     text = format_text(report)
     assert "suite: NOT OK" in text
     assert "absent" in text
