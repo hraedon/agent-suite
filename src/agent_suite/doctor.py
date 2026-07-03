@@ -21,8 +21,10 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Protocol, assert_never
 
+from agent_suite import lock
 from agent_suite.components import COMPONENTS, Component, Tier
 
 
@@ -84,26 +86,42 @@ class ComponentReport:
         }
 
 
-# The lock section is populated by WI-2.1; until then it is an explicit placeholder
-# so the umbrella shape matches `docs/bootstrap-contract.md` §3.
-_LOCK_STUB: dict[str, object] = {
-    "matches": None,
-    "drift": [],
-    "note": "lock check not yet implemented (Plan 001 WI-2.1)",
-}
+def _check_lock_drift(
+    reports: list[ComponentReport],
+    *,
+    lock_path: Path = lock.DEFAULT_LOCK_PATH,
+    version_runner: lock.VersionRunner = lock._default_runner,
+    version_installed: lock.Installed = lock._default_installed,
+) -> lock.LockDriftResult:
+    """Compare installed component versions against SUITE.lock.
+
+    Uses the regista quad from ``regista version --json`` (not the doctor
+    output, which lacks the full quad) so the schema/workflow/envelope versions
+    are checked too — not just the library version.
+    """
+    existing = lock.load_lock_file(lock_path)
+    component_versions: dict[str, str | None] = {r.component: r.version for r in reports}
+    current_quad = lock.read_regista_quad(runner=version_runner, installed=version_installed)
+    return lock.check_drift(
+        existing,
+        current_quad=current_quad,
+        component_versions=component_versions,
+    )
 
 
 @dataclass
 class SuiteReport:
     suite_ok: bool
     components: list[ComponentReport]
-    lock: dict[str, object] = field(default_factory=lambda: dict(_LOCK_STUB))
+    lock: lock.LockDriftResult = field(
+        default_factory=lambda: lock.LockDriftResult(matches=None, note="")
+    )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "suite_ok": self.suite_ok,
             "components": [c.to_dict() for c in self.components],
-            "lock": self.lock,
+            "lock": self.lock.to_dict(),
         }
 
 
@@ -172,6 +190,15 @@ def _check_one(
             detail=f"{cli_name} doctor emitted non-JSON stdout",
         )
 
+    if not isinstance(data, dict):
+        return ComponentReport(
+            component=comp.ident,
+            tier=comp.tier,
+            status=ComponentStatus.FAILED,
+            ok=False,
+            detail=f"{cli_name} doctor emitted JSON but not a dict (got {type(data).__name__})",
+        )
+
     ok = bool(data.get("ok", False))
     degraded = bool(data.get("degraded", False))
     if not ok:
@@ -224,14 +251,29 @@ def aggregate(
     installed: Installed = _default_installed,
     runner: Runner = _default_runner,
     components: tuple[Component, ...] = COMPONENTS,
+    lock_path: Path | None = None,
+    version_runner: lock.VersionRunner | None = None,
+    version_installed: lock.Installed | None = None,
 ) -> SuiteReport:
     """Run each component's doctor and fold into one umbrella report.
 
     Both `installed` and `runner` are injectable so tests drive aggregation against
     stubbed component doctors with no real binaries on PATH (no live infra in CI).
+    `lock_path`, `version_runner`, and `version_installed` control the lock-drift
+    check (also injectable for the same reason).
     """
     reports = [_check_one(c, installed=installed, runner=runner) for c in components]
-    return SuiteReport(suite_ok=_compute_suite_ok(reports), components=reports)
+    lock_result = _check_lock_drift(
+        reports,
+        lock_path=lock_path if lock_path is not None else lock.DEFAULT_LOCK_PATH,
+        version_runner=version_runner if version_runner is not None else lock._default_runner,
+        version_installed=version_installed
+        if version_installed is not None
+        else lock._default_installed,
+    )
+    return SuiteReport(
+        suite_ok=_compute_suite_ok(reports), components=reports, lock=lock_result
+    )
 
 
 def format_text(report: SuiteReport) -> str:
@@ -243,5 +285,6 @@ def format_text(report: SuiteReport) -> str:
         detail = f"  {c.detail}" if c.detail else ""
         lines.append(f"  {c.component:<22} {tag:<10} {c.status.value:<11}{ver}{detail}")
     lines.append("")
+    lines.append(lock.format_drift_text(report.lock))
     lines.append(f"suite: {'OK' if report.suite_ok else 'NOT OK'}")
     return "\n".join(lines)

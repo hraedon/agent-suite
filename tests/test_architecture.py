@@ -11,7 +11,7 @@ import ast
 import importlib.util
 from pathlib import Path
 
-_CORE_MODULES = ("cli", "components", "doctor")
+_CORE_MODULES = ("cli", "components", "doctor", "lock")
 _FORBIDDEN_PREFIXES = (
     "hvac",  # Vault
     "azure",  # Azure Key Vault
