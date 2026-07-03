@@ -78,6 +78,18 @@ suite-level layer the blueprint (`/projects/agent-suite-blueprint.md`) calls for
 - **AC:** the job is gated on the component contracts existing (skips cleanly until
   then); when they exist, it drives the cross-face work-item and verifies.
 
+### WI-2.3 — Prove tamper-detection (the negative test)
+- The interop CI's positive test proves the chain verifies; this **negative** test
+  proves it *catches* forgery — the actual audit claim. After the cross-face
+  work-item lands, inject a forged/edited event directly into the store and confirm
+  `regista verify` flags it at the right link with a named failure (and, with
+  per-actor signing, an `actor-signer-mismatch` for a forged actor). The suite's
+  differentiator is "tampering is detected"; this asserts it holds rather than
+  hoping it does.
+- **AC:** a mutated event body, a forged signature, and a spoofed `actor_id` each
+  produce a distinct, named verify failure; the un-tampered chain verifies clean;
+  the test runs in CI against the ephemeral store (no live infra).
+
 ## Phase 3 — `bootstrap` (the acting command; last, because it acts)
 
 ### WI-3.1 — The ordered idempotent bootstrap
@@ -92,9 +104,62 @@ suite-level layer the blueprint (`/projects/agent-suite-blueprint.md`) calls for
   with a named, actionable message, not a traceback. Ordering/idempotency unit-tested
   with stubbed component CLIs (no live infra in CI).
 
-## Phase 4 — Operator docs
+### WI-3.2 — Harness wiring is dual-target (Claude + opencode), validated
+- Every step that wires a harness (agent-notes / cairn / acb / wake
+  `install-harness`) accepts `--harness claude|opencode|all`. The **work deployment**
+  defaults to Claude; but because the operator runs both locally, a `bootstrap
+  --harness all` must wire opencode to parity, and a validation step confirms **the
+  cohesion changes did not regress an existing opencode config** (blueprint §4:
+  opencode is maintained, not deferred).
+- **AC:** `bootstrap --harness all` wires both harnesses; a dual-harness validation
+  (runnable locally, where both are present) asserts an existing opencode setup still
+  resolves config, secrets, and its adapters after the cohesion refactors; the work
+  default stays Claude-only without breaking the both-local path.
 
-### WI-4.1 — Secret-backend runbooks + install guides
+### WI-3.3 — Project-onboarding front door (spec → provision → sign event-zero)
+- `agent-suite new-project <slug> [--spec spec.yaml]` (and the updated
+  `project-initiation` skill it wraps): scaffold/register the project, run `regista
+  provision` (schema + service role + principal keys), register the canonical
+  workflow, wire the faces, and — the compelling part — **sign the founding
+  `spec.yaml` (+ `spec.md` hash) into regista as the project's event zero** (regista
+  Plan 025 WI-4.3), so a project is born from a signed spec and the audit chain runs
+  spec → work → review → done. Idempotent; `--dry-run`; no-spec is allowed (a
+  project without a founding spec is valid, just unanchored, and says so).
+- **AC:** onboarding a project with a `spec.yaml` provisions it and records the
+  signed spec as event zero (verifiable via `regista verify`); re-run is a no-op;
+  a project onboarded without a spec is valid and flagged as spec-unanchored; the
+  `spec.yaml` schema version is recorded (interchange discipline), and an
+  unrecognized version is flagged, not silently accepted.
+
+## Phase 4 — Disaster recovery (the store must survive *and* stay provable)
+
+The entire suite is one Postgres; losing it, or restoring a tampered copy, is the
+first-order regulated risk. Backup is necessary; **verify-after-restore** is what
+makes it trustworthy — the provenance value depends not just on the data coming
+back but on proving it came back *unaltered*.
+
+### WI-4.1 — Backup + restore runbook
+- `docs/disaster-recovery.md`: what to back up (the Postgres store — all project
+  schemas incl. the Plan 026 key registry — plus any Plan 028 archive bundles; the
+  secret backend has its own DR for private keys), backup cadence, and the restore
+  procedure for Linux/Docker/Windows targets. Placeholders only.
+- **AC:** an operator can follow the runbook to back up and restore the store on
+  each substrate; the runbook names the key registry and archive bundles as part of
+  the backup set (a restore missing them is incomplete).
+
+### WI-4.2 — `agent-suite verify-restore` (prove the restore is intact)
+- A command that, post-restore, runs `regista verify` across every project's chain
+  (crossing any Plan 028 seals) and reports whether the restored store is
+  cryptographically intact and unaltered — turning "we restored a backup" into "we
+  restored a *provably unaltered* backup." Wired into `doctor` as a post-restore
+  check and drilled in the interop CI (restore a snapshot, verify the chain).
+- **AC:** a clean restore verifies intact; a restore of a *tampered* backup is
+  flagged with the failing link (reusing WI-2.3's detection); the drill runs in CI
+  against the ephemeral store.
+
+## Phase 5 — Operator docs
+
+### WI-5.1 — Secret-backend runbooks + install guides
 - `docs/secrets-vault.md`, `docs/secrets-akv.md`, `docs/secrets-windows.md` (each:
   set up the backend, store the DSN password + principal keys, reference them from
   `suite.env`), plus `docs/install-linux.md`, `docs/install-docker.md`,
@@ -102,6 +167,19 @@ suite-level layer the blueprint (`/projects/agent-suite-blueprint.md`) calls for
   no work-domain identifiers.
 - **AC:** an operator can follow one secrets runbook + one install guide to stand up
   the Tier 0–1 core; the identifier-gate stays green.
+
+### WI-5.2 — Key-operations runbook (the lifecycle *policy*)
+- `docs/key-operations.md`: the operational policy the dossier key-UX (dossier Plan
+  015) enacts and the regista mechanics (Plan 026) implement — **rotation cadence**
+  (how often principal keys rotate), the **leaver process** (revoke within H hours
+  of identity-source deprovision, and who does it), **break-glass** (dual-control,
+  when it's permitted, how its use is reviewed), and **escrow/backup custody** (where
+  the break-glass recovery key lives, who holds the halves). This is the "story" the
+  key lifecycle needed; the UX is where it's carried out, the runbook is the policy
+  it's carried out *by*.
+- **AC:** the runbook states cadence, leaver-SLA, break-glass control, and escrow
+  custody concretely enough to operate; it cross-references dossier Plan 015 (UX)
+  and regista Plan 026 (mechanics); placeholders only.
 
 ## Sequencing & notes
 
