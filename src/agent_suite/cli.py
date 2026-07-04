@@ -16,6 +16,7 @@ class Command(Enum):
     DOCTOR = "doctor"
     LOCK = "lock"
     BOOTSTRAP = "bootstrap"
+    VERIFY_RESTORE = "verify-restore"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -43,6 +44,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     bootstrap = sub.add_parser(Command.BOOTSTRAP.value, help="run the ordered idempotent install")
     bootstrap.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
+    bootstrap.add_argument(
+        "--tier", choices=["0-1", "all"], default="0-1", help="which tiers to install (default: 0-1)"
+    )
+    bootstrap.add_argument("--user", help="onboard a per-user overlay for this principal ID")
+    bootstrap.add_argument("--json", action="store_true", help="emit the result as JSON")
+    verify_restore = sub.add_parser(
+        Command.VERIFY_RESTORE.value,
+        help="verify a restored store is cryptographically intact (post-restore check)",
+    )
+    verify_restore.add_argument("--dsn", help="Postgres DSN (or REGISTA_DSN)")
+    verify_restore.add_argument(
+        "--projects", nargs="*", help="project slugs to verify (default: discover from regista)"
+    )
+    verify_restore.add_argument("--json", action="store_true", help="emit the result as JSON")
     return parser
 
 
@@ -85,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
                 except ValueError as exc:
                     print(f"agent-suite lock --check: {exc}", file=sys.stderr)
                     return 1
-                result = check_drift(
+                drift_result = check_drift(
                     existing,
                     current_quad=current_quad,
                     component_versions=component_versions,
@@ -93,12 +108,12 @@ def main(argv: list[str] | None = None) -> int:
                 if getattr(args, "json", False):
                     import json as _json
 
-                    print(_json.dumps(result.to_dict(), indent=2, default=str))
+                    print(_json.dumps(drift_result.to_dict(), indent=2, default=str))
                 else:
                     from agent_suite.lock import format_drift_text
 
-                    print(format_drift_text(result))
-                return 0 if result.matches else 1
+                    print(format_drift_text(drift_result))
+                return 0 if drift_result.matches else 1
             else:
                 lock = generate_lock(
                     component_versions=component_versions,
@@ -112,8 +127,40 @@ def main(argv: list[str] | None = None) -> int:
                 write_lock_file(lock)
                 return 0
         case Command.BOOTSTRAP:
-            print("agent-suite bootstrap: not yet implemented (Plan 001 WI-3.1)")
-            return 0
+            import os
+
+            from agent_suite.bootstrap import format_text as _fmt_bs, run_bootstrap
+
+            bs_result = run_bootstrap(
+                dry_run=args.dry_run,
+                tier=args.tier,
+                user=args.user,
+                project=os.environ.get("REGISTA_PROJECT"),
+                dsn=os.environ.get("REGISTA_DSN"),
+            )
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(bs_result.to_dict(), indent=2, default=str))
+            else:
+                print(_fmt_bs(bs_result))
+            return 0 if bs_result.ok else 1
+        case Command.VERIFY_RESTORE:
+            import os
+
+            from agent_suite.verify_restore import format_text as _fmt_vr, verify_restore
+
+            vr_result = verify_restore(
+                dsn=args.dsn or os.environ.get("REGISTA_DSN", ""),
+                projects=args.projects,
+            )
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(vr_result.to_dict(), indent=2, default=str))
+            else:
+                print(_fmt_vr(vr_result))
+            return 0 if vr_result.ok else 1
     assert_never(command)
 
 

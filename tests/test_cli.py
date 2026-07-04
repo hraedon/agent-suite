@@ -6,8 +6,10 @@ import json
 
 import pytest
 
+from agent_suite import bootstrap as bootstrap_mod
 from agent_suite import doctor as doctor_mod
 from agent_suite import lock as lock_mod
+from agent_suite import verify_restore as verify_restore_mod
 from agent_suite.cli import Command, main
 
 
@@ -26,9 +28,27 @@ def _stub_aggregate(monkeypatch: pytest.MonkeyPatch, *, suite_ok: bool = False) 
     )
 
 
+def _stub_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "run_bootstrap",
+        lambda **kw: bootstrap_mod.BootstrapResult(ok=True, dry_run=False, steps=[]),
+    )
+
+
+def _stub_verify_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        verify_restore_mod,
+        "verify_restore",
+        lambda **kw: verify_restore_mod.VerifyRestoreResult(ok=True, projects=[]),
+    )
+
+
 def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_aggregate(monkeypatch, suite_ok=False)
     _stub_lock(monkeypatch)
+    _stub_bootstrap(monkeypatch)
+    _stub_verify_restore(monkeypatch)
     for command in Command:
         assert main([command.value]) == 0
 

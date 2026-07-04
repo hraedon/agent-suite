@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d2749748ee7f4f7d  # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3ab4df7d6c4831379  # v5.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Identifier gate (non-blocking until publication-review)
+        run: python3 scripts/identifier-gate.py
+        continue-on-error: true
+
+      - name: Architecture test (import boundary)
+        run: pytest tests/test_architecture.py -q
+
+      - name: Lint (ruff)
+        run: ruff check src tests
+
+      - name: Type check (mypy)
+        run: mypy --strict src
+
+      - name: Run tests
+        run: pytest --tb=short -q
+
+  interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: interop
+          POSTGRES_PASSWORD: interop_pw
+          POSTGRES_DB: interop
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U interop"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 30
+
+    env:
+      INTEROP_DSN: postgresql://interop:interop_pw@localhost:5432/interop
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d2749748ee7f4f7d  # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3ab4df7d6c4831379  # v5.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install agent-suite
+        run: pip install -e ".[dev]"
+
+      - name: Install regista (spine)
+        run: pip install "git+https://github.com/hraedon/regista.git@main"
+        continue-on-error: true
+
+      - name: Run interop test
+        run: pytest tests/test_interop.py -v --tb=short
