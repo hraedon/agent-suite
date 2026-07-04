@@ -1,6 +1,6 @@
 # Plan 001 — bootstrap, doctor, lock (the suite-level layer)
 
-**Status:** Proposed 2026-07-02 (project initiation)
+**Status:** In progress (WI-0.1 through WI-5.2 implemented)
 **Author:** Claude (Fable 5)
 **Strategic role:** Turn the bootstrap contract (`docs/bootstrap-contract.md`) into
 the three commands that make the suite deployable as a unit: `bootstrap` (the
@@ -16,7 +16,7 @@ suite-level layer the blueprint (`/projects/agent-suite-blueprint.md`) calls for
   and specified* now but can only be *completed* as the component contracts land —
   chiefly regista Plan 025 (config/secrets/provision/doctor-shape/version) and 026
   (per-actor keys).
-- The homelab converged store (mvmpostgres01, ~16 schemas) is the first real
+- The homelab converged store (suite-db.example, ~16 schemas) is the first real
   bootstrap target; work is the eventual one.
 
 ## Principles this plan must hold
@@ -38,7 +38,7 @@ suite-level layer the blueprint (`/projects/agent-suite-blueprint.md`) calls for
 
 ## Phase 0 — Skeleton (project initiation)
 
-### WI-0.1 — Buildable skeleton + CI
+### WI-0.1 — Buildable skeleton + CI ✅
 - `pyproject.toml` (stdlib core; extras `[dev]`, `[vault]`, `[azure]`, `[windows]`;
   console script `agent-suite = agent_suite.cli:main`), the module skeleton
   (`cli`, `bootstrap`, `doctor`, `lock`, `config`, plus a `components` descriptor),
@@ -49,7 +49,7 @@ suite-level layer the blueprint (`/projects/agent-suite-blueprint.md`) calls for
 
 ## Phase 1 — `doctor` (safe first; read-only)
 
-### WI-1.1 — Component descriptor + doctor aggregation
+### WI-1.1 — ✅ Component descriptor + doctor aggregation
 - A declarative descriptor of the six components (id, tier, the `doctor --json`
   invocation, install-detection). `agent-suite doctor [--json]` shells each
   installed component's doctor, folds them into the umbrella shape
@@ -61,7 +61,7 @@ suite-level layer the blueprint (`/projects/agent-suite-blueprint.md`) calls for
 
 ## Phase 2 — `lock` (versioning the set)
 
-### WI-2.1 — `SUITE.lock` generate + drift-check
+### WI-2.1 — ✅ `SUITE.lock` generate + drift-check
 - `agent-suite lock` writes/updates `SUITE.lock` from the currently-pinned revs +
   the regista version quad (`regista version --json`, Plan 025 WI-4.1); `doctor`
   gains a `lock` section comparing installed versions to the lock and reporting
@@ -69,7 +69,7 @@ suite-level layer the blueprint (`/projects/agent-suite-blueprint.md`) calls for
 - **AC:** `lock` round-trips the manifest; a version mismatch shows as named drift;
   the quad is read from regista, not hardcoded.
 
-### WI-2.2 — Suite-interop CI
+### WI-2.2 — ✅ Suite-interop CI
 - Wire the interop test (`docs/bootstrap-contract.md` §5) on regista's published
   fixture (Plan 025 WI-4.2): ephemeral Postgres → bootstrap Tier 0–1 at locked revs
   → drive one work-item across both faces to `done` → `regista verify` confirms the
@@ -78,7 +78,7 @@ suite-level layer the blueprint (`/projects/agent-suite-blueprint.md`) calls for
 - **AC:** the job is gated on the component contracts existing (skips cleanly until
   then); when they exist, it drives the cross-face work-item and verifies.
 
-### WI-2.3 — Prove tamper-detection (the negative test)
+### WI-2.3 — ✅ Prove tamper-detection (the negative test)
 - The interop CI's positive test proves the chain verifies; this **negative** test
   proves it *catches* forgery — the actual audit claim. After the cross-face
   work-item lands, inject a forged/edited event directly into the store and confirm
@@ -92,7 +92,7 @@ suite-level layer the blueprint (`/projects/agent-suite-blueprint.md`) calls for
 
 ## Phase 3 — `bootstrap` (the acting command; last, because it acts)
 
-### WI-3.1 — The ordered idempotent bootstrap
+### WI-3.1 — ✅ The ordered idempotent bootstrap
 - `agent-suite bootstrap [--dry-run] [--tier 0-1|all] [--user]`: runs the install
   order (`docs/bootstrap-contract.md` §1), each step idempotent and gated, calling
   the component CLIs. `--dry-run` prints the plan; a step that would clobber a key
@@ -138,7 +138,7 @@ first-order regulated risk. Backup is necessary; **verify-after-restore** is wha
 makes it trustworthy — the provenance value depends not just on the data coming
 back but on proving it came back *unaltered*.
 
-### WI-4.1 — Backup + restore runbook
+### WI-4.1 — ✅ Backup + restore runbook
 - `docs/disaster-recovery.md`: what to back up (the Postgres store — all project
   schemas incl. the Plan 026 key registry — plus any Plan 028 archive bundles; the
   secret backend has its own DR for private keys), backup cadence, and the restore
@@ -147,7 +147,7 @@ back but on proving it came back *unaltered*.
   each substrate; the runbook names the key registry and archive bundles as part of
   the backup set (a restore missing them is incomplete).
 
-### WI-4.2 — `agent-suite verify-restore` (prove the restore is intact)
+### WI-4.2 — ✅ `agent-suite verify-restore` (prove the restore is intact)
 - A command that, post-restore, runs `regista verify` across every project's chain
   (crossing any Plan 028 seals) and reports whether the restored store is
   cryptographically intact and unaltered — turning "we restored a backup" into "we
@@ -159,7 +159,7 @@ back but on proving it came back *unaltered*.
 
 ## Phase 5 — Operator docs
 
-### WI-5.1 — Secret-backend runbooks + install guides
+### WI-5.1 — ✅ Secret-backend runbooks + install guides
 - `docs/secrets-vault.md`, `docs/secrets-akv.md`, `docs/secrets-windows.md` (each:
   set up the backend, store the DSN password + principal keys, reference them from
   `suite.env`), plus `docs/install-linux.md`, `docs/install-docker.md`,
@@ -168,7 +168,7 @@ back but on proving it came back *unaltered*.
 - **AC:** an operator can follow one secrets runbook + one install guide to stand up
   the Tier 0–1 core; the identifier-gate stays green.
 
-### WI-5.2 — Key-operations runbook (the lifecycle *policy*)
+### WI-5.2 — ✅ Key-operations runbook (the lifecycle *policy*)
 - `docs/key-operations.md`: the operational policy the dossier key-UX (dossier Plan
   015) enacts and the regista mechanics (Plan 026) implement — **rotation cadence**
   (how often principal keys rotate), the **leaver process** (revoke within H hours

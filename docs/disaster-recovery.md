@@ -54,7 +54,7 @@ includes:
 ```bash
 pg_dump --format=custom \
   --host=suite-db.example \
-  --username=regista_app \
+  --username=regista_service \
   --file=/var/backups/agent-suite/suite-$(date +%Y%m%d).dump \
   regista
 ```
@@ -124,14 +124,14 @@ createdb --host=suite-db.example --username=postgres regista
 # Restore
 pg_restore \
   --host=suite-db.example \
-  --username=regista_app \
+  --username=regista_service \
   --dbname=regista \
   --clean --if-exists \
   /var/backups/agent-suite/suite-20260704.dump
 
 # Verify the restore is intact (§4)
 agent-suite verify-restore \
-  --dsn "postgresql://regista_app@suite-db.example:5432/regista"
+  --dsn "postgresql://regista_service@suite-db.example:5432/regista"
 
 # Restart services
 systemctl start dossier agent-notes cairn acb agent-wake
@@ -159,7 +159,7 @@ systemctl start postgresql
 
 # Verify the restore is intact (§4)
 agent-suite verify-restore \
-  --dsn "postgresql://regista_app@suite-db.example:5432/regista"
+  --dsn "postgresql://regista_service@suite-db.example:5432/regista"
 
 # Restart suite services
 systemctl start dossier agent-notes cairn acb agent-wake
@@ -194,7 +194,7 @@ docker compose up -d
 
 # Verify the restore is intact (§4)
 docker compose exec suite agent-suite verify-restore \
-  --dsn "postgresql://regista_app@suite-db:5432/regista"
+  --dsn "postgresql://regista_service@suite-db:5432/regista"
 ```
 
 #### Logical restore (inside the container)
@@ -203,14 +203,14 @@ docker compose exec suite agent-suite verify-restore \
 # Restore from a pg_dump custom-format file piped into the container
 docker exec -i agent-suite-postgres \
   pg_restore \
-  --username=regista_app \
+  --username=regista_service \
   --dbname=regista \
   --clean --if-exists \
   < /var/backups/agent-suite/suite-20260704.dump
 
 # Verify
 docker exec agent-suite-postgres agent-suite verify-restore \
-  --dsn "postgresql://regista_app@localhost:5432/regista"
+  --dsn "postgresql://regista_service@localhost:5432/regista"
 ```
 
 ### 3.3 Windows
@@ -225,7 +225,7 @@ pgAdmin), which provide `pg_dump` and `pg_restore` on `%PATH%`.
 ```powershell
 pg_dump --format=custom `
   --host=suite-db.example `
-  --username=regista_app `
+  --username=regista_service `
   --file=C:\Backups\agent-suite\suite-$(Get-Date -Format yyyyMMdd).dump `
   regista
 ```
@@ -241,14 +241,14 @@ sc stop cairn
 # Restore
 pg_restore `
   --host=suite-db.example `
-  --username=regista_app `
+  --username=regista_service `
   --dbname=regista `
   --clean --if-exists `
   C:\Backups\agent-suite\suite-20260704.dump
 
 # Verify the restore is intact (§4)
 agent-suite verify-restore `
-  --dsn "postgresql://regista_app@suite-db.example:5432/regista"
+  --dsn "postgresql://regista_service@suite-db.example:5432/regista"
 
 # Restart services
 sc start dossier
@@ -265,14 +265,14 @@ the restored data is cryptographically intact and unaltered:
 
 ```bash
 agent-suite verify-restore \
-  --dsn "postgresql://regista_app@suite-db.example:5432/regista"
+  --dsn "postgresql://regista_service@suite-db.example:5432/regista"
 ```
 
 Or with explicit projects:
 
 ```bash
 agent-suite verify-restore \
-  --dsn "postgresql://regista_app@suite-db.example:5432/regista" \
+  --dsn "postgresql://regista_service@suite-db.example:5432/regista" \
   --project project-slug --project another-slug
 ```
 
