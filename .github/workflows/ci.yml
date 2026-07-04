@@ -17,8 +17,8 @@ jobs:
         python-version: ["3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d2749748ee7f4f7d  # v4.2.2
-      - uses: actions/setup-python@a26af69be951a213d495a4c3ab4df7d6c4831379  # v5.3.0
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -64,8 +64,8 @@ jobs:
       INTEROP_DSN: postgresql://interop:interop_pw@localhost:5432/interop
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d2749748ee7f4f7d  # v4.2.2
-      - uses: actions/setup-python@a26af69be951a213d495a4c3ab4df7d6c4831379  # v5.3.0
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
