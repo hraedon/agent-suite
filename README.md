@@ -64,12 +64,29 @@ and a native install (systemd unit / Windows Service); CLIs install via
 
 ## Status
 
-Charter stage. The strategic blueprint (`/projects/agent-suite-blueprint.md`) and
-the per-component cohesion plans (regista 025/026, dossier 013/014, agent-notes
-017, agent-provenance 008, acb 005, agent-wake 004) exist. This repo's Plan 001
-turns the bootstrap contract (`docs/bootstrap-contract.md`) into the `bootstrap`,
-`doctor`, and `lock` commands. It composes the components; it does not reimplement
-them, so it can only be completed as their cohesion plans land.
+Active development. The strategic blueprint and per-component cohesion plans
+exist (regista 025/026, dossier 013/014, agent-notes 017, agent-provenance 008,
+acb 005, agent-wake 004). This repo's Plan 001 implements the suite-level layer:
+
+**Implemented:**
+- `agent-suite doctor` — health umbrella aggregating each component's
+  `doctor --json` into one report (WI-1.1)
+- `agent-suite lock` — `SUITE.lock` compatibility manifest with drift detection
+  (WI-2.1)
+- Suite-interop CI — drives one work-item across both faces to `done` and verifies
+  the mixed chain with `regista replay` (WI-2.2)
+- Tamper-detection negative test — proves forged events, spoofed actors, and
+  mutated bodies are each detected with a distinct, named failure (WI-2.3)
+- `agent-suite bootstrap` — ordered idempotent install with `--dry-run`,
+  `--tier`, and `--user` (WI-3.1)
+- `agent-suite verify-restore` — proves a restored store is cryptographically
+  intact (WI-4.2)
+- Operator docs — secret-backend runbooks, install guides, multi-user onboarding,
+  key-operations policy, DR runbook (WI-4.1, WI-5.1, WI-5.2)
+
+**Contract-gated (scaffolded, awaiting component CLIs):** the bootstrap composes
+the components via their documented CLIs; it can only be fully completed as the
+component `provision`/`install-harness` contracts land.
 
 ## Relationship to the blueprint
 

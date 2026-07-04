@@ -60,7 +60,7 @@ rotate or leak — the identity is bound to the Azure resource (see the
 az keyvault secret set \
   --vault-name suite-secrets \
   --name regista-dsn-password \
-  --value "<the regista_app role password>"
+  --value "<the regista_service role password>"
 ```
 
 ### Regista system signing key
@@ -94,7 +94,7 @@ In the system `suite.env` (`/etc/agent-suite/suite.env` on Linux,
 `%ProgramData%\agent-suite\suite.env` on Windows):
 
 ```env
-REGISTA_DSN=postgresql://regista_app@suite-db.example:5432/regista
+REGISTA_DSN=postgresql://regista_service@suite-db.example:5432/regista
 REGISTA_DSN_PASSWORD=akv:suite-secrets.WORK-DOMAIN.vault.azure.net/regista-dsn-password
 REGISTA_KEY_PATH=akv:suite-secrets.WORK-DOMAIN.vault.azure.net/regista-signing-key
 REGISTA_REQUIRE_SSL=true

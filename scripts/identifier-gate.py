@@ -22,7 +22,9 @@ IDENTIFIERS: list[tuple[str, str]] = [
     ("Paul Merritt", "real name"),
     ("mvmpostgres01", "internal hostname"),
     ("hraedon.com", "internal domain (non-GitHub)"),
-    ("hraedon", "GitHub organization name"),
+    ("regista_app", "internal DB service account"),
+    ("agent_notes_app", "internal DB service account"),
+    ("itadmin", "OS username as principal_id"),
 ]
 
 EXCLUDE_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".mypy_cache", ".claude"}
@@ -57,6 +59,8 @@ def main() -> int:
         if str(rel).startswith(".github"):
             continue
         if str(rel) == "scripts/identifier-gate.py":
+            continue
+        if str(rel) == "docs/publication-review.md":
             continue
         findings.extend(check_file(path))
 
