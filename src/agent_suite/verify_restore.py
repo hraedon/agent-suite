@@ -31,6 +31,7 @@ class ProjectVerifyStatus(Enum):
 
     VERIFIED = "verified"
     DRIFT_DETECTED = "drift"
+    WARNINGS_DETECTED = "warnings"
     UNREACHABLE = "unreachable"
     ERROR = "error"
 
@@ -64,6 +65,7 @@ class ProjectVerifyResult:
     replayed_ok: int = 0
     replayed_drift: int = 0
     halted: int = 0
+    warnings: int = 0
     detail: str = ""
 
     def to_dict(self) -> dict[str, object]:
@@ -73,6 +75,7 @@ class ProjectVerifyResult:
             "replayed_ok": self.replayed_ok,
             "replayed_drift": self.replayed_drift,
             "halted": self.halted,
+            "warnings": self.warnings,
             "detail": self.detail,
         }
 
@@ -81,7 +84,11 @@ class ProjectVerifyResult:
 class VerifyRestoreResult:
     """The outcome of verifying a restored store across all projects.
 
-    ``ok`` is True only if every project verified with zero drift.
+    ``ok`` is True only if every project verified with zero drift, zero
+    halted, and zero warnings. Warnings indicate chain-link tampering
+    (e.g. a forged ``prev_event_hash``) that regista's replay surfaces
+    without halting — a restored store carrying such warnings is not
+    cryptographically intact.
     """
 
     ok: bool
@@ -215,6 +222,7 @@ def _verify_one(
         replayed_ok = int(data.get("replayed_ok", 0))
         replayed_drift = int(data.get("replayed_drift", 0))
         halted = int(data.get("halted", 0))
+        warnings = int(data.get("warnings", 0))
     except (TypeError, ValueError):
         return ProjectVerifyResult(
             project=project,
@@ -229,7 +237,19 @@ def _verify_one(
             replayed_ok=replayed_ok,
             replayed_drift=replayed_drift,
             halted=halted,
+            warnings=warnings,
             detail=f"drift detected: {replayed_drift} drift, {halted} halted",
+        )
+
+    if warnings > 0:
+        return ProjectVerifyResult(
+            project=project,
+            status=ProjectVerifyStatus.WARNINGS_DETECTED,
+            replayed_ok=replayed_ok,
+            replayed_drift=replayed_drift,
+            halted=halted,
+            warnings=warnings,
+            detail=f"warnings detected: {warnings} warnings (possible chain-link tampering)",
         )
 
     return ProjectVerifyResult(
@@ -238,6 +258,7 @@ def _verify_one(
         replayed_ok=replayed_ok,
         replayed_drift=replayed_drift,
         halted=halted,
+        warnings=warnings,
         detail=f"verified: {replayed_ok} events replayed ok",
     )
 
@@ -254,6 +275,7 @@ def _compute_ok(results: list[ProjectVerifyResult]) -> bool:
                 continue
             case (
                 ProjectVerifyStatus.DRIFT_DETECTED
+                | ProjectVerifyStatus.WARNINGS_DETECTED
                 | ProjectVerifyStatus.UNREACHABLE
                 | ProjectVerifyStatus.ERROR
             ):
@@ -333,6 +355,12 @@ def format_text(result: VerifyRestoreResult) -> str:
                 lines.append(
                     f"  {p.project:<24} drift        "
                     f"{p.replayed_ok} ok, {p.replayed_drift} drift, {p.halted} halted"
+                )
+            case ProjectVerifyStatus.WARNINGS_DETECTED:
+                lines.append(
+                    f"  {p.project:<24} warnings     "
+                    f"{p.replayed_ok} ok, {p.replayed_drift} drift, "
+                    f"{p.halted} halted, {p.warnings} warnings"
                 )
             case ProjectVerifyStatus.UNREACHABLE:
                 lines.append(f"  {p.project:<24} unreachable   {p.detail}")

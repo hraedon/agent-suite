@@ -75,7 +75,6 @@ jobs:
 
       - name: Install regista (spine)
         run: pip install "git+https://github.com/hraedon/regista.git@main"
-        continue-on-error: true
 
-      - name: Run interop test
-        run: pytest tests/test_interop.py -v --tb=short
+      - name: Run interop + tamper + restore-drill tests
+        run: pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py -v --tb=short

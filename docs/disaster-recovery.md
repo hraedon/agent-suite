@@ -273,22 +273,27 @@ Or with explicit projects:
 ```bash
 agent-suite verify-restore \
   --dsn "postgresql://regista_service@suite-db.example:5432/regista" \
-  --project project-slug --project another-slug
+  --projects project-slug another-slug
 ```
 
 `verify-restore` runs `regista replay` across every project's event chain
-and reports one of four statuses per project:
+and reports one of five statuses per project:
 
 | Status | Meaning | Action |
 |--------|---------|--------|
-| **verified** | The chain replays with zero drift — the restore is intact | Proceed to restart services |
+| **verified** | The chain replays with zero drift, zero halted, and zero warnings — the restore is intact | Proceed to restart services |
 | **drift** | The chain shows drift — the restored data was tampered or corrupted; the failing link is reported | **Do not restart services.** Investigate the backup source and restore path. |
+| **warnings** | The chain replays but warnings were emitted (e.g. a forged hash-chain link detected by regista's replay) — the store is not cryptographically intact | **Do not restart services.** Investigate the backup source and restore path. |
 | **unreachable** | The project could not be queried (connection or permission issue) | Check the DSN, network, and service-role grants |
 | **error** | An unexpected error occurred (non-JSON output, malformed data) | Investigate the regista installation and version |
 
 The suite is verified only if **all** projects report `verified`. A single
-`drift` result means the restore is compromised — do not restart services;
-investigate the backup source and restore path.
+`drift` or `warnings` result means the restore is compromised — do not
+restart services; investigate the backup source and restore path.
+
+`doctor --verify-restore --restore-dsn <DSN>` runs the same verification as
+part of the doctor umbrella, attaching a `post_restore` section to the
+report. This is the wired-in post-restore check (Plan 001 WI-4.2).
 
 ---
 
@@ -304,7 +309,8 @@ A restore is complete **only** when all of the following are true:
 3. **Archive bundles restored** (if applicable) — any Plan 028 sealed-chain
    archives are restored to their expected location.
 4. **`verify-restore` passes** — every project's chain replays with zero
-   drift.
+   drift, zero halted, and zero warnings. A warnings-only result (e.g. a
+   forged hash-chain link) is not a clean restore.
 
 > A restore that passes `verify-restore` proves the store came back
 > *unaltered* — not just that it came back. This is the difference between

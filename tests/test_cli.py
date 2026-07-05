@@ -12,6 +12,8 @@ from agent_suite import lock as lock_mod
 from agent_suite import verify_restore as verify_restore_mod
 from agent_suite.cli import Command, main
 
+_DSN = "postgresql://regista_service@suite-db.example:5432/regista"
+
 
 def _stub_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub lock I/O and regista-quad reads so CLI tests don't shell out or write."""
@@ -20,11 +22,21 @@ def _stub_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(lock_mod, "load_lock_file", lambda path=None: None)
 
 
-def _stub_aggregate(monkeypatch: pytest.MonkeyPatch, *, suite_ok: bool = False) -> None:
+def _stub_aggregate(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    suite_ok: bool = False,
+    with_post_restore: bool = False,
+) -> None:
+    post_restore = None
+    if with_post_restore:
+        post_restore = verify_restore_mod.VerifyRestoreResult(ok=True, projects=[])
     monkeypatch.setattr(
         doctor_mod,
         "aggregate",
-        lambda **kw: doctor_mod.SuiteReport(suite_ok=suite_ok, components=[]),
+        lambda **kw: doctor_mod.SuiteReport(
+            suite_ok=suite_ok, components=[], post_restore=post_restore
+        ),
     )
 
 
@@ -93,6 +105,53 @@ def test_doctor_json_emits_valid_json(monkeypatch: pytest.MonkeyPatch) -> None:
     assert parsed["suite_ok"] is True
     assert "components" in parsed and "lock" in parsed
     assert "matches" in parsed["lock"]
+
+
+def test_doctor_verify_restore_wires_post_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_aggregate(monkeypatch, suite_ok=True, with_post_restore=True)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["doctor", "--json", "--verify-restore", "--restore-dsn", _DSN])
+    assert rc == 0
+    parsed = json.loads(buf.getvalue())
+    assert "post_restore" in parsed
+    assert parsed["post_restore"]["ok"] is True
+
+
+def test_doctor_verify_restore_text_includes_section(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_aggregate(monkeypatch, suite_ok=True, with_post_restore=True)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["doctor", "--verify-restore", "--restore-dsn", _DSN])
+    assert rc == 0
+    out = buf.getvalue()
+    assert "post-restore verification" in out
+
+
+def test_doctor_without_verify_restore_has_no_post_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_aggregate(monkeypatch, suite_ok=True)
+    _stub_verify_restore(monkeypatch)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["doctor", "--json"])
+    assert rc == 0
+    parsed = json.loads(buf.getvalue())
+    assert "post_restore" not in parsed
+
+
+def test_doctor_verify_restore_exit_code_nonzero_when_post_restore_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        doctor_mod,
+        "aggregate",
+        lambda **kw: doctor_mod.SuiteReport(
+            suite_ok=False,
+            components=[],
+            post_restore=verify_restore_mod.VerifyRestoreResult(ok=False, projects=[]),
+        ),
+    )
+    assert main(["doctor", "--verify-restore", "--restore-dsn", _DSN, "--exit-code"]) == 1
 
 
 def test_lock_json_emits_valid_json(monkeypatch: pytest.MonkeyPatch) -> None:

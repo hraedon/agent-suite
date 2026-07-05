@@ -8,6 +8,7 @@ bodies land in Plan 001 as the component contracts they compose become real.
 from __future__ import annotations
 
 import argparse
+import os
 from enum import Enum
 from typing import assert_never
 
@@ -30,6 +31,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--exit-code",
         action="store_true",
         help="exit non-zero when the suite is not ok (for monitoring)",
+    )
+    doctor.add_argument(
+        "--verify-restore",
+        action="store_true",
+        help="run post-restore chain verification (regista replay across all projects)",
+    )
+    doctor.add_argument(
+        "--restore-dsn",
+        help="Postgres DSN for --verify-restore (or REGISTA_DSN); required when --verify-restore is set",
     )
     lock = sub.add_parser(
         Command.LOCK.value, help="generate / check the SUITE.lock compatibility manifest"
@@ -69,7 +79,12 @@ def main(argv: list[str] | None = None) -> int:
             from agent_suite.doctor import aggregate, format_text
             import json as _json
 
-            report = aggregate()
+            verify_restore_dsn: str | None = None
+            if getattr(args, "verify_restore", False):
+                verify_restore_dsn = getattr(args, "restore_dsn", None) or os.environ.get(
+                    "REGISTA_DSN"
+                )
+            report = aggregate(verify_restore_dsn=verify_restore_dsn)
             if getattr(args, "json", False):
                 print(_json.dumps(report.to_dict(), indent=2, default=str))
             else:
@@ -127,8 +142,6 @@ def main(argv: list[str] | None = None) -> int:
                 write_lock_file(lock)
                 return 0
         case Command.BOOTSTRAP:
-            import os
-
             from agent_suite.bootstrap import format_text as _fmt_bs, run_bootstrap
 
             bs_result = run_bootstrap(
@@ -146,8 +159,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(_fmt_bs(bs_result))
             return 0 if bs_result.ok else 1
         case Command.VERIFY_RESTORE:
-            import os
-
             from agent_suite.verify_restore import format_text as _fmt_vr, verify_restore
 
             vr_result = verify_restore(

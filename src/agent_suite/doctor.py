@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Protocol, assert_never
 
 from agent_suite import lock
+from agent_suite import verify_restore
 from agent_suite.components import COMPONENTS, Component, Tier
 
 
@@ -125,13 +126,17 @@ class SuiteReport:
     lock: lock.LockDriftResult = field(
         default_factory=lambda: lock.LockDriftResult(matches=None, note="")
     )
+    post_restore: verify_restore.VerifyRestoreResult | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        d: dict[str, object] = {
             "suite_ok": self.suite_ok,
             "components": [c.to_dict() for c in self.components],
             "lock": self.lock.to_dict(),
         }
+        if self.post_restore is not None:
+            d["post_restore"] = self.post_restore.to_dict()
+        return d
 
 
 def _check_one(
@@ -263,6 +268,7 @@ def aggregate(
     lock_path: Path | None = None,
     version_runner: lock.VersionRunner | None = None,
     version_installed: lock.Installed | None = None,
+    verify_restore_dsn: str | None = None,
 ) -> SuiteReport:
     """Run each component's doctor and fold into one umbrella report.
 
@@ -270,6 +276,12 @@ def aggregate(
     stubbed component doctors with no real binaries on PATH (no live infra in CI).
     `lock_path`, `version_runner`, and `version_installed` control the lock-drift
     check (also injectable for the same reason).
+
+    When ``verify_restore_dsn`` is provided, the post-restore chain verification
+    (``verify_restore``) runs across every project and the result is attached to
+    the report as ``post_restore``. This is the WI-4.2 wiring: a post-restore
+    ``doctor --verify-restore`` proves the restored store is cryptographically
+    intact, not just reachable. Read-only — ``regista replay`` never mutates.
     """
     reports = [_check_one(c, installed=installed, runner=runner) for c in components]
     lock_result = _check_lock_drift(
@@ -280,8 +292,20 @@ def aggregate(
         if version_installed is not None
         else lock._default_installed,
     )
+    post_restore: verify_restore.VerifyRestoreResult | None = None
+    if verify_restore_dsn is not None:
+        post_restore = verify_restore.verify_restore(
+            dsn=verify_restore_dsn,
+            installed=installed,
+        )
+    suite_ok = _compute_suite_ok(reports)
+    if post_restore is not None and not post_restore.ok:
+        suite_ok = False
     return SuiteReport(
-        suite_ok=_compute_suite_ok(reports), components=reports, lock=lock_result
+        suite_ok=suite_ok,
+        components=reports,
+        lock=lock_result,
+        post_restore=post_restore,
     )
 
 
@@ -295,5 +319,9 @@ def format_text(report: SuiteReport) -> str:
         lines.append(f"  {c.component:<22} {tag:<10} {c.status.value:<11}{ver}{detail}")
     lines.append("")
     lines.append(lock.format_drift_text(report.lock))
+    if report.post_restore is not None:
+        lines.append("")
+        lines.append("post-restore verification:")
+        lines.append(verify_restore.format_text(report.post_restore))
     lines.append(f"suite: {'OK' if report.suite_ok else 'NOT OK'}")
     return "\n".join(lines)
