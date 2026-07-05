@@ -77,6 +77,21 @@ suite-level layer the blueprint (`/projects/agent-suite-blueprint.md`) calls for
   makes a lock a release.
 - **AC:** the job is gated on the component contracts existing (skips cleanly until
   then); when they exist, it drives the cross-face work-item and verifies.
+- **Landed 2026-07-05 (two-level).** `tests/test_interop.py` now carries both a
+  **spine-level** proof (`test_drive_work_item_across_workflow_to_done`, drives
+  regista's canonical workflow directly — always runnable) and a **face-level**
+  proof (`test_drive_work_item_across_real_faces_to_done`) that constructs the
+  *real* face packages — agent-notes' `RegistaFace` + dossier's `RegistaGateway` —
+  over one shared regista project and drives a single work-item to `done`, reading
+  the mixed agent+human chain back through dossier's read path and verifying the
+  hash chain (zero drift). This promotes `dossier/scripts/convergence_e2e_proof.py`
+  (previously manual) into a gated CI test — the blueprint §2.2 proof that the two
+  *real client packages* interoperate, not merely that the spine does. The
+  face-level test skips until both face packages are importable; CI installs them
+  best-effort from public git (`continue-on-error`) so it activates automatically
+  on the public flip — **drop that `continue-on-error` at the flip to make the
+  face-level interop a required gate.** Proven locally against ephemeral Postgres
+  (both tests green, 2026-07-05).
 
 ### WI-2.3 — ✅ Prove tamper-detection (the negative test)
 - The interop CI's positive test proves the chain verifies; this **negative** test
