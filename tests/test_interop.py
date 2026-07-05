@@ -1,13 +1,27 @@
 """Suite-interop CI: drive one work-item across both faces to done.
 
-Implements Plan 001 WI-2.2. Stands up an ephemeral Postgres, provisions a
-project, drives one work-item through the canonical workflow — an agent files
-and works it, a human reviews and accepts it — and verifies the mixed
-human+agent event chain with ``regista replay``.
+Implements Plan 001 WI-2.2. Two levels of assurance:
+
+1. **Spine-level** (``test_drive_work_item_across_workflow_to_done``): drives
+   regista's canonical workflow directly, labelling the transitions "agent
+   face" / "human face". Proves the *workflow* composes — always runnable
+   wherever regista is installed.
+2. **Face-level** (``test_drive_work_item_across_real_faces_to_done``): drives
+   the **actual** face packages — agent-notes' ``RegistaFace`` and dossier's
+   ``RegistaGateway`` — over one shared regista project. This is the proof the
+   blueprint §2.2 asks for: that the two real client packages interoperate, not
+   merely that the spine does. Runs whenever both faces are importable (local
+   checkouts today; ``pip install`` from public git once the faces flip public).
+
+Both stand up an ephemeral Postgres, provision a project, drive one work-item
+through the canonical workflow — an agent files and works it, a human reviews
+and accepts it — and verify the mixed human+agent event chain with
+``regista replay``.
 
 Gated on the component contracts existing: skips cleanly if the regista package
 or Docker (for ephemeral Postgres) are unavailable, or if ``INTEROP_DSN`` is
-neither set nor satisfiable. A green run is what makes a lock a release
+neither set nor satisfiable; the face-level test additionally skips until both
+face packages are importable. A green run is what makes a lock a release
 (docs/bootstrap-contract.md §5).
 """
 
@@ -52,6 +66,23 @@ def _docker_available() -> bool:
 
 def _dsn_available() -> bool:
     return bool(os.environ.get("INTEROP_DSN"))
+
+
+def _faces_available() -> bool:
+    """True when both real face packages are importable.
+
+    The face-level interop proof needs agent-notes' ``RegistaFace`` and
+    dossier's ``RegistaGateway`` in the same interpreter. Locally these are
+    editable installs of the sibling checkouts; in CI they install from public
+    git once the faces flip public. Until then the face-level test skips.
+    """
+    try:
+        import agent_notes.core.regista_face  # noqa: F401
+        import dossier.gateway  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
 
 
 def _can_run() -> bool:
@@ -177,15 +208,19 @@ def interop_dsn() -> Generator[str, None, None]:
 # ---------------------------------------------------------------------------
 
 
-def test_drive_work_item_across_both_faces_to_done(interop_dsn: str) -> None:
-    """Drive one work-item through the canonical workflow to ``done``.
+def test_drive_work_item_across_workflow_to_done(interop_dsn: str) -> None:
+    """Spine-level: drive one work-item through the canonical workflow to ``done``.
 
-    An agent files and works the item (open -> in_progress -> in_review);
-    a human reviewer does the adversarial pass (in_review -> in_human_review);
-    a human acceptor accepts it (in_human_review -> done).
+    Drives regista directly (no face packages), labelling the transitions by the
+    face that would own them: an agent files and works the item
+    (open -> in_progress -> in_review); a human reviewer does the adversarial
+    pass (in_review -> in_human_review); a human acceptor accepts it
+    (in_human_review -> done).
 
     The mixed human+agent event chain must verify with ``regista replay``
-    (zero drift). This is what makes a SUITE.lock a release.
+    (zero drift). The companion ``test_drive_work_item_across_real_faces_to_done``
+    proves the actual face packages compose over the same workflow. This is what
+    makes a SUITE.lock a release.
     """
     from regista import Regista
     import regista as regista_pkg
@@ -284,4 +319,119 @@ def test_drive_work_item_across_both_faces_to_done(interop_dsn: str) -> None:
 
         finally:
             sub.close()
+            drop_project_schema(interop_dsn, project)
+
+
+# ---------------------------------------------------------------------------
+# Face-level interop — the real client packages, not just the spine
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not _faces_available(),
+    reason=(
+        "Face packages (agent-notes RegistaFace + dossier RegistaGateway) not "
+        "importable — install both to run the face-level interop proof. Expected "
+        "to skip until the faces flip public (blueprint §2.2 / decision 3.2)."
+    ),
+)
+def test_drive_work_item_across_real_faces_to_done(interop_dsn: str) -> None:
+    """Face-level: drive ONE work-item across the two real face packages to ``done``.
+
+    Unlike the spine-level test, this constructs agent-notes' ``RegistaFace`` and
+    dossier's ``RegistaGateway`` — the actual client packages the suite ships —
+    over one shared regista project, and drives a single work-item through the
+    canonical workflow with each face owning its half:
+
+      * agent face (agent-notes): file the item, start it, submit for review;
+      * a cross-lineage agent reviewer passes the adversarial gate;
+      * human face (dossier): accept it to ``done``;
+      * read the mixed agent+human chain back through dossier's read path and
+        verify the regista hash chain (zero drift).
+
+    Promotes ``dossier/scripts/convergence_e2e_proof.py`` (previously a manual
+    proof, last run 2026-06-29) into a gated CI test. This is the proof the
+    blueprint §2.2 requires: the two real faces interoperate, not just the spine.
+    """
+    import regista
+    from regista.testing import drop_project_schema
+
+    from agent_notes.core.actor import Actor as AgentActor
+    from agent_notes.core.regista_face import RegistaFace
+    from dossier.actors import Actor as HumanActor
+    from dossier.gateway import RegistaGateway
+
+    project = f"faces_{uuid.uuid4().hex[:8]}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        key_path = Path(tmpdir) / "hmac_keys.json"
+        _generate_hmac_key(key_path)
+        key_path_str = str(key_path)
+
+        # Bootstrap: one shared project + the canonical workflow.
+        boot = regista.Regista.create_project(interop_dsn, project, key_path_str)
+        boot.register_workflow(regista.canonical_workflow_yaml())
+        boot.close()
+
+        # Two independent faces, two independent connections, ONE project.
+        agent_face = RegistaFace(regista.Regista(interop_dsn, project, key_path_str))
+        human_face = RegistaGateway(regista.Regista(interop_dsn, project, key_path_str))
+
+        # Two agents of different model lineage + one human.
+        worker = AgentActor(
+            actor_id="faces-agent", actor_kind="agent",
+            display_name="agent worker", role="agent", model_lineage="claude",
+        )
+        reviewer = AgentActor(
+            actor_id="faces-reviewer", actor_kind="agent",
+            display_name="cross-lineage reviewer", role="agent", model_lineage="glm",
+        )
+        human = HumanActor(actor_id="faces-human", actor_kind="human", display_name="operator")
+
+        try:
+            # --- Agent face: file + work the item ---
+            wid, state = agent_face.create_breadcrumb(
+                actor=worker,
+                title="Interop: cross-face work-item via real faces",
+                description="one item, both real faces",
+                kind="task",
+            )
+            assert state == "open", f"expected open, got {state!r}"
+            state = agent_face.transition_breadcrumb(worker, wid, "start")
+            assert state == "in_progress", f"expected in_progress, got {state!r}"
+            state = agent_face.transition_breadcrumb(worker, wid, "submit_for_review")
+            assert state == "in_review", f"expected in_review, got {state!r}"
+
+            # --- Agent face: cross-lineage adversarial review (reviewer != worker) ---
+            state = agent_face.transition_breadcrumb(
+                reviewer, wid, "adversarial_pass",
+                payload={"review_note": "independent cross-lineage review: sound"},
+            )
+            assert state == "in_human_review", f"expected in_human_review, got {state!r}"
+
+            # --- Human face: accept to done ---
+            human_face.transition(
+                actor=human, work_item_id=wid, transition_name="accept",
+                payload={"review_note": "human sign-off"},
+            )
+            item = human_face.get_issue(wid)
+            assert item is not None
+            assert item.current_state == "done", f"expected done, got {item.current_state!r}"
+            assert item.workflow_name == "canonical"
+
+            # --- Read the mixed chain back through dossier's read path ---
+            events = human_face.history(wid)
+            kinds = {e.actor_kind for e in events}
+            assert {"agent", "human"} <= kinds, f"chain not mixed: {sorted(kinds)}"
+            actor_ids = {e.actor_id for e in events}
+            assert {worker.actor_id, reviewer.actor_id, human.actor_id} <= actor_ids
+
+            # --- Verify the hash chain (zero drift) ---
+            report = human_face.integrity()
+            assert report.replayed_drift == 0, f"chain drift: {report.replayed_drift}"
+            assert report.halted == 0
+            assert report.replayed_ok >= 1
+        finally:
+            agent_face.close()
+            human_face.close()
             drop_project_schema(interop_dsn, project)

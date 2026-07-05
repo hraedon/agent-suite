@@ -76,5 +76,16 @@ jobs:
       - name: Install regista (spine)
         run: pip install "git+https://github.com/hraedon/regista.git@main"
 
+      # Best-effort until the faces flip public (blueprint §2.2 / decision 3.2).
+      # While private these installs fail and the step continues; the face-level
+      # interop test skips cleanly. Once both repos are public the installs
+      # succeed and the face-level proof runs. When that lands, drop
+      # `continue-on-error` here to make the face-level interop a required gate.
+      - name: Install faces (agent-notes + dossier) — best effort until public
+        continue-on-error: true
+        run: |
+          pip install "git+https://github.com/hraedon/agent-notes.git@main" \
+                      "git+https://github.com/hraedon/dossier.git@main"
+
       - name: Run interop + tamper + restore-drill tests
         run: pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py -v --tb=short
