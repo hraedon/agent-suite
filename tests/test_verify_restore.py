@@ -25,16 +25,21 @@ def _completed(
 
 
 def _replay_json(
-    *, replayed_ok: int = 1, replayed_drift: int = 0, halted: int = 0
+    *,
+    replayed_ok: int = 1,
+    replayed_drift: int = 0,
+    halted: int = 0,
+    warnings: int = 0,
 ) -> str:
-    return json.dumps(
-        {
-            "table_name": "events",
-            "replayed_ok": replayed_ok,
-            "replayed_drift": replayed_drift,
-            "halted": halted,
-        }
-    )
+    d: dict[str, object] = {
+        "table_name": "events",
+        "replayed_ok": replayed_ok,
+        "replayed_drift": replayed_drift,
+        "halted": halted,
+    }
+    if warnings > 0:
+        d["warnings"] = warnings
+    return json.dumps(d)
 
 
 class StubRunner:
@@ -115,8 +120,79 @@ def test_drift_detected() -> None:
     assert alpha.status is ProjectVerifyStatus.VERIFIED
 
 
-# --- test 3: unreachable project ----------------------------------------------
+# --- test 2b: warnings detected (chain-link tampering) ------------------------
 
+
+def test_warnings_detected() -> None:
+    runner = StubRunner(
+        {
+            "alpha": _completed(stdout=_replay_json(replayed_ok=5, warnings=3)),
+        }
+    )
+    result = verify_restore(
+        dsn=_DSN,
+        projects=["alpha"],
+        runner=runner,
+        installed=_installed_all(),
+    )
+    assert result.ok is False
+    assert result.projects[0].status is ProjectVerifyStatus.WARNINGS_DETECTED
+    assert result.projects[0].warnings == 3
+    assert "warnings" in result.projects[0].detail.lower()
+
+
+def test_warnings_with_drift_classifies_as_drift() -> None:
+    runner = StubRunner(
+        {
+            "alpha": _completed(
+                stdout=_replay_json(replayed_ok=3, replayed_drift=2, warnings=1)
+            ),
+        }
+    )
+    result = verify_restore(
+        dsn=_DSN,
+        projects=["alpha"],
+        runner=runner,
+        installed=_installed_all(),
+    )
+    assert result.ok is False
+    assert result.projects[0].status is ProjectVerifyStatus.DRIFT_DETECTED
+    assert result.projects[0].warnings == 1
+
+
+def test_zero_warnings_is_verified() -> None:
+    runner = StubRunner(
+        {
+            "alpha": _completed(stdout=_replay_json(replayed_ok=5, warnings=0)),
+        }
+    )
+    result = verify_restore(
+        dsn=_DSN,
+        projects=["alpha"],
+        runner=runner,
+        installed=_installed_all(),
+    )
+    assert result.ok is True
+    assert result.projects[0].status is ProjectVerifyStatus.VERIFIED
+    assert result.projects[0].warnings == 0
+
+
+def test_warnings_key_omitted_is_verified() -> None:
+    runner = StubRunner(
+        {"alpha": _completed(stdout=json.dumps({"replayed_ok": 5, "replayed_drift": 0, "halted": 0}))}
+    )
+    result = verify_restore(
+        dsn=_DSN,
+        projects=["alpha"],
+        runner=runner,
+        installed=_installed_all(),
+    )
+    assert result.ok is True
+    assert result.projects[0].status is ProjectVerifyStatus.VERIFIED
+    assert result.projects[0].warnings == 0
+
+
+# --- test 3: unreachable project ----------------------------------------------
 
 def test_unreachable_project() -> None:
     runner = StubRunner(
@@ -189,16 +265,45 @@ def test_format_text() -> None:
                 replayed_drift=2,
                 halted=1,
             ),
+            ProjectVerifyResult(
+                project="gamma",
+                status=ProjectVerifyStatus.WARNINGS_DETECTED,
+                replayed_ok=4,
+                warnings=2,
+            ),
         ],
         note="one or more projects failed verification",
     )
     text = format_text(result)
     assert "alpha" in text
     assert "beta" in text
+    assert "gamma" in text
     assert "5 ok" in text
     assert "2 drift" in text
+    assert "2 warnings" in text
+    assert "warnings" in text
     assert "verify-restore: NOT OK" in text
     assert "failed verification" in text
+
+
+def test_format_text_warnings_status() -> None:
+    result = VerifyRestoreResult(
+        ok=False,
+        projects=[
+            ProjectVerifyResult(
+                project="delta",
+                status=ProjectVerifyStatus.WARNINGS_DETECTED,
+                replayed_ok=4,
+                warnings=5,
+                detail="warnings detected: 5 warnings (possible chain-link tampering)",
+            ),
+        ],
+        note="one or more projects failed verification",
+    )
+    text = format_text(result)
+    assert "delta" in text
+    assert "5 warnings" in text
+    assert "verify-restore: NOT OK" in text
 
 
 # --- test 7: status enum exhaustiveness (assert_never) -----------------------
@@ -288,6 +393,7 @@ def test_to_dict_shape() -> None:
         "replayed_ok",
         "replayed_drift",
         "halted",
+        "warnings",
         "detail",
     } <= set(p)
     assert p["status"] == "verified"

@@ -80,7 +80,7 @@ acb 005, agent-wake 004). This repo's Plan 001 implements the suite-level layer:
 - `agent-suite bootstrap` — ordered idempotent install with `--dry-run`,
   `--tier`, and `--user` (WI-3.1)
 - `agent-suite verify-restore` — proves a restored store is cryptographically
-  intact (WI-4.2)
+  intact (WI-4.2); wired into `doctor --verify-restore` as a post-restore check
 - Operator docs — secret-backend runbooks, install guides, multi-user onboarding,
   key-operations policy, DR runbook (WI-4.1, WI-5.1, WI-5.2)
 

@@ -329,3 +329,53 @@ def test_doctor_survives_malformed_lock(tmp_path: Path) -> None:
     )
     assert report.lock.matches is False
     assert "unreadable" in report.lock.note
+
+
+# --- verify-restore wiring (WI-4.2) -------------------------------------------
+
+
+def test_aggregate_with_verify_restore_dsn_attaches_post_restore(tmp_path: Path) -> None:
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = aggregate(
+        installed=_installed_all(),
+        runner=_runner_for(outputs),
+        lock_path=tmp_path / "SUITE.lock",
+        version_installed=lambda _: False,
+        verify_restore_dsn="postgresql://svc@suite-db.example/regista",
+    )
+    assert report.post_restore is not None
+    assert report.post_restore.ok is False
+    assert report.suite_ok is False
+
+
+def test_aggregate_without_verify_restore_dsn_has_no_post_restore(tmp_path: Path) -> None:
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = aggregate(
+        installed=_installed_all(),
+        runner=_runner_for(outputs),
+        lock_path=tmp_path / "SUITE.lock",
+        version_installed=lambda _: False,
+    )
+    assert report.post_restore is None
+
+
+def test_aggregate_post_restore_failure_makes_suite_not_ok(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    from agent_suite.verify_restore import VerifyRestoreResult
+
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    with patch(
+        "agent_suite.doctor.verify_restore.verify_restore",
+        return_value=VerifyRestoreResult(ok=False, projects=[]),
+    ):
+        report = aggregate(
+            installed=_installed_all(),
+            runner=_runner_for(outputs),
+            lock_path=tmp_path / "SUITE.lock",
+            version_installed=lambda _: False,
+            verify_restore_dsn="postgresql://svc@suite-db.example/regista",
+        )
+    assert report.suite_ok is False
+    assert report.post_restore is not None
+    assert report.post_restore.ok is False

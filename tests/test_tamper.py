@@ -2,11 +2,11 @@
 
 Implements Plan 001 WI-2.3. Stands up an ephemeral Postgres, provisions a
 project, drives one work-item through the canonical workflow to ``done``,
-verifies the clean chain, then injects three independent tampered events
+verifies the clean chain, then injects four independent tampered events
 directly into the events table and confirms ``regista replay`` catches each
 with a distinct, named failure.
 
-The three tamper scenarios map to three distinct ReplayReport categories:
+The four tamper scenarios map to four distinct ReplayReport categories:
 
 * **Mutated event body** — the ``payload`` column is edited without touching
   ``canonical_envelope`` or ``signature``.  The stored envelope still
@@ -22,6 +22,11 @@ The three tamper scenarios map to three distinct ReplayReport categories:
 * **Forged ``prev_event_hash``** — the hash-chain link is corrupted.  The
   signature still verifies (envelope unchanged), but
   ``_verify_hash_chain`` detects the mismatch → ``warnings > 0``.
+
+* **Forged ``signature``** — the ``signature`` column is replaced with
+  garbage bytes (without nulling ``canonical_envelope``).  The signature
+  no longer matches any candidate envelope, verification fails, and
+  replay halts → ``halted > 0``.
 
 Gated on the component contracts existing: skips cleanly if the regista
 package or Docker (for ephemeral Postgres) are unavailable, or if
@@ -200,14 +205,14 @@ def test_tamper_detection(interop_dsn: str) -> None:
     """Inject forged events into the store and confirm replay catches each.
 
     Drives a work-item through the canonical workflow to ``done``, verifies
-    the clean chain, then applies three independent tamper scenarios to
+    the clean chain, then applies four independent tamper scenarios to
     events in the Postgres events table.  Each scenario is restored before
     the next so the chain is clean between runs.
 
-    The three tamper scenarios produce distinct ReplayReport categories:
-    ``replayed_drift``, ``halted``, and ``warnings`` — proving the chain
-    catches mutation, identity spoofing, and hash-chain forgery
-    respectively.
+    The four tamper scenarios produce distinct ReplayReport categories:
+    ``replayed_drift``, ``halted``, ``warnings``, and ``halted`` — proving
+    the chain catches mutation, identity spoofing, hash-chain forgery,
+    and signature forgery respectively.
     """
     import psycopg
     from psycopg.rows import dict_row
@@ -440,6 +445,56 @@ def test_tamper_detection(interop_dsn: str) -> None:
                         "UPDATE events SET prev_event_hash = %s "
                         "WHERE work_item_id = %s AND event_seq = 2",
                         [original_hash, wi.work_item_id],
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
+
+            report = sub.replay(work_item_id=wi.work_item_id)
+            assert report.replayed_drift == 0
+            assert report.halted == 0
+            assert report.warnings == 0
+
+            # --- Scenario 4: Forged signature → halted ---
+            #
+            # Replace the ``signature`` column with garbage bytes (without
+            # nulling ``canonical_envelope``).  The signature no longer
+            # matches any candidate envelope, verification fails, and
+            # replay halts.
+            conn = psycopg.connect(interop_dsn)
+            conn.row_factory = dict_row
+            try:
+                conn.execute(set_path)
+                row = conn.execute(
+                    "SELECT signature FROM events "
+                    "WHERE work_item_id = %s AND event_seq = 3",
+                    [wi.work_item_id],
+                ).fetchone()
+                original_signature = bytes(row["signature"])
+                forged_signature = b"\xff" * len(original_signature)
+                conn.execute(
+                    "UPDATE events SET signature = %s "
+                    "WHERE work_item_id = %s AND event_seq = 3",
+                    [forged_signature, wi.work_item_id],
+                )
+                conn.commit()
+                try:
+                    report = sub.replay(work_item_id=wi.work_item_id)
+                    assert report.halted > 0, (
+                        f"Forged signature not detected: halted={report.halted}, "
+                        f"drift={report.replayed_drift}, warnings={report.warnings}"
+                    )
+                    assert report.replayed_drift == 0, (
+                        f"Forged signature produced unexpected drift: {report.replayed_drift}"
+                    )
+                    assert report.warnings == 0, (
+                        f"Forged signature produced unexpected warnings: {report.warnings}"
+                    )
+                finally:
+                    conn.execute(
+                        "UPDATE events SET signature = %s "
+                        "WHERE work_item_id = %s AND event_seq = 3",
+                        [original_signature, wi.work_item_id],
                     )
                     conn.commit()
             finally:
