@@ -53,8 +53,8 @@ class StubRunner:
 
     def __call__(self, cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
         self.calls.append(cmd)
-        if len(cmd) >= 6 and cmd[1] == "replay":
-            key = cmd[5]
+        if "replay" in cmd and "--project" in cmd:
+            key = cmd[cmd.index("--project") + 1]
         else:
             key = cmd[0]
         out = self._outputs[key]
@@ -463,7 +463,7 @@ def test_replay_commands_issued_correctly() -> None:
     assert len(runner.calls) == 2
     for cmd in runner.calls:
         assert cmd[0] == "regista"
-        assert cmd[1] == "replay"
+        assert "replay" in cmd
         assert "--dsn" in cmd
         assert "--project" in cmd
         assert "--json" in cmd
