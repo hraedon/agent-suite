@@ -15,6 +15,7 @@ newly added status can't slip through ungated. stdlib-only core.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -151,14 +152,19 @@ def _discover_projects(
     return []
 
 
-def _replay_cmd(dsn: str, project: str) -> tuple[str, ...]:
-    return ("regista", "replay", "--dsn", dsn, "--project", project, "--json")
+def _replay_cmd(dsn: str, project: str, key_path: str | None = None) -> tuple[str, ...]:
+    cmd: list[str] = ["regista", "--dsn", dsn, "--project", project]
+    if key_path:
+        cmd += ["--hmac-key-path", key_path]
+    cmd += ["--json", "replay"]
+    return tuple(cmd)
 
 
 def _verify_one(
     project: str,
     *,
     dsn: str,
+    key_path: str | None,
     runner: Runner,
 ) -> ProjectVerifyResult:
     """Shell ``regista replay`` for one project and parse the result.
@@ -166,7 +172,7 @@ def _verify_one(
     Never raises — a command failure, timeout, or malformed output is a named
     status (UNREACHABLE or ERROR), not a traceback.
     """
-    cmd = _replay_cmd(dsn, project)
+    cmd = _replay_cmd(dsn, project, key_path)
 
     try:
         result = runner(cmd)
@@ -289,6 +295,7 @@ def verify_restore(
     *,
     dsn: str,
     projects: list[str] | None = None,
+    key_path: str | None = None,
     runner: Runner = _default_runner,
     installed: Installed = _default_installed,
 ) -> VerifyRestoreResult:
@@ -297,6 +304,11 @@ def verify_restore(
     If ``projects`` is None, discovers project slugs via ``regista doctor
     --json``. Both ``runner`` and ``installed`` are injectable so tests drive
     verification against stubbed commands with no real binaries or live infra.
+
+    ``key_path`` is the HMAC key-set path passed to ``regista replay`` via
+    ``--hmac-key-path``. If None, resolves from ``REGISTA_KEY_PATH`` then
+    ``REGISTA_HMAC_KEY_PATH`` (the suite config contract), so an operator with
+    ``suite.env`` in place needs no explicit flag.
     """
     if not installed("regista"):
         return VerifyRestoreResult(
@@ -306,6 +318,11 @@ def verify_restore(
                 "regista is not installed — "
                 "install regista to verify the restored store"
             ),
+        )
+
+    if key_path is None:
+        key_path = os.environ.get("REGISTA_KEY_PATH") or os.environ.get(
+            "REGISTA_HMAC_KEY_PATH"
         )
 
     if projects is None:
@@ -331,7 +348,7 @@ def verify_restore(
             ),
         )
 
-    results = [_verify_one(p, dsn=dsn, runner=runner) for p in projects]
+    results = [_verify_one(p, dsn=dsn, key_path=key_path, runner=runner) for p in projects]
 
     ok = _compute_ok(results)
     return VerifyRestoreResult(

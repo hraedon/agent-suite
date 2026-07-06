@@ -336,6 +336,7 @@ def test_restore_drill_verifies_intact(interop_dsn: _InteropDsn) -> None:
                 result = verify_restore(
                     dsn=restored_dsn,
                     projects=[project],
+                    key_path=key_path_str,
                 )
                 assert result.ok is True, (
                     f"verify-restore failed: ok={result.ok}, "
