@@ -1,6 +1,8 @@
 # Plan 002 — Enforce the face-level interop proof in CI
 
-**Status:** Proposed 2026-07-06, from a post-1.0 cross-repo review (Claude, Opus 4.8).
+**Status:** Implemented 2026-07-06 (WI-1 through WI-4). CI now installs the
+faces as a hard step and sets `INTEROP_REQUIRE_FACES=1`, so the face-level
+interop test fails (not skips) on a packaging regression.
 **Author:** Claude (Opus 4.8)
 **Strategic role:** The suite's flagship guarantee is that the **two real faces**
 (agent-notes' `RegistaFace`, dossier's `RegistaGateway`) interoperate over one
@@ -26,19 +28,19 @@ regression *fail* instead of silently reverting to a skip.
 
 ## Work items
 
-### WI-1 — Install the faces as a hard CI step
+### WI-1 — Install the faces as a hard CI step ✅
 - Now that agent-notes and dossier are public, drop the best-effort/failure-swallow
   guard. Install both faces (pinned to a SHA or `@main`) as a required step; if the
   install fails, CI fails. Remove the "until public" comment.
 
-### WI-2 — Turn the face-level skip into a required assertion
+### WI-2 — Turn the face-level skip into a required assertion ✅
 - Add an env flag (e.g. `INTEROP_REQUIRE_FACES=1`) that the CI job sets. When set,
   `test_drive_work_item_across_real_faces_to_done` **errors** instead of skipping if
   either face is not importable. Locally (flag unset) it still skips cleanly. This
   closes the "skip looks like pass" hole: face packaging can no longer silently
   regress the suite's flagship guarantee.
 
-### WI-3 — Guarantee the Postgres path executes in CI
+### WI-3 — Guarantee the Postgres path executes in CI ✅
 - Confirm the ephemeral-Postgres fixture runs on the CI runner (Docker available) or
   wire a Postgres service container and pass `INTEROP_DSN`, so the proof genuinely
   drives a database rather than skipping on "no Docker."

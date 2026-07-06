@@ -10,19 +10,21 @@ Implements Plan 001 WI-2.2. Two levels of assurance:
    the **actual** face packages — agent-notes' ``RegistaFace`` and dossier's
    ``RegistaGateway`` — over one shared regista project. This is the proof the
    blueprint §2.2 asks for: that the two real client packages interoperate, not
-   merely that the spine does. Runs whenever both faces are importable (local
-   checkouts today; ``pip install`` from public git once the faces flip public).
+   merely that the spine does. Runs whenever both faces are importable.
 
 Both stand up an ephemeral Postgres, provision a project, drive one work-item
 through the canonical workflow — an agent files and works it, a human reviews
 and accepts it — and verify the mixed human+agent event chain with
 ``regista replay``.
 
-Gated on the component contracts existing: skips cleanly if the regista package
-or Docker (for ephemeral Postgres) are unavailable, or if ``INTEROP_DSN`` is
-neither set nor satisfiable; the face-level test additionally skips until both
-face packages are importable. A green run is what makes a lock a release
-(docs/bootstrap-contract.md §5).
+**Skip vs. fail gating (Plan 002):** each test carries its own skip guard (no
+module-level ``pytestmark``) so the face-level test's require logic is
+independent of the spine-level prerequisites. Locally, both tests skip cleanly
+when their prerequisites aren't met. In CI, ``INTEROP_REQUIRE_FACES=1`` makes
+the face-level test **fail** (not skip) when the face packages aren't
+importable — closing the "skip looks like pass" hole so a face-packaging
+regression surfaces as a red run, not a silent skip. A green run is what
+makes a lock a release (docs/bootstrap-contract.md §5).
 """
 
 from __future__ import annotations
@@ -50,6 +52,12 @@ _SKIP_REASON = (
     "Expected until component contracts are fully landed (Plan 001 WI-2.2)."
 )
 
+# When set (CI), the face-level interop test must not skip — it fails instead,
+# so a face-packaging regression is a red run, not a silent skip (Plan 002 WI-2).
+_REQUIRE_FACES = os.environ.get("INTEROP_REQUIRE_FACES", "").strip().lower() in {
+    "1", "true", "yes",
+}
+
 
 def _regista_available() -> bool:
     try:
@@ -68,28 +76,47 @@ def _dsn_available() -> bool:
     return bool(os.environ.get("INTEROP_DSN"))
 
 
+# The exact modules the face-level test imports — checking these (not a subset)
+# ensures the availability probe and the test body cannot drift apart.
+_FACE_MODULES = [
+    "agent_notes.core.actor",
+    "agent_notes.core.regista_face",
+    "dossier.actors",
+    "dossier.gateway",
+]
+
+
+def _missing_face_modules() -> list[str]:
+    """Return face modules that cannot be imported, or ``[]`` if all are available."""
+    missing: list[str] = []
+    for mod in _FACE_MODULES:
+        try:
+            __import__(mod)
+        except ImportError:
+            missing.append(mod)
+    return missing
+
+
 def _faces_available() -> bool:
-    """True when both real face packages are importable.
+    """True when all face modules the test needs are importable.
 
-    The face-level interop proof needs agent-notes' ``RegistaFace`` and
-    dossier's ``RegistaGateway`` in the same interpreter. Locally these are
-    editable installs of the sibling checkouts; in CI they install from public
-    git once the faces flip public. Until then the face-level test skips.
+    Checks the exact imports the test body uses (not a subset) so that a broken
+    ``agent_notes.core.actor`` or ``dossier.actors`` is caught here, not as a
+    raw ``ImportError`` mid-test.
     """
-    try:
-        import agent_notes.core.regista_face  # noqa: F401
-        import dossier.gateway  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
+    return not _missing_face_modules()
 
 
 def _can_run() -> bool:
     return _regista_available() and (_docker_available() or _dsn_available())
 
 
-pytestmark = pytest.mark.skipif(not _can_run(), reason=_SKIP_REASON)
+# The face-level test skips locally when faces aren't importable OR the spine
+# prerequisites aren't met, but in CI (INTEROP_REQUIRE_FACES=1) it must not
+# skip — a missing face or missing DSN is a packaging/CI regression, not an
+# optional proof. _face_test_should_skip is False in CI so the test runs and
+# fails loudly via the guard inside it (faces) or the interop_dsn fixture (DSN).
+_face_test_should_skip = (not _faces_available() or not _can_run()) and not _REQUIRE_FACES
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +235,7 @@ def interop_dsn() -> Generator[str, None, None]:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not _can_run(), reason=_SKIP_REASON)
 def test_drive_work_item_across_workflow_to_done(interop_dsn: str) -> None:
     """Spine-level: drive one work-item through the canonical workflow to ``done``.
 
@@ -328,11 +356,11 @@ def test_drive_work_item_across_workflow_to_done(interop_dsn: str) -> None:
 
 
 @pytest.mark.skipif(
-    not _faces_available(),
+    _face_test_should_skip,
     reason=(
         "Face packages (agent-notes RegistaFace + dossier RegistaGateway) not "
-        "importable — install both to run the face-level interop proof. Expected "
-        "to skip until the faces flip public (blueprint §2.2 / decision 3.2)."
+        "importable — install both to run the face-level interop proof. "
+        "(Set INTEROP_REQUIRE_FACES=1 to make this a hard failure in CI.)"
     ),
 )
 def test_drive_work_item_across_real_faces_to_done(interop_dsn: str) -> None:
@@ -353,6 +381,14 @@ def test_drive_work_item_across_real_faces_to_done(interop_dsn: str) -> None:
     proof, last run 2026-06-29) into a gated CI test. This is the proof the
     blueprint §2.2 requires: the two real faces interoperate, not just the spine.
     """
+    missing = _missing_face_modules()
+    if missing:
+        pytest.fail(
+            "INTEROP_REQUIRE_FACES=1 is set but the following face modules "
+            f"are not importable: {', '.join(missing)}. Install both packages "
+            "(agent-notes and dossier) — or, in CI, verify the face-install step."
+        )
+
     import regista
     from regista.testing import drop_project_schema
 

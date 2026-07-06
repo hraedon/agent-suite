@@ -62,6 +62,10 @@ jobs:
 
     env:
       INTEROP_DSN: postgresql://interop:interop_pw@localhost:5432/interop
+      # Make the face-level interop test a hard gate: if the face packages don't
+      # install, the test errors (not skips), so a packaging regression is a red
+      # run, not a silent skip (Plan 002 WI-2).
+      INTEROP_REQUIRE_FACES: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -76,13 +80,11 @@ jobs:
       - name: Install regista (spine)
         run: pip install "git+https://github.com/hraedon/regista.git@main"
 
-      # Best-effort until the faces flip public (blueprint §2.2 / decision 3.2).
-      # While private these installs fail and the step continues; the face-level
-      # interop test skips cleanly. Once both repos are public the installs
-      # succeed and the face-level proof runs. When that lands, drop
-      # `continue-on-error` here to make the face-level interop a required gate.
-      - name: Install faces (agent-notes + dossier) — best effort until public
-        continue-on-error: true
+      # Both face repos are public — install as a hard required step. If the
+      # install fails, CI fails: combined with INTEROP_REQUIRE_FACES=1 above,
+      # the face-level interop proof can no longer silently regress to a skip
+      # (Plan 002 WI-1).
+      - name: Install faces (agent-notes + dossier)
         run: |
           pip install "git+https://github.com/hraedon/agent-notes.git@main" \
                       "git+https://github.com/hraedon/dossier.git@main"
