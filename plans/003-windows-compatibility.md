@@ -1,6 +1,10 @@
 # Plan 003 — Windows compatibility (Claude Code on Windows)
 
-**Status:** Proposed 2026-07-06, from a Windows-compat audit (Claude, Opus 4.8).
+**Status:** WI-0 ✅ (posture confirmed + recorded in bootstrap-contract.md §7 and
+install-windows.md); WI-5.1 ✅ for agent-suite (windows-latest CI job added).
+Phases 1–4 (component fixes) and WI-5.2 (real-Windows e2e) remain — they live in
+the component repos. Phase 2 (DPAPI-custody) interlocks with regista Plan 029
+Phase 2: land the custody helper once in regista and have both consume it.
 **Author:** Claude (Opus 4.8)
 **Strategic role:** The suite's deployment target includes Windows (blueprint
 decision 1: Linux + Docker + **Windows Service**), and the operators will run
@@ -149,10 +153,13 @@ Phases 1–3 to optional.
 
 ## Phase 5 — Prove it (the part CI can't fake)
 
-### WI-5.1 — `windows-latest` CI job per suite repo
+### WI-5.1 — `windows-latest` CI job per suite repo ✅ (agent-suite)
 - Add a Windows job to each repo's CI: install, import, unit tests, and specifically
   the perm/path/custody logic. This catches the import-time and attribute crashes
   cheaply and permanently.
+- **agent-suite:** windows-latest job added (install, architecture test, ruff,
+  mypy, pytest). Integration tests skip cleanly (no Docker/Postgres on the runner).
+  Other suite repos need their own Windows jobs — track per-repo.
 
 ### WI-5.2 — Real-Windows end-to-end on the lab
 - Validate on the Win Server 2025 box (`mvmcitest01`, Py 3.14 — see

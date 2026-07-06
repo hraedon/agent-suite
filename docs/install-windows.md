@@ -20,6 +20,15 @@ After this guide, an operator will have a running suite with a green
 | OS | Windows 10/11 or Windows Server 2019+ |
 | Permissions | Administrator for system-level config and service install |
 
+> **Security — run inside a dedicated VM.** On native Windows, Claude Code's
+> harness-level sandboxing is **not available** — the agent runs with the
+> operator's full Windows access. The isolation boundary is the VM/host, not
+> the process. Run Claude Code on Windows inside a **dedicated VM** that has
+> no ambient access to anything the agent shouldn't reach. cairn *records*
+> what the agent did; it does not *constrain* it. See
+> [bootstrap-contract.md §7](bootstrap-contract.md#7-substrate-posture-plan-003-wi-0)
+> for the full posture decision.
+
 ## 2. Install agent-suite
 
 ```powershell

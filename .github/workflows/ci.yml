@@ -91,3 +91,34 @@ jobs:
 
       - name: Run interop + tamper + restore-drill tests
         run: pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py -v --tb=short
+
+  # Plan 003 WI-5.1 — prove agent-suite imports and unit tests pass on native
+  # Windows. agent-suite is stdlib-only, so this is primarily a guard against
+  # future non-portable additions (os.O_NOFOLLOW, fcntl, etc.). Integration
+  # tests (interop/tamper/restore-drill) skip cleanly — no Docker or Postgres
+  # on the windows-latest runner.
+  windows-test:
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Architecture test (import boundary)
+        run: pytest tests/test_architecture.py -q
+
+      - name: Lint (ruff)
+        run: ruff check src tests
+
+      - name: Type check (mypy)
+        run: mypy --strict src
+
+      - name: Run tests
+        run: pytest --tb=short -q
