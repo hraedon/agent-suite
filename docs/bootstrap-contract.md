@@ -124,3 +124,31 @@ Plan 026). A lock that can't do this is not a release.
   responsibility for the external dependencies (Postgres, secret backend, identity
   source, network/audit approvals — blueprint §4). It checks they're present and
   fails clearly when they're not; it cannot procure them.
+
+## 7. Substrate posture (Plan 003 WI-0)
+
+The suite's deployment target includes **Windows** (blueprint decision 1: Linux +
+Docker + Windows Service). The confirmed posture (Paul, 2026-07-06) is:
+
+- **Native Windows Python core** for the library, CLI, and harness layer (cairn's
+  attestation hook fires on every tool call inside Claude Code's own process —
+  containerising that per-call is worse than making the Python natively correct).
+- **Docker for services** — Postgres and any long-running regista process are
+  containerised on every OS, including Windows.
+- **WSL / Git-Bash** as a supported fallback for bash dev-glue only (the
+  `install-git-hooks.sh` scripts), **not** as the gate. Claude Code runs natively
+  on Windows without WSL.
+
+**Sandboxing caveat:** on native Windows, Claude Code's harness-level sandboxing
+is **not available** — the agent runs with the operator's full Windows access. The
+isolation boundary is the **VM/host**. Operators must run Claude Code on Windows
+inside a **dedicated VM**, never on a workstation with ambient access to anything
+the agent shouldn't reach. The suite's job is unaffected — cairn *records* what
+the agent did; it does not *constrain* it — but the runbook
+([install-windows.md](install-windows.md)) must state this requirement explicitly.
+
+This posture means the component repos must be natively Windows-correct
+(Plan 003 Phases 1–4): no `os.O_NOFOLLOW` crashes, real key-file protection
+(DPAPI or ACL, not `chmod 0o600`), and idiomatic config/state directories.
+A `windows-latest` CI job per repo (Plan 003 WI-5.1) catches import-time and
+attribute crashes cheaply and permanently.
