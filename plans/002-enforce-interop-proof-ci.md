@@ -45,9 +45,11 @@ regression *fail* instead of silently reverting to a skip.
   wire a Postgres service container and pass `INTEROP_DSN`, so the proof genuinely
   drives a database rather than skipping on "no Docker."
 
-### WI-4 — Verify
+### WI-4 — Verify ✅
 - Confirm in a CI run that **both** interop tests execute and pass (not skip) —
   inspect the run log for the face-level test id, not just the green check.
+  **Verified 2026-07-06 (CI run 28812122415):** all 4 interop tests PASSED
+  (not skipped): spine-level, face-level, tamper, restore-drill.
 
 ## Notes
 
