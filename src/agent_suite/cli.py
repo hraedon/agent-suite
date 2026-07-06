@@ -39,7 +39,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument(
         "--restore-dsn",
-        help="Postgres DSN for --verify-restore (or REGISTA_DSN); required when --verify-restore is set",
+        help="Postgres DSN for --verify-restore (or REGISTA_DSN); errors if --verify-restore is set and neither is provided",
     )
     lock = sub.add_parser(
         Command.LOCK.value, help="generate / check the SUITE.lock compatibility manifest"
@@ -78,12 +78,20 @@ def main(argv: list[str] | None = None) -> int:
         case Command.DOCTOR:
             from agent_suite.doctor import aggregate, format_text
             import json as _json
+            import sys
 
             verify_restore_dsn: str | None = None
             if getattr(args, "verify_restore", False):
                 verify_restore_dsn = getattr(args, "restore_dsn", None) or os.environ.get(
                     "REGISTA_DSN"
                 )
+                if verify_restore_dsn is None:
+                    print(
+                        "agent-suite doctor --verify-restore: no DSN provided. "
+                        "Use --restore-dsn or set REGISTA_DSN.",
+                        file=sys.stderr,
+                    )
+                    return 1
             report = aggregate(verify_restore_dsn=verify_restore_dsn)
             if getattr(args, "json", False):
                 print(_json.dumps(report.to_dict(), indent=2, default=str))

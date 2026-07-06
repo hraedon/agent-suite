@@ -66,13 +66,19 @@ report:
 ```
 { suite_ok: bool,
   components: [ { component, version, ok, regista:{reachable, project, chain_ok},
-                 checks:[{name,status,detail}] } … ],
-  lock: { matches: bool, drift:[…] } }   # from §4
+                  checks:[{name,status,detail}] } … ],
+  lock: { matches: bool, drift:[…] },                         # from §4
+  post_restore: { ok: bool, projects:[…] } | null }          # from §WI-4.2
 ```
 
 Rules: a component that isn't installed is `absent` (not a failure — the suite may
 not deploy Tier 2); a component that's installed but unreachable is a failure; the
 umbrella is read-only and never mutates. `--exit-code` gates a monitoring run.
+When `--verify-restore` is passed, `post_restore` is populated with the
+`verify_restore` result (Plan 001 WI-4.2) and a failed post-restore check makes
+`suite_ok` false; when `--verify-restore` is not passed, `post_restore` is `null`.
+`--verify-restore` requires a DSN (`--restore-dsn` or `REGISTA_DSN`) — the command
+errors if neither is provided.
 
 ## 4. The compatibility lock (`SUITE.lock`)
 

@@ -154,6 +154,28 @@ def test_doctor_verify_restore_exit_code_nonzero_when_post_restore_fails(
     assert main(["doctor", "--verify-restore", "--restore-dsn", _DSN, "--exit-code"]) == 1
 
 
+def test_doctor_verify_restore_errors_without_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_aggregate(monkeypatch, suite_ok=True)
+    monkeypatch.delenv("REGISTA_DSN", raising=False)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = main(["doctor", "--verify-restore"])
+    assert rc == 1
+    assert "no DSN" in err.getvalue()
+    assert "REGISTA_DSN" in err.getvalue()
+
+
+def test_doctor_verify_restore_uses_regista_dsn_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_aggregate(monkeypatch, suite_ok=True, with_post_restore=True)
+    monkeypatch.setenv("REGISTA_DSN", _DSN)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["doctor", "--json", "--verify-restore"])
+    assert rc == 0
+    parsed = json.loads(buf.getvalue())
+    assert "post_restore" in parsed
+
+
 def test_lock_json_emits_valid_json(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_aggregate(monkeypatch, suite_ok=True)
     _stub_lock(monkeypatch)
