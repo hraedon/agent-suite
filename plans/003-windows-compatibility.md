@@ -80,10 +80,18 @@ native Python fixes (Phases 1–3) are declined.
   (network-reachable) — and imposes the WSL setup tax on every operator. If chosen,
   Phases 1–4 shrink to "correctness insurance" and Phase 5 targets WSL, not native.
 
-**Linchpin to confirm before committing to native:** that Claude Code runs natively
-on Windows without WSL. cairn's win32-aware hook (`_install.py:23-33`) implies the
-team already validated this; confirm on the target machines. If native Claude Code
-on Windows is not viable, the calculus flips to WSL-gated.
+**Linchpin — CONFIRMED 2026-07-06 (Paul):** Claude Code runs natively on Windows
+without WSL. The recommended posture is therefore settled, not pending.
+
+**Sandboxing caveat (record in the operator runbook, agent-suite Plan 001):** on
+native Windows, Claude Code's harness-level sandboxing is **not available** — the
+agent runs with the operator's full Windows access. This is an accepted tradeoff:
+the isolation boundary is the **VM/host**, which is the sandbox the deployment cares
+about anyway. Operational consequence: **run Claude Code on Windows inside a
+dedicated VM**, never on a workstation with ambient access to anything the agent
+shouldn't reach. The suite's job here is unaffected — cairn *records* what the agent
+did; it does not *constrain* it — but the runbook must state the VM-is-the-sandbox
+requirement explicitly so no operator runs it unsandboxed on a fat host.
 
 The rest of this plan is written for the recommended posture; WSL-gated prunes
 Phases 1–3 to optional.
