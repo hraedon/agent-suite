@@ -18,7 +18,9 @@ suite-level wiring command.
 <tool> install-harness <harness> [--dry-run] [--uninstall] [--user <principal_id>]
 ```
 
-- **`<harness>`**: required, one of `claude | opencode | all`.
+- **`<harness>`**: required, one of `claude | opencode | hermes | all`.
+  The `hermes` target is specified in
+  [`harness-target-hermes.md`](harness-target-hermes.md).
 - **`--dry-run`**: prints the planned changes (what files would be
   created/modified, what env vars set, what hooks registered); acts on
   nothing. Exit 0.
@@ -57,6 +59,23 @@ Wires `~/.config/opencode/opencode.json`:
 - **Plugin transforms** (agent-notes): the
   `experimental.chat.system.transform` and
   `experimental.session.compacting` hooks registered.
+
+### hermes
+
+Wires `~/.hermes/config.yaml` and `~/.hermes/.env`:
+- **Env vars**: the tool's config set in `~/.hermes/.env` (KEY=VALUE, not JSON)
+  within a sentinel-managed block (see
+  [`harness-target-hermes.md`](harness-target-hermes.md) §3).
+- **Plugin** (cairn): a plugin installed at
+  `~/.hermes/plugins/observability/cairn/` that registers `pre_tool_call` /
+  `post_tool_call` hooks via the `register(ctx)` entry point.
+- **Skills** (agent-notes, acb): skill directories installed under
+  `~/.hermes/skills/<name>/SKILL.md` (same `SKILL.md` format as Claude Code).
+- **Command shims** (acb): `~/.hermes/skills/<name>/SKILL.md` that
+  shell to `acb exec cred:<name>`.
+
+See [`harness-target-hermes.md`](harness-target-hermes.md) for the full
+path-mapping, env-var wiring, and plugin architecture.
 
 ## 3. Idempotency rules
 
@@ -98,23 +117,25 @@ JSON to stdout, human-readable summary to stderr:
 - Each action names the file path and what changes. This is what
   `agent-suite bootstrap --dry-run` aggregates across all components.
 
-## 5. Dual-harness validation
+## 5. Harness validation
 
-Every `install-harness` implementation must support **both** targets
-(`claude` and `opencode`), even if the work deployment is Claude-first.
-The validation contract:
+Every `install-harness` implementation must support **all three** targets
+(`claude`, `opencode`, and `hermes`), even if the work deployment is
+Claude-first. The validation contract:
 
 1. `install-harness claude` on a clean profile → `doctor` green.
 2. `install-harness opencode` on a clean profile → `doctor` green.
-3. `install-harness all` on a clean profile → both wired, `doctor` green
-   for both.
-4. **Regression guard:** on a profile with an *existing* opencode
-   setup (the operator's local dev), `install-harness opencode` does
-   not break the existing config — verified by running `doctor` before
-   and after and confirming no new failures.
+3. `install-harness hermes` on a clean profile → `doctor` green.
+4. `install-harness all` on a clean profile → all three wired, `doctor`
+   green for all.
+5. **Regression guard:** on a profile with an *existing* opencode or
+   hermes setup (the operator's local dev), `install-harness opencode` /
+   `install-harness hermes` does not break the existing config — verified
+   by running `doctor` before and after and confirming no new failures.
 
-This guard is cheap because both harnesses run locally. It is the
-blueprint §4 constraint: "opencode is maintained, not deferred."
+This guard is cheap because all harnesses run locally. It extends the
+blueprint §4 constraint: "opencode is maintained, not deferred" — and
+hermes is held to the same bar.
 
 ## 6. Cross-component coordination
 
