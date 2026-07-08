@@ -58,6 +58,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--tier", choices=["0-1", "all"], default="0-1", help="which tiers to install (default: 0-1)"
     )
     bootstrap.add_argument("--user", help="onboard a per-user overlay for this principal ID")
+    bootstrap.add_argument(
+        "--harness",
+        choices=["claude", "opencode", "hermes", "all"],
+        default="all",
+        help="which harness target to wire (default: all)",
+    )
     bootstrap.add_argument("--json", action="store_true", help="emit the result as JSON")
     verify_restore = sub.add_parser(
         Command.VERIFY_RESTORE.value,
@@ -158,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
                 user=args.user,
                 project=os.environ.get("REGISTA_PROJECT"),
                 dsn=os.environ.get("REGISTA_DSN"),
+                harness=args.harness,
             )
             if getattr(args, "json", False):
                 import json as _json
