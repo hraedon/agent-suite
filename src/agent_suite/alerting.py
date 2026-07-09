@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -143,7 +144,18 @@ class AlertResult:
 # State management (no daemon — state on disk between runs)
 # ---------------------------------------------------------------------------
 
-DEFAULT_STATE_PATH = Path("/var/lib/agent-suite/last-doctor-state.json")
+if sys.platform == "win32":
+    DEFAULT_STATE_PATH = (
+        Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
+        / "agent-suite"
+        / "last-doctor-state.json"
+    )
+else:
+    DEFAULT_STATE_PATH = (
+        Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+        / "agent-suite"
+        / "last-doctor-state.json"
+    )
 
 
 def _read_state(state_path: Path) -> bool | None:
