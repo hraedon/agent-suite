@@ -17,6 +17,7 @@ _CORE_MODULES = (
     "doctor",
     "lock",
     "bootstrap",
+    "onboard",
     "verify_restore",
     "upgrade",
     "schedule",

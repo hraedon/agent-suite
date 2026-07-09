@@ -9,6 +9,7 @@ import pytest
 from agent_suite import bootstrap as bootstrap_mod
 from agent_suite import doctor as doctor_mod
 from agent_suite import lock as lock_mod
+from agent_suite import onboard as onboard_mod
 from agent_suite import schedule as schedule_mod
 from agent_suite import upgrade as upgrade_mod
 from agent_suite import verify_restore as verify_restore_mod
@@ -48,6 +49,18 @@ def _stub_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
         bootstrap_mod,
         "run_bootstrap",
         lambda **kw: bootstrap_mod.BootstrapResult(ok=True, dry_run=False, steps=[]),
+    )
+
+
+def _stub_onboard(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        onboard_mod,
+        "run_onboard",
+        lambda **kw: onboard_mod.OnboardResult(
+            ok=True, dry_run=False, project="project-slug",
+            spec_anchored=False, spec_version=None,
+            spec_version_recognized=None, steps=[],
+        ),
     )
 
 
@@ -124,6 +137,7 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_aggregate(monkeypatch, suite_ok=False)
     _stub_lock(monkeypatch)
     _stub_bootstrap(monkeypatch)
+    _stub_onboard(monkeypatch)
     _stub_verify_restore(monkeypatch)
     _stub_upgrade(monkeypatch)
     _stub_schedule(monkeypatch)
@@ -131,6 +145,8 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     for command in Command:
         if command is Command.SCHEDULE:
             assert main([command.value, "list"]) == 0
+        elif command is Command.ONBOARD:
+            assert main([command.value, "project-slug"]) == 0
         else:
             assert main([command.value]) == 0
 
