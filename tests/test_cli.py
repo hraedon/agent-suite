@@ -9,7 +9,10 @@ import pytest
 from agent_suite import bootstrap as bootstrap_mod
 from agent_suite import doctor as doctor_mod
 from agent_suite import lock as lock_mod
+from agent_suite import schedule as schedule_mod
+from agent_suite import upgrade as upgrade_mod
 from agent_suite import verify_restore as verify_restore_mod
+from agent_suite.alerting import AlertResult, EmissionStatus
 from agent_suite.cli import Command, main
 
 _DSN = "postgresql://regista_service@suite-db.example:5432/regista"
@@ -56,13 +59,80 @@ def _stub_verify_restore(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _stub_upgrade(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        upgrade_mod,
+        "run_upgrade",
+        lambda **kw: upgrade_mod.UpgradeResult(ok=True, dry_run=False, check_only=False, component_filter=None),
+    )
+    monkeypatch.setattr(
+        upgrade_mod,
+        "check_advancements",
+        lambda **kw: upgrade_mod.AdvancementReport(advancements=[], note="no advancements"),
+    )
+    monkeypatch.setattr(
+        upgrade_mod,
+        "run_rollback",
+        lambda **kw: upgrade_mod.RollbackResult(
+            ok=True, status=upgrade_mod.RollbackStatus.APPLIED, target_ref="",
+        ),
+    )
+
+
+def _stub_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        schedule_mod,
+        "install_schedules",
+        lambda **kw: schedule_mod.ScheduleReport(
+            os_target=schedule_mod.OSTarget.SYSTEMD,
+            results=[
+                schedule_mod.ScheduleResult(
+                    kind=schedule_mod.ScheduleKind.BACKUP_VERIFY,
+                    status=schedule_mod.InstallStatus.INSTALLED,
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        schedule_mod,
+        "remove_schedules",
+        lambda **kw: schedule_mod.ScheduleReport(
+            os_target=schedule_mod.OSTarget.SYSTEMD,
+            results=[
+                schedule_mod.ScheduleResult(
+                    kind=schedule_mod.ScheduleKind.BACKUP_VERIFY,
+                    status=schedule_mod.InstallStatus.REMOVED,
+                )
+            ],
+        ),
+    )
+
+
+def _stub_alert_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_suite import alerting as alerting_mod
+
+    monkeypatch.setattr(
+        alerting_mod,
+        "run_alert_check",
+        lambda **kw: AlertResult(
+            suite_ok=True, alert_kind=None, emission=EmissionStatus.SKIPPED_NO_STATE_CHANGE,
+        ),
+    )
+
+
 def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_aggregate(monkeypatch, suite_ok=False)
     _stub_lock(monkeypatch)
     _stub_bootstrap(monkeypatch)
     _stub_verify_restore(monkeypatch)
+    _stub_upgrade(monkeypatch)
+    _stub_schedule(monkeypatch)
+    _stub_alert_check(monkeypatch)
     for command in Command:
-        assert main([command.value]) == 0
+        if command is Command.SCHEDULE:
+            assert main([command.value, "list"]) == 0
+        else:
+            assert main([command.value]) == 0
 
 
 def test_lock_check_exits_nonzero_when_no_lock(monkeypatch: pytest.MonkeyPatch) -> None:

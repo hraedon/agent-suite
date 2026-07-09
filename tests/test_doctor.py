@@ -36,6 +36,7 @@ def _aggregate_safe(
         components=components,
         lock_path=lock_path,
         version_installed=lambda _: False,
+        key_watch_checks=False,
     )
 
 

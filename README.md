@@ -11,7 +11,7 @@ attestation), [agent-capability-broker](https://github.com/hraedon/agent-capabil
 (`acb`, capability parity), and [agent-wake](https://github.com/hraedon/agent-wake)
 (signaling) — into a suite that deploys, checks out, and versions as a unit.
 
-It owns four things and no more:
+It owns five things and no more:
 
 1. **A bootstrap** (`agent-suite bootstrap`) that runs the documented install
    order idempotently: secret backend → Postgres → `regista provision` (schemas +
@@ -25,6 +25,10 @@ It owns four things and no more:
 4. **The operator docs** — per-backend secret runbooks (Vault / Azure Key Vault /
    Windows-native), install guides for Linux / Docker / Windows, and the multi-user
    onboarding flow.
+5. **Operations** (`agent-suite upgrade`, `agent-suite schedule`, `agent-suite
+   alert-check`) — advance the lock as an evidence-based transition, roll back to a
+   prior lock, schedule backups with verify-restore and health checks on a cadence,
+   and route red-doctor alerts to a human via agent-wake.
 
 ## Why this exists
 
@@ -70,7 +74,8 @@ acb 005, agent-wake 004). This repo's Plan 001 implements the suite-level layer:
 
 **Implemented:**
 - `agent-suite doctor` — health umbrella aggregating each component's
-  `doctor --json` into one report (WI-1.1)
+  `doctor --json` into one report, with key-rotation and store-growth
+  checks (WI-1.1, WI-2.2)
 - `agent-suite lock` — `SUITE.lock` compatibility manifest with drift detection
   (WI-2.1)
 - Suite-interop CI — drives one work-item across both faces to `done` and verifies
@@ -81,8 +86,18 @@ acb 005, agent-wake 004). This repo's Plan 001 implements the suite-level layer:
   `--tier`, and `--user` (WI-3.1)
 - `agent-suite verify-restore` — proves a restored store is cryptographically
   intact (WI-4.2); wired into `doctor --verify-restore` as a post-restore check
+- `agent-suite upgrade` — advance `SUITE.lock` as an evidence-based transition
+  with `--check`, `--component`, `--dry-run`, and `--to` rollback (Plan 005 WI-1.1,
+  WI-1.2)
+- `agent-suite schedule` — install/remove OS-scheduled backups with
+  verify-restore and doctor+alerting via systemd timers / Windows Scheduled Tasks
+  (Plan 005 WI-2.1, WI-3.1)
+- `agent-suite alert-check` — run doctor, emit state-change alerts to agent-wake
+  with debounce (Plan 005 WI-3.1)
+- Key-rotation age + store-growth watch in doctor (Plan 005 WI-2.2)
 - Operator docs — secret-backend runbooks, install guides, multi-user onboarding,
-  key-operations policy, DR runbook (WI-4.1, WI-5.1, WI-5.2)
+  key-operations policy, DR runbook, operating-the-suite runbook (WI-4.1, WI-5.1,
+  WI-5.2, Plan 005)
 
 **Contract-gated (scaffolded, awaiting component CLIs):** the bootstrap composes
 the components via their documented CLIs; it can only be fully completed as the
