@@ -24,6 +24,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol, assert_never
 
+from agent_suite import key_watch
 from agent_suite import lock
 from agent_suite import verify_restore
 from agent_suite.components import COMPONENTS, Component, Tier
@@ -127,6 +128,8 @@ class SuiteReport:
         default_factory=lambda: lock.LockDriftResult(matches=None, note="")
     )
     post_restore: verify_restore.VerifyRestoreResult | None = None
+    key_rotation: key_watch.KeyRotationResult | None = None
+    store_growth: key_watch.StoreGrowthResult | None = None
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -136,6 +139,10 @@ class SuiteReport:
         }
         if self.post_restore is not None:
             d["post_restore"] = self.post_restore.to_dict()
+        if self.key_rotation is not None:
+            d["key_rotation"] = self.key_rotation.to_dict()
+        if self.store_growth is not None:
+            d["store_growth"] = self.store_growth.to_dict()
         return d
 
 
@@ -269,6 +276,7 @@ def aggregate(
     version_runner: lock.VersionRunner | None = None,
     version_installed: lock.Installed | None = None,
     verify_restore_dsn: str | None = None,
+    key_watch_checks: bool = True,
 ) -> SuiteReport:
     """Run each component's doctor and fold into one umbrella report.
 
@@ -282,6 +290,12 @@ def aggregate(
     the report as ``post_restore``. This is the WI-4.2 wiring: a post-restore
     ``doctor --verify-restore`` proves the restored store is cryptographically
     intact, not just reachable. Read-only — ``regista replay`` never mutates.
+
+    When ``key_watch_checks`` is True (default), the key-rotation-age and
+    store-growth checks (Plan 005 WI-2.2) run and attach to the report. A key
+    past its rotation cadence makes ``suite_ok`` False; store growth is
+    informational. These checks are read-only and use the same ``runner`` /
+    ``installed`` as the component checks.
     """
     reports = [_check_one(c, installed=installed, runner=runner) for c in components]
     lock_result = _check_lock_drift(
@@ -298,14 +312,24 @@ def aggregate(
             dsn=verify_restore_dsn,
             installed=installed,
         )
+    key_rotation: key_watch.KeyRotationResult | None = None
+    store_growth: key_watch.StoreGrowthResult | None = None
+    if key_watch_checks:
+        key_rotation = key_watch.check_key_rotation(runner=runner, installed=installed)
+        store_growth = key_watch.check_store_growth(runner=runner, installed=installed)
+
     suite_ok = _compute_suite_ok(reports)
     if post_restore is not None and not post_restore.ok:
+        suite_ok = False
+    if key_rotation is not None and not key_rotation.ok:
         suite_ok = False
     return SuiteReport(
         suite_ok=suite_ok,
         components=reports,
         lock=lock_result,
         post_restore=post_restore,
+        key_rotation=key_rotation,
+        store_growth=store_growth,
     )
 
 
@@ -323,5 +347,11 @@ def format_text(report: SuiteReport) -> str:
         lines.append("")
         lines.append("post-restore verification:")
         lines.append(verify_restore.format_text(report.post_restore))
+    if report.key_rotation is not None:
+        lines.append("")
+        lines.append(key_watch.format_key_rotation_text(report.key_rotation))
+    if report.store_growth is not None:
+        lines.append("")
+        lines.append(key_watch.format_store_growth_text(report.store_growth))
     lines.append(f"suite: {'OK' if report.suite_ok else 'NOT OK'}")
     return "\n".join(lines)

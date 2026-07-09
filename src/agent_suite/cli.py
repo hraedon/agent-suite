@@ -18,6 +18,9 @@ class Command(Enum):
     LOCK = "lock"
     BOOTSTRAP = "bootstrap"
     VERIFY_RESTORE = "verify-restore"
+    UPGRADE = "upgrade"
+    SCHEDULE = "schedule"
+    ALERT_CHECK = "alert-check"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -68,6 +71,50 @@ def _build_parser() -> argparse.ArgumentParser:
         "--projects", nargs="*", help="project slugs to verify (default: discover from regista)"
     )
     verify_restore.add_argument("--json", action="store_true", help="emit the result as JSON")
+
+    upgrade = sub.add_parser(
+        Command.UPGRADE.value,
+        help="advance SUITE.lock: upgrade components, gate on interop, rewrite lock",
+    )
+    upgrade.add_argument(
+        "--component", help="advance only this component (by ident, e.g. 'regista')"
+    )
+    upgrade.add_argument(
+        "--check",
+        action="store_true",
+        help="report available advancements without acting (read-only)",
+    )
+    upgrade.add_argument(
+        "--to",
+        dest="to_ref",
+        help="roll back to a prior committed lock at this git ref (e.g. HEAD~1, a tag)",
+    )
+    upgrade.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
+    upgrade.add_argument("--json", action="store_true", help="emit the result as JSON")
+
+    schedule = sub.add_parser(
+        Command.SCHEDULE.value,
+        help="install/remove OS-scheduled operations (systemd timers / Windows tasks)",
+    )
+    schedule.add_argument(
+        "action", choices=["install", "remove", "list"], help="install, remove, or list schedules"
+    )
+    schedule.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
+    schedule.add_argument("--json", action="store_true", help="emit the result as JSON")
+
+    alert_check = sub.add_parser(
+        Command.ALERT_CHECK.value,
+        help="run doctor + emit alert on state change (for scheduled execution)",
+    )
+    alert_check.add_argument(
+        "--wake-url", help="agent-wake ingress URL (or AGENT_WAKE_INGRESS_URL env)"
+    )
+    alert_check.add_argument(
+        "--state-file",
+        default="/var/lib/agent-suite/last-doctor-state.json",
+        help="path to the state file for debouncing",
+    )
+    alert_check.add_argument("--json", action="store_true", help="emit the result as JSON")
     return parser
 
 
@@ -180,6 +227,103 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(_fmt_vr(vr_result))
             return 0 if vr_result.ok else 1
+        case Command.UPGRADE:
+            from agent_suite.upgrade import (
+                format_advancement_text,
+                format_rollback_text,
+                format_upgrade_text,
+                run_rollback,
+                run_upgrade,
+            )
+
+            if args.to_ref:
+                rb_result = run_rollback(to_ref=args.to_ref)
+                if getattr(args, "json", False):
+                    import json as _json
+
+                    print(_json.dumps(rb_result.to_dict(), indent=2, default=str))
+                else:
+                    print(format_rollback_text(rb_result))
+                return 0 if rb_result.ok else 1
+
+            up_result = run_upgrade(
+                component=args.component,
+                check_only=args.check,
+                dry_run=args.dry_run,
+            )
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(up_result.to_dict(), indent=2, default=str))
+            elif args.check:
+                from agent_suite.upgrade import check_advancements
+
+                adv_report = check_advancements(component=args.component)
+                print(format_advancement_text(adv_report))
+            else:
+                print(format_upgrade_text(up_result))
+            return 0 if up_result.ok else 1
+        case Command.SCHEDULE:
+            from agent_suite.schedule import (
+                SCHEDULES,
+                format_schedule_report,
+                install_schedules,
+                remove_schedules,
+            )
+
+            if args.action == "list":
+                if getattr(args, "json", False):
+                    import json as _json
+
+                    schedules_data = [
+                        {
+                            "kind": s.kind.value,
+                            "name": s.name,
+                            "description": s.description,
+                            "on_calendar": s.on_calendar,
+                            "command": s.command,
+                        }
+                        for s in SCHEDULES
+                    ]
+                    print(_json.dumps(schedules_data, indent=2, default=str))
+                else:
+                    print("Scheduled operations:")
+                    for s in SCHEDULES:
+                        print(f"  {s.name:<28} {s.kind.value:<16} {s.on_calendar:<10} {s.command}")
+                return 0
+
+            if args.action == "install":
+                sched_report = install_schedules(dry_run=args.dry_run)
+            else:
+                sched_report = remove_schedules(dry_run=args.dry_run)
+
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(sched_report.to_dict(), indent=2, default=str))
+            else:
+                print(format_schedule_report(sched_report, args.action))
+            all_ok = all(
+                r.status.value in ("installed", "already_installed", "removed", "not_installed")
+                for r in sched_report.results
+            )
+            return 0 if all_ok else 1
+        case Command.ALERT_CHECK:
+            from pathlib import Path
+
+            from agent_suite.alerting import format_alert_text, run_alert_check
+
+            alert_result = run_alert_check(
+                wake_url=args.wake_url,
+                state_path=Path(args.state_file),
+            )
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(alert_result.to_dict(), indent=2, default=str))
+            else:
+                print(format_alert_text(alert_result))
+            return 0 if alert_result.suite_ok else 1
     assert_never(command)
 
 
