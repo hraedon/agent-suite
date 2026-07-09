@@ -17,6 +17,7 @@ class Command(Enum):
     DOCTOR = "doctor"
     LOCK = "lock"
     BOOTSTRAP = "bootstrap"
+    ONBOARD = "onboard"
     VERIFY_RESTORE = "verify-restore"
     UPGRADE = "upgrade"
     SCHEDULE = "schedule"
@@ -62,6 +63,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     bootstrap.add_argument("--user", help="onboard a per-user overlay for this principal ID")
     bootstrap.add_argument("--json", action="store_true", help="emit the result as JSON")
+    onboard = sub.add_parser(
+        Command.ONBOARD.value,
+        help="onboard a project: spec -> provision -> sign event-zero -> wire harness",
+    )
+    onboard.add_argument("slug", help="project slug to onboard")
+    onboard.add_argument(
+        "--spec", help="path to spec.yaml (founding spec to sign as event-zero)"
+    )
+    onboard.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
+    onboard.add_argument(
+        "--harness",
+        choices=["claude", "opencode", "all"],
+        default="all",
+        help="which harness to wire (default: all — dual-target)",
+    )
+    onboard.add_argument(
+        "--principal", help="principal ID for provisioning (default: suite-service)"
+    )
+    onboard.add_argument("--json", action="store_true", help="emit the result as JSON")
     verify_restore = sub.add_parser(
         Command.VERIFY_RESTORE.value,
         help="verify a restored store is cryptographically intact (post-restore check)",
@@ -213,6 +233,26 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(_fmt_bs(bs_result))
             return 0 if bs_result.ok else 1
+        case Command.ONBOARD:
+            from pathlib import Path
+
+            from agent_suite.onboard import format_text as _fmt_ob, run_onboard
+
+            spec_path = Path(args.spec) if args.spec else None
+            ob_result = run_onboard(
+                project=args.slug,
+                spec_path=spec_path,
+                dry_run=args.dry_run,
+                harness=args.harness,
+                principal=args.principal,
+            )
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(ob_result.to_dict(), indent=2, default=str))
+            else:
+                print(_fmt_ob(ob_result))
+            return 0 if ob_result.ok else 1
         case Command.VERIFY_RESTORE:
             from agent_suite.verify_restore import format_text as _fmt_vr, verify_restore
 
