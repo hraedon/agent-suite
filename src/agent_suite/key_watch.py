@@ -233,7 +233,7 @@ def check_key_rotation(
 
     if result.returncode != 0:
         stderr = result.stderr.strip().lower()
-        if "unknown" in stderr or "not found" in stderr or "no such" in stderr:
+        if "unknown" in stderr or "not found" in stderr or "no such" in stderr or "invalid choice" in stderr or "unrecognized" in stderr:
             return KeyRotationResult(
                 ok=True,
                 status=KeyAgeStatus.UNSUPPORTED,
@@ -405,7 +405,7 @@ def check_store_growth(
 
     if result.returncode != 0:
         stderr = result.stderr.strip().lower()
-        if "unknown" in stderr or "not found" in stderr or "no such" in stderr:
+        if "unknown" in stderr or "not found" in stderr or "no such" in stderr or "invalid choice" in stderr or "unrecognized" in stderr:
             return StoreGrowthResult(
                 ok=True,
                 status=StoreGrowthStatus.UNSUPPORTED,

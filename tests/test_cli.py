@@ -243,6 +243,7 @@ def test_doctor_verify_restore_exit_code_nonzero_when_post_restore_fails(
 def test_doctor_verify_restore_errors_without_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_aggregate(monkeypatch, suite_ok=True)
     monkeypatch.delenv("REGISTA_DSN", raising=False)
+    monkeypatch.setenv("AGENT_SUITE_CONFIG", "/nonexistent/suite.env")
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         rc = main(["doctor", "--verify-restore"])

@@ -191,18 +191,21 @@ def _check_one(
             detail=f"{cli_name} doctor could not run: {exc}",
         )
 
-    if result.returncode != 0:
-        return ComponentReport(
-            component=comp.ident,
-            tier=comp.tier,
-            status=ComponentStatus.FAILED,
-            ok=False,
-            detail=f"{cli_name} doctor exit {result.returncode}: {result.stderr.strip() or 'no stderr'}",
-        )
-
+    # Try to parse JSON regardless of exit code — a component may exit 1
+    # (because ok:false) while still emitting valid JSON with check details.
+    # Plan 004 WI-1.4: capture the component's own detail, never "no stderr".
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
+        if result.returncode != 0:
+            return ComponentReport(
+                component=comp.ident,
+                tier=comp.tier,
+                status=ComponentStatus.FAILED,
+                ok=False,
+                detail=f"{cli_name} doctor exit {result.returncode}: "
+                f"{result.stderr.strip() or 'no stderr'}",
+            )
         return ComponentReport(
             component=comp.ident,
             tier=comp.tier,
@@ -222,6 +225,17 @@ def _check_one(
 
     ok = bool(data.get("ok", False))
     degraded = bool(data.get("degraded", False))
+
+    # If ok is absent, infer from checks: no fails means ok (Plan 004 WI-1.4).
+    # Some components (e.g. regista) don't emit a top-level ok yet.
+    if "ok" not in data:
+        checks_list = data.get("checks", [])
+        if isinstance(checks_list, list):
+            has_fail = any(
+                isinstance(c, dict) and c.get("status") == "fail"
+                for c in checks_list
+            )
+            ok = not has_fail
     if not ok:
         status = ComponentStatus.FAILED
     elif degraded:

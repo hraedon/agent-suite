@@ -170,10 +170,10 @@ def _step_probe_secrets(
         return StepResult(
             StepKind.PROBE_SECRETS,
             StepStatus.PENDING,
-            "would probe secret backend via regista",
+            "would probe secret backend via regista secrets --list-providers",
         )
     try:
-        result = runner(("regista", "secrets", "probe"))
+        result = runner(("regista", "secrets", "--list-providers"))
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         return StepResult(
             StepKind.PROBE_SECRETS,
@@ -396,7 +396,7 @@ def _step_install_harness(
             case other:
                 assert_never(other)
 
-    install_cmd: tuple[str, ...] = (cli_name, "install-harness", "--harness", harness)
+    install_cmd: tuple[str, ...] = (cli_name, "install-harness", harness)
     if dry_run:
         return StepResult(
             step,

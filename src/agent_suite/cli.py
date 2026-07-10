@@ -139,6 +139,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from agent_suite.config import load_suite_env_into_environ
+
+    load_suite_env_into_environ()
     args = _build_parser().parse_args(argv)
     command = Command(args.command)
     match command:
