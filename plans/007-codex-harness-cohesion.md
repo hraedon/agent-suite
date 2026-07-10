@@ -1,4 +1,4 @@
-# Plan 006 — Codex harness cohesion
+# Plan 007 — Codex harness cohesion
 
 **Status:** Proposed 2026-07-10.
 **Author:** GPT-5.6 Sol, from a cross-suite Codex integration audit.
@@ -10,9 +10,10 @@ the suite's install, health, identity, provenance, or capability contracts.
 - The suite contract currently defines `claude | opencode | all`; the CLI
   enforces only those values.
 - The documented component interface is positional (`install-harness <target>`)
-  and the real component CLIs implement that form, but suite bootstrap/onboard
-  currently emit `install-harness --harness <target>`. This is a pre-existing
-  orchestration defect and must be corrected before adding another target.
+  and the real component CLIs implement that form. The deployment-simplification
+  work corrected bootstrap to use it, but onboard still emits
+  `install-harness --harness <target>`. That remaining orchestration defect
+  must be corrected before adding another target.
 - `run_bootstrap(harness=...)` exists, but the public bootstrap parser does not
   expose `--harness`; operators therefore cannot select a target there today.
 - Codex now has documented user/project lifecycle hooks, `AGENTS.md`, shared
