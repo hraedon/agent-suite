@@ -36,8 +36,8 @@ can see at a glance what is proven vs. provisional.
 
 | Finding | Severity | Claim | Status |
 |---------|----------|-------|--------|
-| F-1 | Critical | CL-012 | Experimental — anchor commits to content; bundle export + offline verification implemented |
-| F-2 | Critical | CL-013 | Experimental — live proof session binding + SQL fidelity tests implemented |
+| F-1 | Critical | CL-012 | Experimental — anchor commits to content; bundle v2 export + offline verification incl. event signatures |
+| F-2 | Critical | CL-013 | Experimental — live proof PASSED against a real Claude Code session 2026-07-11 |
 | F-3 | High | CL-012 | Experimental — receipt concurrency safe; cross-segment chain verification implemented |
 | F-4 | High | CL-008 | Experimental — deployment evidence contains identifiers |
 | F-5 | High | — (agent-notes) | Not a suite-level claim; tracked in agent-notes |
