@@ -782,16 +782,19 @@ def test_secret_exposure(
 def test_corrupted_backup(regista_project: RegistaProject) -> None:
     """A corrupted backup is detected by verify_restore.
 
-    Drives a work-item to ``done``, dumps the project schema with pg_dump
-    (using ``--inserts`` for text-level corruption), modifies a payload
-    value in the SQL, restores to a fresh database, and asserts
-    ``verify_restore`` reports failure — proving the restored backup is
-    not silently accepted as intact.
+    Drives a work-item to ``done``, dumps the project schema with pg_dump,
+    restores the clean dump to a fresh database, then corrupts a payload
+    value via SQL UPDATE (simulating backup tampering).  Asserts
+    ``verify_restore`` reports ``DRIFT_DETECTED`` — proving the restored
+    backup is not silently accepted as intact.
     """
     import os
     import shutil
     import subprocess
     import tempfile
+
+    import psycopg
+    from psycopg.sql import SQL, Identifier
 
     from tests.conftest import _InteropDsn
 
@@ -819,20 +822,10 @@ def test_corrupted_backup(regista_project: RegistaProject) -> None:
             "--schema", proj.project,
             "--no-owner",
             "--no-privileges",
-            "--inserts",
             "-f", str(dump_path),
         ]
         r = subprocess.run(dump_cmd, capture_output=True, text=True, env=pg_env)
         assert r.returncode == 0, f"pg_dump failed: {r.stderr}"
-
-        dump_text = dump_path.read_text()
-        corrupted_text = dump_text.replace(
-            "Adversarial corpus work-item",
-            "CORRUPTED-BACKUP-TEST",
-        )
-        if corrupted_text == dump_text:
-            pytest.skip("Could not find expected payload text in dump to corrupt")
-        dump_path.write_text(corrupted_text)
 
         create_cmd = [
             "psql",
@@ -852,6 +845,7 @@ def test_corrupted_backup(regista_project: RegistaProject) -> None:
                 "--port", dsn_info.port,
                 "--username", dsn_info.user,
                 "--dbname", restored_db,
+                "--set", "ON_ERROR_STOP=1",
                 "-f", str(dump_path),
             ]
             r = subprocess.run(restore_cmd, capture_output=True, text=True, env=pg_env)
@@ -861,6 +855,22 @@ def test_corrupted_backup(regista_project: RegistaProject) -> None:
                 f"postgresql://{dsn_info.user}:{dsn_info.password}"
                 f"@{dsn_info.host}:{dsn_info.port}/{restored_db}"
             )
+
+            set_schema = SQL("SET search_path TO {}, public").format(
+                Identifier(proj.project)
+            )
+            conn = psycopg.connect(restored_dsn)
+            try:
+                conn.execute(set_schema)
+                conn.execute(
+                    "UPDATE events SET payload = jsonb_set("
+                    "payload, '{custom_fields,title}', "
+                    "'\"CORRUPTED-BACKUP-TEST\"'::jsonb) "
+                    "WHERE event_seq = 1"
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
             from agent_suite.verify_restore import ProjectVerifyStatus, verify_restore
 
