@@ -179,6 +179,13 @@ two faces; embeddings/search indexes remain projections.
 **Feature-complete result:** same-principal or policy-prohibited self-review is
 blocked; a degraded/offline path cannot silently manufacture acceptance.
 
+**Single-operator posture:** in a solo deployment the operator, human
+collaborator, and reviewer are one person. A relaxed review gate is a
+legitimate configured policy, not a failure: qualification proves the
+enforcement path with two synthetic principals, and a deployment running the
+relaxed policy reports that posture honestly rather than simulating a
+separation of duties it does not have.
+
 ### GJ-5 — Understand agent activity
 
 1. A human opens a work item, agent, or session view.
@@ -303,8 +310,10 @@ Required:
 - verified event history and integrity/assurance indicators;
 - agent activity/session/tool/file views;
 - read/browse/search for canonical knowledge notes;
-- principal/key enrollment, rotation, revocation, and status UX;
-- notification preferences/deep links for warranted event classes;
+- principal/key enrollment and status UX; rotation and revocation may be
+  CLI-backed for v1 with a UI readout of current state;
+- notification deep links for warranted event classes; preference management
+  may be config/CLI-backed for v1;
 - accessible server-rendered security-sensitive actions.
 
 Not required:
@@ -410,8 +419,11 @@ definition and serialization.
 ### 7.3 Canonical knowledge split
 
 Breadcrumbs with lifecycle remain work items if their state is meaningful;
-memories/reflections are signed note entities. The exact split is documented
-once and rendered consistently.
+memories/reflections are signed note entities. This split is an unresolved
+design decision, not settled documentation: it is frozen in Phase 0 (WI-0.2
+contract fixtures) with a named owner before WI-1.2 begins, and known
+divergent stores (e.g., legacy file-based breadcrumbs invisible to the CLI/DB
+path) are explicitly migrated or declared out of scope at the same time.
 
 ### 7.4 Privacy modes
 
@@ -425,7 +437,12 @@ At minimum:
 ### 7.5 Harness support levels
 
 - **Supported:** install, live positive/negative proof, coverage matrix, doctor,
-  coexistence, and uninstall pass for a named version range.
+  coexistence, and uninstall pass at qualification time against a recorded
+  harness version, plus a drift signal: a doctor-level coverage probe verifies
+  the claimed hook surfaces still fire and ages out stale coverage evidence.
+  Self-updating harnesses make a standing version-range warranty
+  unmaintainable; support means "proven at qualification and monitored for
+  drift," never a promise about unreleased harness versions.
 - **Experimental:** adapter exists; gaps are expected and clearly surfaced.
 - **Unsupported:** no success/no-op simulation.
 
@@ -434,15 +451,29 @@ targets remain explicit.
 
 ## 8. Implementation phases
 
+**Known concrete blockers.** The 2026-07-10 holistic review findings F-1–F-6
+(`docs/2026-07-10-holistic-suite-review.md`) gate specific work below and are
+cited where they bite. Two deserve emphasis because they are foundations, not
+polish: harness capture is currently non-functional (hooks unwired, and the
+hook reads `tool_output` where the harness sends `tool_response` —
+agent-provenance Plan 009 is the fix), and the provenance live proof can pass
+against decoy events (F-2). Phase 2 work must not be started as if capture
+were merely incomplete.
+
 ### Phase 0 — Freeze v1 scope and golden-journey contracts
 
-#### WI-0.1 — Feature matrix
+#### WI-0.1 — Feature matrix, generated from the baseline
 
 Turn §§5–7 into a cross-repository matrix: journey, owning component, public
-surface, status, dependency, proof, and excluded adjacent features.
+surface, status, dependency, proof, and excluded adjacent features. The status
+column is **emitted by the WI-0.3 baseline run**, not hand-maintained: one
+artifact, machine-written, registered with the plan index (Plan 008 WI-0.3
+tooling). Two parallel matrices — one aspirational, one observed — would drift
+immediately.
 
 **AC:** every open v1 work item maps to a golden journey; anything that does not
-map is deferred or justified as required operational/security support.
+map is deferred or justified as required operational/security support; the
+matrix's status column is reproducible by re-running the baseline.
 
 #### WI-0.2 — Shared contract artifacts
 
@@ -454,8 +485,9 @@ semantically divergent copy.
 
 #### WI-0.3 — Baseline and gap burn-down
 
-Run every golden journey against current `main` and publish a sanitized matrix
-of pass, partial, blocked, and absent.
+Run every golden journey against current `main` and write the sanitized status
+(pass, partial, blocked, absent) into the WI-0.1 matrix — the baseline
+produces the matrix's observed state rather than a second document.
 
 **AC:** the remaining plan contains only observed gaps; stale proposed work that
 already landed is marked complete rather than reimplemented.
@@ -491,6 +523,10 @@ manual component config edit.
 
 #### WI-2.1 — Session/tool/delegation record
 
+**Depends on:** agent-provenance Plan 009 (capture repair) and holistic-review
+F-2 (session-correlated proof). Until both land, this WI is blocked, not
+partially done.
+
 Finish supported lifecycle capture, correlation, degradation, and work binding
 for the supported harness matrix.
 
@@ -499,12 +535,20 @@ outage sessions; unsupported actions remain visible gaps.
 
 #### WI-2.2 — Human activity and assurance views
 
+This is the largest single build in the plan — most of a new product surface
+over a dossier that today has none of these views. It requires its own
+decomposition plan in the dossier repository before implementation begins; it
+must not be picked up as one work item.
+
 Finish dossier session/activity/tool/file/integrity views and link navigation.
 
 **AC:** a human completes GJ-5 without invoking the verifier CLI, while the UI
 never upgrades unknown/degraded evidence to verified.
 
 #### WI-2.3 — Evidence export and report
+
+**Depends on:** holistic-review F-1 (content-committing anchoring) and F-3
+(receipt state machine and concurrency).
 
 Finish scoped export, offline verification, bundle linkage, and self-contained
 human report.
@@ -629,8 +673,31 @@ The suite may call a profile feature-complete only when:
     operator knowledge.
 11. The feature matrix and documentation mark adjacent ambitions as deferred,
     preventing v1 scope from reopening by implication.
-12. Plan 008 qualification determines whether the feature-complete profile is
+12. The pre-existing dogfood deployment upgrades in place into the
+    feature-complete release without data loss; historical records on prior
+    workflow/envelope versions remain readable and verifiable. The live estate
+    is a qualification target, not only fresh hermetic profiles.
+13. Plan 008 qualification determines whether the feature-complete profile is
     also robust and supported for release.
+
+### 10.1 Intermediate milestone — v1-dogfood
+
+The full definition of done above, combined with Plan 008's qualification bar,
+is an audit-grade target that is months away for a solo-operated estate. Until
+it is met, everything would truthfully be "not ready," which both mislabels
+real progress and starves the plan index of a nameable state. Therefore one
+intermediate milestone is defined:
+
+**v1-dogfood** is declared when:
+
+1. Profile A and B golden journeys pass on the live dogfood deployment — the
+   real estate, not only hermetic fixtures;
+2. Plan 008 Phases 0–2 are complete;
+3. every capability beyond that evidence is phrased as provisional.
+
+v1-dogfood is an honest intermediate label between "promising mechanisms" and
+the release-grade bar. It carries no support statement and no external
+assurance claim.
 
 ## 11. The warranted v1
 

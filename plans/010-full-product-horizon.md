@@ -22,6 +22,14 @@ item. A feature graduates into an implementation plan only when it:
    adapter;
 7. earns its operational and maintenance cost.
 
+Promotion is enforced mechanically, not by convention: an implementation plan
+that draws scope from this document must carry a completed §18 scorecard,
+recorded in the cross-repository plan index (Plan 008 WI-0.3), and the
+plan-index check fails any plan that references Plan 010 without one. Agents
+in this portfolio demonstrably pick up proposed plans and implement them; a
+menu this size will be treated as a backlog unless tooling refuses that
+reading.
+
 Plan 009 remains the feature-complete v1 boundary. Plan 008 remains the robust
 qualification boundary. Plan 010 begins after those scopes are protected.
 
@@ -48,6 +56,12 @@ It should make these questions easy to answer:
 The mature product should answer them through one signed graph of work,
 knowledge, identity, sessions, capabilities, signals, controls, and evidence—
 with purpose-built human, agent, operator, and auditor views.
+
+The deployment unit is one organization. One deployment serves one
+organization; projects are the isolation boundary within it; there is no
+cross-organization tenancy. Multi-organization needs are met by separate
+deployments (optionally sharing witnesses, §8.7), and every Horizon 2 feature
+assumes this shape.
 
 ## 3. Permanent exclusions
 
@@ -621,19 +635,15 @@ Replies are authenticated and correlated. A chat/email reply never becomes an
 approval merely because its text says “yes”; the adapter must bind structured
 identity and decision semantics.
 
-### 11.3 Approval relay
+### 11.3 Approval relay — moved to research-gated (§17.8)
 
-Relay harness permission requests to authorized humans:
-
-- request details minimized by policy;
-- expiring request ID;
-- allow/deny with authenticated principal;
-- optional command/input digest binding;
-- no approval reuse after input change;
-- signed decision and provenance.
-
-This is a high-risk feature and requires step-up authentication plus strong
-negative tests.
+Relaying harness permission requests to remote humans is not merely
+high-risk-but-plannable: it is a phishing and spoofing magnet, and it
+reimplements a trust surface the harness vendors are actively building
+natively. Rule 6 in §1 — do not duplicate a mature external system — applies
+to the harnesses themselves. The capability description and its preconditions
+now live in §17.8 and must not enter the supported roadmap without the spike
+and threat review that gate the rest of §17.
 
 ### 11.4 Escalation policies
 
@@ -928,6 +938,22 @@ Report non-sensitive operational facts:
 
 No employee productivity ranking or covert per-person cost scoring.
 
+### 14.9 Write quotas and backpressure
+
+Agents write at machine speed; a runaway session flooding the store is the
+most likely real operational incident in this suite's life. Growth visibility
+(§14.8) without controls is insufficient at the horizon:
+
+- per-principal and per-session write rate and volume policy;
+- deterministic enforcement at the store boundary with an explicit,
+  well-named rejection (never a silent drop);
+- burst allowances and policy-defined exemptions for recovery operations;
+- alerting when a session approaches or hits its limit;
+- quota events recorded as ordinary signed operational evidence.
+
+Quotas protect the store; they are not employee productivity measurement, and
+per-person consumption ranking remains excluded (§3, §14.8).
+
 ## 15. Ecosystem and interoperability horizon
 
 ### 15.1 Stable component SDKs and APIs
@@ -1119,6 +1145,20 @@ Safely replay historical metadata against a proposed workflow/policy pack to
 estimate blocked/changed outcomes. Never mutate the historical record or
 present simulation as a prediction of human behavior.
 
+### 17.8 Approval relay
+
+Relay harness permission requests to authorized humans: request details
+minimized by policy, expiring request ID, allow/deny with authenticated
+principal, optional command/input digest binding, no approval reuse after
+input change, and a signed decision with provenance.
+
+Research-gated because the failure modes are adversarial, not operational: a
+convincing forged approval request is a credential-phishing primitive, and
+harness vendors are building native remote-approval surfaces that this would
+duplicate one trust boundary removed. A spike must demonstrate step-up
+authentication, request-forgery resistance, and a clear advantage over the
+harness's own mechanism before any implementation plan is accepted.
+
 ## 18. Feature selection scorecard
 
 Before promoting a horizon feature, score it from 0–2 on:
@@ -1161,6 +1201,28 @@ Prioritize:
 
 These deepen the daily human–agent workflow without changing the product
 category.
+
+Two entries are pre-scored here (per §18) to seed the promotion mechanism and
+demonstrate that the scorecard discriminates:
+
+**Decision records (§6.1) — 16/18, strong candidate.** User pain 2 (the
+portfolio already produces decision records constantly, as prose in plans and
+memory files); charter fit 2; existing alternative 1 (markdown ADRs are mature
+but unsigned, unlinked, unqueryable); determinism 2; privacy/security 1;
+cross-component value 2 (regista entity, both faces); proofability 2;
+operating cost 2; reversibility 2 (a new entity type on the generic signed
+substrate). Recommended as the first Horizon 1 promotion — it also dogfoods on
+the suite's own construction from day one.
+
+**AI use-case registry (§16.1) — 14/18, spike/defer.** User pain 2 (the
+registry is the artifact a regulated-workplace compliance conversation starts
+from — arguably the reason the suite exists); charter fit 2; existing
+alternative 1 (GRC tools exist but are heavy for small teams); determinism 2;
+privacy/security 1; cross-component value 1; proofability 1 (presence is
+provable, accuracy is human); operating cost 2; reversibility 2. Honest
+verdict: the score lands in spike/defer, and that fits — its value
+materializes when a real workplace pilot conversation exists, not before.
+Revisit at that trigger.
 
 ### Horizon 2 — Regulated organization maturity
 
