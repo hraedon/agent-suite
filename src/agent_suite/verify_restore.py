@@ -195,19 +195,18 @@ def _verify_one(
             detail=f"regista replay could not run: {exc}",
         )
 
-    if result.returncode != 0:
-        return ProjectVerifyResult(
-            project=project,
-            status=ProjectVerifyStatus.UNREACHABLE,
-            detail=(
-                f"regista replay exit {result.returncode}: "
-                f"{result.stderr.strip() or 'no stderr'}"
-            ),
-        )
-
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
+        if result.returncode != 0:
+            return ProjectVerifyResult(
+                project=project,
+                status=ProjectVerifyStatus.UNREACHABLE,
+                detail=(
+                    f"regista replay exit {result.returncode}: "
+                    f"{result.stderr.strip() or 'no stderr'}"
+                ),
+            )
         return ProjectVerifyResult(
             project=project,
             status=ProjectVerifyStatus.ERROR,
