@@ -17,19 +17,24 @@ are unavailable, or if ``INTEROP_DSN`` is neither set nor satisfiable.
 
 from __future__ import annotations
 
-import base64
-import json
 import os
-import secrets
 import shutil
 import subprocess
 import tempfile
-import time
 import uuid
 from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+
+from tests.conftest import (
+    _EphemeralPostgres,
+    _InteropDsn,
+    _docker_available,
+    _dsn_available,
+    _generate_hmac_key,
+    _regista_available,
+)
 
 _SKIP_REASON = (
     "Restore-drill prerequisites not met — need regista + pg_dump + psql + "
@@ -38,29 +43,12 @@ _SKIP_REASON = (
 )
 
 
-def _regista_available() -> bool:
-    try:
-        import regista  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
 def _regista_cli_available() -> bool:
     return shutil.which("regista") is not None
 
 
 def _pg_tools_available() -> bool:
     return shutil.which("pg_dump") is not None and shutil.which("psql") is not None
-
-
-def _docker_available() -> bool:
-    return shutil.which("docker") is not None
-
-
-def _dsn_available() -> bool:
-    return bool(os.environ.get("INTEROP_DSN"))
 
 
 def _can_run() -> bool:
@@ -75,132 +63,28 @@ def _can_run() -> bool:
 pytestmark = pytest.mark.skipif(not _can_run(), reason=_SKIP_REASON)
 
 
-class _EphemeralPostgres:
-    """Start/stop an ephemeral Postgres container for the restore drill.
-
-    Uses port 5434 to avoid colliding with locally-installed Postgres (5432)
-    or the interop/tamper tests (5433).
-    """
-
-    def __init__(self) -> None:
-        self._container = f"agent-suite-restore-{uuid.uuid4().hex[:8]}"
-        self._port = "5434"
-        self._db = "interop"
-        self._user = "interop"
-        self._password = "interop_pw"
-
-    @property
-    def dsn(self) -> str:
-        return f"postgresql://{self._user}:{self._password}@localhost:{self._port}/{self._db}"
-
-    @property
-    def user(self) -> str:
-        return self._user
-
-    @property
-    def password(self) -> str:
-        return self._password
-
-    @property
-    def host(self) -> str:
-        return "localhost"
-
-    @property
-    def port(self) -> str:
-        return self._port
-
-    @property
-    def db(self) -> str:
-        return self._db
-
-    def start(self) -> None:
-        subprocess.run(
-            [
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                self._container,
-                "-e",
-                f"POSTGRES_DB={self._db}",
-                "-e",
-                f"POSTGRES_USER={self._user}",
-                "-e",
-                f"POSTGRES_PASSWORD={self._password}",
-                "-p",
-                f"{self._port}:5432",
-                "postgres:16-alpine",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        self._wait_ready(timeout=30)
-
-    def _wait_ready(self, *, timeout: int = 30) -> None:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            r = subprocess.run(
-                ["docker", "exec", self._container, "pg_isready", "-U", self._user],
-                capture_output=True,
-                text=True,
-            )
-            if r.returncode == 0:
-                return
-            time.sleep(0.5)
-        raise RuntimeError(
-            f"Postgres container {self._container} did not become ready within {timeout}s"
-        )
-
-    def stop(self) -> None:
-        subprocess.run(
-            ["docker", "rm", "-f", self._container],
-            capture_output=True,
-            text=True,
-        )
-
-
-def _generate_hmac_key(path: Path) -> None:
-    key_data = {
-        "keys": [
-            {
-                "key_id": "restore-hmac-key",
-                "secret": base64.b64encode(secrets.token_bytes(32)).decode(),
-                "status": "active",
-            }
-        ]
-    }
-    path.write_text(json.dumps(key_data))
-
-
-class _InteropDsn:
-    """Wraps the DSN source and exposes host/port/db/user/password for pg_dump."""
-
-    def __init__(self, dsn: str) -> None:
-        self.dsn = dsn
-        from urllib.parse import urlparse
-
-        parsed = urlparse(dsn)
-        self.host = parsed.hostname or "localhost"
-        self.port = str(parsed.port or 5432)
-        self.db = parsed.path.lstrip("/") or "interop"
-        self.user = parsed.username or "interop"
-        self.password = parsed.password or "interop_pw"
-
-
 @pytest.fixture(scope="module")
 def interop_dsn() -> Generator[_InteropDsn, None, None]:
     """Provide a DSN to a Postgres instance for the restore drill.
 
     If ``INTEROP_DSN`` is set (e.g. by a CI service container), use that.
-    Otherwise stand up an ephemeral Docker container and tear it down after.
+    Otherwise stand up an ephemeral Docker container on port 5434 and tear it
+    down after the module.
     """
     env_dsn = os.environ.get("INTEROP_DSN")
     if env_dsn:
         yield _InteropDsn(env_dsn)
         return
 
-    pg = _EphemeralPostgres()
+    if not _can_run():
+        pytest.skip(
+            "Restore-drill prerequisites not met — need regista + pg_dump + psql + "
+            "Docker or INTEROP_DSN"
+        )
+
+    pg = _EphemeralPostgres(
+        port="5434", container_name_prefix="agent-suite-restore"
+    )
     pg.start()
     try:
         yield _InteropDsn(pg.dsn)
