@@ -67,7 +67,7 @@ def _installed_all() -> Callable[[str], bool]:
     return lambda _name: True
 
 
-_DSN = "postgresql://regista_service@suite-db.example:5432/regista"
+_DSN = "postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista"
 
 
 # --- test 1: all projects verified --------------------------------------------

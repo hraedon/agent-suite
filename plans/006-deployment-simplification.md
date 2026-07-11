@@ -1,12 +1,12 @@
-# Plan 006 — Deployment simplification (from the mvmhermes01 dogfood)
+# Plan 006 — Deployment simplification (from the WORK-STATION-01 dogfood)
 
 **Status:** Proposed 2026-07-10.
-**Author:** Claude (GLM 5.2), from the Plan 004 dogfood deployment on mvmhermes01
+**Author:** Claude (GLM 5.2), from the Plan 004 dogfood deployment on WORK-STATION-01
 **Strategic role:** The first real deployment surfaced 7 bugs (all fixed) and 6
 remaining friction points that would trip a new collaborator. This plan closes
 them so deployment is a 5-command sequence, not a debugging session.
 
-## Ground truth (verified 2026-07-10 on mvmhermes01)
+## Ground truth (verified 2026-07-10 on WORK-STATION-01)
 
 After the 7 direct fixes (regista `ok` field, suite.env auto-loading, packaging
 for skills/integrations, PyNaCl as core dep, bootstrap CLI fixes, doctor JSON
@@ -56,7 +56,7 @@ reads DSNs and config from the suite.env file automatically.
 **Problem:** `agent-notes doctor` reports `links_audit: fail` when there are
 dangling links (memory-to links pointing at deleted entities). This is a
 pre-existing data issue in the shared store (11 dangling links on
-mvmhermes01). It blocks `suite_ok: true` and there's no command to fix it.
+WORK-STATION-01). It blocks `suite_ok: true` and there's no command to fix it.
 
 **Fix:** Add `agent-notes links cleanup --dry-run` that identifies and
 optionally removes dangling links. The doctor check should distinguish

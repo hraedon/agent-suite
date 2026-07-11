@@ -65,11 +65,11 @@ Rotate `secret_id` per your organizational policy — see
 
 ### DSN password
 
-The password for the `regista_service` Postgres role:
+The password for the `DB-SERVICE-ACCOUNT` Postgres role:
 
 ```bash
 vault kv put secret/agent-suite/regista \
-  dsn_password="<the regista_service role password>"
+  dsn_password="<the DB-SERVICE-ACCOUNT role password>"
 ```
 
 ### Regista system signing key
@@ -102,7 +102,7 @@ In the system `suite.env` (`/etc/agent-suite/suite.env` on Linux,
 `%ProgramData%\agent-suite\suite.env` on Windows):
 
 ```env
-REGISTA_DSN=postgresql://regista_service@suite-db.example:5432/regista
+REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista
 REGISTA_DSN_PASSWORD=vault:secret/agent-suite/regista#dsn_password
 REGISTA_KEY_PATH=vault:secret/agent-suite/regista#signing_key
 REGISTA_REQUIRE_SSL=true

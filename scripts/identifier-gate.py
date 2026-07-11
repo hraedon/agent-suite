@@ -22,9 +22,25 @@ IDENTIFIERS: list[tuple[str, str]] = [
     ("Paul Merritt", "real name"),
     ("mvmpostgres01", "internal hostname"),
     ("hraedon.com", "internal domain (non-GitHub)"),
+    ("hraedon/", "internal GitHub org prefix"),
+    ("hraedon", "internal GitHub org name"),
     ("regista_app", "internal DB service account"),
     ("agent_notes_app", "internal DB service account"),
     ("itadmin", "OS username as principal_id"),
+    # --- F-4: deployment evidence identifiers (2026-07-10) ---
+    ("mvmhermes01", "internal hostname"),
+    ("192.168.1.90", "internal IP address"),
+    ("192.168.1.22", "internal IP address"),
+    ("hermes-agent", "internal principal name"),
+    ("regista_service", "internal DB service account"),
+    ("notes_service", "internal DB service account"),
+    ("pk_be8ebbac", "key-ID prefix"),
+    ("pk_6c345369", "key-ID prefix"),
+    # "operator" is a common English word used throughout the docs (e.g.,
+    # "the operator should fix DNS"). It cannot be added as a bare
+    # identifier without false positives. Scoped to the path pattern where
+    # it appeared as a real OS username in the deployment evidence:
+    ("/home/operator", "OS username in home directory path"),
 ]
 
 EXCLUDE_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".mypy_cache", ".claude"}

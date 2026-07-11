@@ -49,9 +49,9 @@ deployment.
 The suite needs **two databases** on the Postgres instance:
 
 1. **`regista`** — the event store. Owned by a service role (e.g.
-   `regista_service`). Contains per-project schemas (one per project slug).
+   `DB-SERVICE-ACCOUNT`). Contains per-project schemas (one per project slug).
 2. **`agent_notes`** — agent-notes' projection database. Owned by a service
-   role (e.g. `notes_service`). Contains memories, links, op_log, etc.
+   role (e.g. `DB-SERVICE-ACCOUNT-2`). Contains memories, links, op_log, etc.
 
 If you're sharing an existing regista store (e.g. a team deployment), you
 only need to create the `agent_notes` database — the regista database is
@@ -61,13 +61,13 @@ To create both from scratch:
 
 ```sql
 -- On the Postgres host (as superuser)
-CREATE ROLE regista_service WITH LOGIN PASSWORD '<choose-a-password>';
-CREATE DATABASE regista OWNER regista_service;
-GRANT ALL PRIVILEGES ON DATABASE regista TO regista_service;
+CREATE ROLE "DB-SERVICE-ACCOUNT" WITH LOGIN PASSWORD '<choose-a-password>';
+CREATE DATABASE regista OWNER "DB-SERVICE-ACCOUNT";
+GRANT ALL PRIVILEGES ON DATABASE regista TO "DB-SERVICE-ACCOUNT";
 
-CREATE ROLE notes_service WITH LOGIN PASSWORD '<choose-a-password>';
-CREATE DATABASE agent_notes OWNER notes_service;
-GRANT ALL PRIVILEGES ON DATABASE agent_notes TO notes_service;
+CREATE ROLE "DB-SERVICE-ACCOUNT-2" WITH LOGIN PASSWORD '<choose-a-password>';
+CREATE DATABASE agent_notes OWNER "DB-SERVICE-ACCOUNT-2";
+GRANT ALL PRIVILEGES ON DATABASE agent_notes TO "DB-SERVICE-ACCOUNT-2";
 ```
 
 ### 2.3 Install uv
@@ -107,10 +107,10 @@ uv tool install --python python3 /path/to/agent-suite
 ### 3.2 From public git (once repos are public)
 
 ```bash
-uv tool install --python python3 "git+https://github.com/hraedon/regista.git@main"
-uv tool install --python python3 "git+https://github.com/hraedon/agent-notes.git@main"
-uv tool install --python python3 "git+https://github.com/hraedon/agent-provenance.git@main"
-uv tool install --python python3 "git+https://github.com/hraedon/agent-suite.git@main"
+uv tool install --python python3 "git+https://github.com/YOUR-ORG/regista.git@main"
+uv tool install --python python3 "git+https://github.com/YOUR-ORG/agent-notes.git@main"
+uv tool install --python python3 "git+https://github.com/YOUR-ORG/agent-provenance.git@main"
+uv tool install --python python3 "git+https://github.com/YOUR-ORG/agent-suite.git@main"
 ```
 
 ### 3.3 Verify the CLIs are on PATH
@@ -147,7 +147,7 @@ mkdir -p ~/.config/agent-suite
 cat > ~/.config/agent-suite/suite.env << 'EOF'
 # --- Spine (regista) ---
 # The DSN for the regista event store. Use the service role, not a superuser.
-REGISTA_DSN=postgresql://regista_service:PASSWORD@db-host:5432/regista
+REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT:PASSWORD@db-host:5432/regista
 
 # Path to the store-level signing key (HMAC + principal index).
 # Use a file: path for a single-operator box, or vault:/akv:/wincred: for team.
@@ -159,7 +159,7 @@ REGISTA_PROJECT=agent_notes
 # --- agent-notes native DB ---
 # agent-notes uses its own database for projections. If this is the same
 # Postgres host, point to the agent_notes database.
-AGENT_NOTES_DSN=postgresql://notes_service:PASSWORD@db-host:5432/agent_notes
+AGENT_NOTES_DSN=postgresql://DB-SERVICE-ACCOUNT-2:PASSWORD@db-host:5432/agent_notes
 AGENT_NOTES_REGISTA_WRITES=1
 AGENT_NOTES_PROJECT=agent_notes
 
@@ -194,7 +194,7 @@ that already has it:
 ```bash
 mkdir -p ~/.config/regista
 # From the existing machine:
-scp operator@existing-host:~/.config/regista/keys.json ~/.config/regista/
+scp OPERATOR-NAME@existing-host:~/.config/regista/keys.json ~/.config/regista/
 chmod 600 ~/.config/regista/keys.json
 ```
 
@@ -430,9 +430,9 @@ Each collaborator's `~/.config/agent-suite/suite.env` should have:
 
 ```bash
 # System-wide facts (shared, from /etc/agent-suite/suite.env):
-REGISTA_DSN=postgresql://regista_service:...@db-host:5432/regista
+REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT:...@db-host:5432/regista
 REGISTA_KEY_PATH=/home/USER/.config/regista/keys.json
-AGENT_NOTES_DSN=postgresql://notes_service:...@db-host:5432/agent_notes
+AGENT_NOTES_DSN=postgresql://DB-SERVICE-ACCOUNT-2:...@db-host:5432/agent_notes
 
 # Per-user (this file):
 PRINCIPAL_ID=their-name

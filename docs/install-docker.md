@@ -29,7 +29,7 @@ services:
   suite-db:
     image: postgres:16
     environment:
-      POSTGRES_USER: regista_service
+      POSTGRES_USER: DB-SERVICE-ACCOUNT
       POSTGRES_PASSWORD: ${REGISTA_DB_PASSWORD}
       POSTGRES_DB: regista
     volumes:
@@ -37,7 +37,7 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U regista_service"]
+      test: ["CMD-SHELL", "pg_isready -U DB-SERVICE-ACCOUNT"]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -68,7 +68,7 @@ the suite's secret backend; the suite's DSN password is resolved via
 Create `suite.env` alongside the Compose file:
 
 ```env
-REGISTA_DSN=postgresql://regista_service@suite-db:5432/regista
+REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT@suite-db:5432/regista
 REGISTA_DSN_PASSWORD=vault:secret/agent-suite/regista#dsn_password
 REGISTA_KEY_PATH=vault:secret/agent-suite/regista#signing_key
 REGISTA_REQUIRE_SSL=false

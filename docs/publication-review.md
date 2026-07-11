@@ -13,16 +13,17 @@ identifiers were scrubbed and the gate is now **blocking** in CI:
 
 | Identifier | Type | Action |
 |------------|------|--------|
-| `Paul Merritt` | real name | Replaced with `hraedon` (the public GitHub org) |
+| `Paul Merritt` | real name | Replaced with `YOUR-ORG` placeholder |
 | `plm@hraedon.com` | personal email | Removed from `pyproject.toml` |
 | `mvmpostgres01` | internal hostname | Replaced with `suite-db.example` |
 | `hraedon.com` | internal domain | Scrubbed from `pyproject.toml` (was in email) |
-| `regista_app` | internal DB service account | Replaced with `regista_service` everywhere |
+| `hraedon/` | internal GitHub org prefix | Scrubbed from all tracked files; replaced with `YOUR-ORG/` (2026-07-10) |
+| `regista_app` | internal DB service account | Replaced with `DB-SERVICE-ACCOUNT` placeholder (via F-4 scrub; was `regista_service`, itself a real identifier) |
 | `agent_notes_app` | internal DB service account | Added to gate (not present in tree) |
 | `itadmin` | OS username | Added to gate (not present in tree) |
 
-The `hraedon` GitHub org name is **not** in the gate — it is the public org
-under which the repos are published (`github.com/hraedon/agent-suite`).
+The `hraedon` GitHub org name is **now in the gate** (as `hraedon/`) — it is an
+internal org, not a public one. All tracked files use the `YOUR-ORG/` placeholder.
 
 ### Architecture boundary
 
@@ -42,7 +43,7 @@ rule. **Passes.**
 ### Secrets
 
 No secrets, keys, or passwords are committed. The `suite.env.example` file
-contains placeholders only (`suite-db.example`, `regista_service`). The
+contains placeholders only (`suite-db.example`, `DB-SERVICE-ACCOUNT`). The
 `.gitignore` excludes `suite.env`, `*.env`, `secrets/`, `*.db`, and
 `SUITE.local.lock`.
 
@@ -50,5 +51,5 @@ contains placeholders only (`suite-db.example`, `regista_service`). The
 
 The docs reference deployment topology (Postgres hosts, secret backends,
 service accounts) using **placeholders only** (`suite-db.example`,
-`vault.example:8200`, `WORK-DOMAIN.vault.azure.net`, `regista_service`). No
+`vault.example:8200`, `WORK-DOMAIN.vault.azure.net`, `DB-SERVICE-ACCOUNT`). No
 real hostnames, domains, or principal IDs appear in any committed file.
