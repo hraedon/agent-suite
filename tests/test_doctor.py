@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Callable, Mapping
 
 import pytest
 
-from agent_suite.components import COMPONENTS, Component, Tier
+from agent_suite.components import COMPONENTS, Component, Locality, Tier
 from agent_suite.doctor import (
     ComponentReport,
     ComponentStatus,
+    RemoteHealthResult,
     SuiteReport,
     _compute_suite_ok,
     aggregate,
@@ -25,10 +27,10 @@ def _aggregate_safe(
     runner: StubRunner,
     components: tuple[Component, ...] = COMPONENTS,
     lock_path: Path | None = None,
+    shared_endpoints: dict[str, str] | None = None,
+    remote_checker: Callable[[str], RemoteHealthResult] | None = None,
 ) -> SuiteReport:
     """Call aggregate() with lock-drift stubbed so tests don't shell out."""
-    import tempfile
-
     if lock_path is None:
         lock_path = Path(tempfile.mktemp())
     return aggregate(
@@ -38,6 +40,8 @@ def _aggregate_safe(
         lock_path=lock_path,
         version_installed=lambda _: False,
         key_watch_checks=False,
+        shared_endpoints=shared_endpoints,
+        remote_checker=remote_checker,
     )
 
 
@@ -160,7 +164,13 @@ def test_spine_absent_fails_suite() -> None:
 
 def test_all_absent_fails_suite() -> None:
     report = _aggregate_safe(installed=_installed_none(), runner=StubRunner({}))
-    assert all(r.status is ComponentStatus.ABSENT for r in report.components)
+    # Dossier is a shared-service component — without an endpoint it is
+    # NOT_CONFIGURED (Plan 004 WI-1.6), not ABSENT. All others are ABSENT.
+    for r in report.components:
+        if r.component == "dossier":
+            assert r.status is ComponentStatus.NOT_CONFIGURED
+        else:
+            assert r.status is ComponentStatus.ABSENT
     assert report.suite_ok is False
 
 
@@ -526,3 +536,289 @@ def test_aggregate_profile_classification_without_profile_omits_from_dict(
     )
     d = report.to_dict()
     assert "profile_classification" not in d
+
+
+# --- shared-service locality (Plan 004 WI-1.6) ---------------------------------
+
+
+class StubRemoteChecker:
+    """Returns a canned RemoteHealthResult per component ident."""
+
+    def __init__(self, results: Mapping[str, RemoteHealthResult]) -> None:
+        self._results = results
+        self.calls: list[str] = []
+
+    def __call__(self, url: str) -> RemoteHealthResult:
+        self.calls.append(url)
+        # The checker is called per-endpoint; tests look up by URL.
+        for _ident, result in self._results.items():
+            if url.endswith(_ident) or _ident in url or url == _ident:
+                return result
+        return self._results.get(url, RemoteHealthResult(ok=False, detail="no stub"))
+
+
+def _remote_ok(version: str = "2.0.0") -> RemoteHealthResult:
+    return RemoteHealthResult(ok=True, version=version, detail="")
+
+
+def _remote_fail(detail: str = "connection refused") -> RemoteHealthResult:
+    return RemoteHealthResult(ok=False, detail=detail)
+
+
+def _installed_except(cli_to_skip: str) -> Callable[[str], bool]:
+    return lambda cli: cli != cli_to_skip
+
+
+def test_shared_service_not_installed_with_endpoint_is_remote() -> None:
+    """Dossier not installed locally but endpoint configured → REMOTE status."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS if c.ident != "dossier"}
+    report = _aggregate_safe(
+        installed=_installed_except("dossier"),
+        runner=_runner_for(outputs),
+        shared_endpoints={"dossier": "https://dossier.example.com"},
+        remote_checker=StubRemoteChecker({"dossier": _remote_ok("2.1.0")}),
+    )
+    dr = next(r for r in report.components if r.component == "dossier")
+    assert dr.status is ComponentStatus.REMOTE
+    assert dr.ok is True
+    assert dr.version == "2.1.0"
+    assert "remote: ok @ 2.1.0" in dr.detail
+    assert report.suite_ok is True
+
+
+def test_shared_service_not_installed_without_endpoint_is_not_configured() -> None:
+    """Dossier not installed locally and no endpoint → NOT_CONFIGURED."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS if c.ident != "dossier"}
+    report = _aggregate_safe(
+        installed=_installed_except("dossier"),
+        runner=_runner_for(outputs),
+        shared_endpoints=None,
+    )
+    dr = next(r for r in report.components if r.component == "dossier")
+    assert dr.status is ComponentStatus.NOT_CONFIGURED
+    assert dr.ok is False
+    assert "not configured" in dr.detail.lower()
+    assert "shared service" in dr.detail.lower()
+    assert report.suite_ok is True  # not a failure, just not set up
+
+
+def test_shared_service_endpoint_down_is_failed() -> None:
+    """Dossier endpoint configured but unreachable → FAILED with URL in detail."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS if c.ident != "dossier"}
+    report = _aggregate_safe(
+        installed=_installed_except("dossier"),
+        runner=_runner_for(outputs),
+        shared_endpoints={"dossier": "https://dossier.example.com"},
+        remote_checker=StubRemoteChecker({"dossier": _remote_fail("connection refused")}),
+    )
+    dr = next(r for r in report.components if r.component == "dossier")
+    assert dr.status is ComponentStatus.FAILED
+    assert dr.ok is False
+    assert "dossier.example.com" in dr.detail
+    assert "connection refused" in dr.detail
+    assert report.suite_ok is False
+
+
+def test_shared_service_installed_locally_uses_local_doctor() -> None:
+    """When dossier IS installed locally, local doctor takes precedence over endpoint."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    checker = StubRemoteChecker({"dossier": _remote_ok("99.0.0")})
+    report = _aggregate_safe(
+        installed=_installed_all(),
+        runner=_runner_for(outputs),
+        shared_endpoints={"dossier": "https://dossier.example.com"},
+        remote_checker=checker,
+    )
+    dr = next(r for r in report.components if r.component == "dossier")
+    assert dr.status is ComponentStatus.OK  # local doctor, not remote
+    assert dr.version == "1.0.0"  # from the local doctor output, not the remote
+    assert checker.calls == []  # remote checker was never called
+
+
+def test_remote_status_does_not_fail_suite() -> None:
+    """A suite where dossier is remote-ok and everything else is ok → suite OK."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS if c.ident != "dossier"}
+    report = _aggregate_safe(
+        installed=_installed_except("dossier"),
+        runner=_runner_for(outputs),
+        shared_endpoints={"dossier": "https://dossier.example.com"},
+        remote_checker=StubRemoteChecker({"dossier": _remote_ok()}),
+    )
+    assert report.suite_ok is True
+
+
+def test_not_configured_does_not_fail_suite_when_others_ok() -> None:
+    """A suite where dossier is not-configured but everything else is ok → suite OK."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS if c.ident != "dossier"}
+    report = _aggregate_safe(
+        installed=_installed_except("dossier"),
+        runner=_runner_for(outputs),
+    )
+    assert report.suite_ok is True
+
+
+def test_all_absent_or_not_configured_fails_suite() -> None:
+    """All components absent or not_configured → suite NOT OK."""
+    report = _aggregate_safe(
+        installed=_installed_none(),
+        runner=StubRunner({}),
+    )
+    statuses = {r.component: r.status for r in report.components}
+    # dossier should be NOT_CONFIGURED (shared service, no endpoint)
+    assert statuses["dossier"] is ComponentStatus.NOT_CONFIGURED
+    # everything else should be ABSENT
+    for ident, status in statuses.items():
+        if ident != "dossier":
+            assert status is ComponentStatus.ABSENT
+    assert report.suite_ok is False
+
+
+def test_remote_version_feeds_lock_drift() -> None:
+    """The version from a remote health check participates in lock-drift comparison."""
+    from agent_suite.lock import ComponentPin, SuiteLock, write_lock_file
+
+    locked = SuiteLock(
+        release="1.0.0",
+        regista_quad=None,
+        components={
+            c.ident: ComponentPin(repo=c.repo, version="1.0.0") for c in COMPONENTS
+        },
+    )
+    lock_path = Path(tempfile.mktemp())
+    write_lock_file(locked, lock_path)
+
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS if c.ident != "dossier"}
+    report = aggregate(
+        installed=_installed_except("dossier"),
+        runner=_runner_for(outputs),
+        lock_path=lock_path,
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+        shared_endpoints={"dossier": "https://dossier.example.com"},
+        remote_checker=StubRemoteChecker({"dossier": _remote_ok("2.0.0")}),
+    )
+    assert report.lock.matches is False
+    assert any(
+        d.component == "dossier" and d.kind.value == "version_mismatch"
+        for d in report.lock.drift
+    )
+
+
+def test_format_text_shows_remote_status() -> None:
+    """format_text renders the remote status and version for shared-service components."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS if c.ident != "dossier"}
+    report = _aggregate_safe(
+        installed=_installed_except("dossier"),
+        runner=_runner_for(outputs),
+        shared_endpoints={"dossier": "https://dossier.example.com"},
+        remote_checker=StubRemoteChecker({"dossier": _remote_ok("3.0.0")}),
+    )
+    text = format_text(report)
+    assert "remote" in text
+    assert "3.0.0" in text
+
+
+def test_format_text_shows_not_configured() -> None:
+    """format_text renders the not_configured state for shared-service without endpoint."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS if c.ident != "dossier"}
+    report = _aggregate_safe(
+        installed=_installed_except("dossier"),
+        runner=_runner_for(outputs),
+    )
+    text = format_text(report)
+    assert "not_configured" in text
+    assert "shared service" in text.lower()
+
+
+def test_profile_classification_remote_counts_as_installed() -> None:
+    """A shared-service component in REMOTE status should count as installed for profile."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS if c.ident != "dossier"}
+    report = aggregate(
+        installed=_installed_except("dossier"),
+        runner=_runner_for(outputs),
+        lock_path=Path(tempfile.mktemp()),
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+        shared_endpoints={"dossier": "https://dossier.example.com"},
+        remote_checker=StubRemoteChecker({"dossier": _remote_ok()}),
+        profile=Profile.B,
+    )
+    assert report.profile_classification is not None
+    assert "dossier" not in report.profile_classification.missing_required
+
+
+def test_profile_classification_not_configured_counts_as_missing() -> None:
+    """A shared-service component in NOT_CONFIGURED should count as missing for profile."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS if c.ident != "dossier"}
+    report = aggregate(
+        installed=_installed_except("dossier"),
+        runner=_runner_for(outputs),
+        lock_path=Path(tempfile.mktemp()),
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+        profile=Profile.B,
+    )
+    assert report.profile_classification is not None
+    assert "dossier" in report.profile_classification.missing_required
+
+
+def test_dossier_is_only_shared_service_component() -> None:
+    """Only dossier is marked as SHARED_SERVICE in the default component set."""
+    shared = [c for c in COMPONENTS if c.locality is Locality.SHARED_SERVICE]
+    assert len(shared) == 1
+    assert shared[0].ident == "dossier"
+    assert shared[0].endpoint_env_var == "DOSSIER_URL"
+
+
+def test_component_report_to_dict_includes_new_statuses() -> None:
+    """ComponentReport.to_dict() serializes the new status values correctly."""
+    for status in (ComponentStatus.REMOTE, ComponentStatus.NOT_CONFIGURED):
+        report = ComponentReport(
+            component="dossier", tier=Tier.FACE, status=status, ok=True, version="1.0"
+        )
+        d = report.to_dict()
+        assert d["status"] == status.value
+
+
+def test_empty_string_endpoint_treated_as_not_configured() -> None:
+    """An empty-string DOSSIER_URL should be treated as not configured."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS if c.ident != "dossier"}
+    report = _aggregate_safe(
+        installed=_installed_except("dossier"),
+        runner=_runner_for(outputs),
+        shared_endpoints={"dossier": ""},
+    )
+    dr = next(r for r in report.components if r.component == "dossier")
+    assert dr.status is ComponentStatus.NOT_CONFIGURED
+
+
+def test_remote_ok_without_version_shows_unknown() -> None:
+    """Healthz returning ok:true without version → REMOTE with 'unknown' version."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS if c.ident != "dossier"}
+    report = _aggregate_safe(
+        installed=_installed_except("dossier"),
+        runner=_runner_for(outputs),
+        shared_endpoints={"dossier": "https://dossier.example.com"},
+        remote_checker=StubRemoteChecker({"dossier": RemoteHealthResult(ok=True, version=None)}),
+    )
+    dr = next(r for r in report.components if r.component == "dossier")
+    assert dr.status is ComponentStatus.REMOTE
+    assert dr.ok is True
+    assert dr.version is None
+    assert "unknown" in dr.detail
+
+
+def test_default_remote_check_rejects_non_http_scheme() -> None:
+    """_default_remote_check rejects file:// and other non-http(s) schemes."""
+    from agent_suite.doctor import _default_remote_check
+
+    result = _default_remote_check("file:///etc/passwd")
+    assert result.ok is False
+    assert "non-http" in result.detail.lower() or "scheme" in result.detail.lower()
+
+
+def test_status_enum_dispatch_is_total_with_new_statuses() -> None:
+    """_compute_suite_ok must handle REMOTE and NOT_CONFIGURED without assert_never."""
+    for status in (ComponentStatus.REMOTE, ComponentStatus.NOT_CONFIGURED):
+        report = ComponentReport(component="x", tier=Tier.FACE, status=status)
+        assert isinstance(_compute_suite_ok([report]), bool)

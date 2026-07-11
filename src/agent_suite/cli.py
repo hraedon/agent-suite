@@ -172,7 +172,21 @@ def main(argv: list[str] | None = None) -> int:
             profile_arg: str | None = getattr(args, "profile", None)
             if profile_arg is not None:
                 profile = Profile(profile_arg)
-            report = aggregate(verify_restore_dsn=verify_restore_dsn, profile=profile)
+            # Build shared-service endpoints from suite.env / process env
+            # (Plan 004 WI-1.6): each shared-service component declares its
+            # endpoint env var in the Component descriptor.
+            from agent_suite.components import shared_service_components
+
+            shared_endpoints: dict[str, str] = {}
+            for comp in shared_service_components():
+                url = os.environ.get(comp.endpoint_env_var)
+                if url:
+                    shared_endpoints[comp.ident] = url
+            report = aggregate(
+                verify_restore_dsn=verify_restore_dsn,
+                profile=profile,
+                shared_endpoints=shared_endpoints or None,
+            )
             if getattr(args, "json", False):
                 print(_json.dumps(report.to_dict(), indent=2, default=str))
             else:

@@ -105,7 +105,7 @@ def _cross_reference_health(fixture: dict[str, Any]) -> list[str]:
     errors: list[str] = []
 
     from agent_suite.doctor import ComponentStatus
-    from agent_suite.components import Tier
+    from agent_suite.components import Locality, Tier
     from agent_suite.key_watch import KeyAgeStatus, StoreGrowthStatus
     from agent_suite.lock import DriftKind
     from agent_suite.verify_restore import ProjectVerifyStatus
@@ -124,6 +124,14 @@ def _cross_reference_health(fixture: dict[str, Any]) -> list[str]:
         errors.append(
             f"health: tier_values mismatch — "
             f"contract={sorted(contract_tiers)}, code={sorted(code_tiers)}"
+        )
+
+    contract_localities = set(fixture.get("locality_values", []))
+    code_localities = _enum_values(Locality)
+    if contract_localities != code_localities:
+        errors.append(
+            f"health: locality_values mismatch — "
+            f"contract={sorted(contract_localities)}, code={sorted(code_localities)}"
         )
 
     contract_drift_kinds = set(fixture.get("drift_kind_values", []))

@@ -19,6 +19,9 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -27,7 +30,7 @@ from typing import Protocol, assert_never
 from agent_suite import key_watch
 from agent_suite import lock
 from agent_suite import verify_restore
-from agent_suite.components import COMPONENTS, Component, Tier
+from agent_suite.components import COMPONENTS, Component, Locality, Tier
 from agent_suite.profiles import (
     Profile,
     ProfileClassification,
@@ -45,7 +48,9 @@ class ComponentStatus(Enum):
 
     OK = "ok"  # installed; doctor green
     DEGRADED = "degraded"  # installed; ok but in a non-fatal degrade mode (e.g. coordinator-absent)
+    REMOTE = "remote"  # shared service not installed locally; endpoint reachable and healthy (Plan 004 WI-1.6)
     ABSENT = "absent"  # not installed on this box
+    NOT_CONFIGURED = "not_configured"  # shared service with no endpoint configured (Plan 004 WI-1.6)
     UNREACHABLE = "unreachable"  # installed, but the doctor command could not be run/caught
     FAILED = "failed"  # installed; doctor exited non-zero, emitted no JSON, or reported ok:false
 
@@ -68,6 +73,83 @@ def _default_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
 
 def _default_installed(cli_name: str) -> bool:
     return shutil.which(cli_name) is not None
+
+
+@dataclass
+class RemoteHealthResult:
+    """Result of checking a shared-service component's health endpoint."""
+
+    ok: bool
+    version: str | None = None
+    detail: str = ""
+
+
+class RemoteHealthChecker(Protocol):
+    """Check a shared-service component's health endpoint (Plan 004 WI-1.6).
+
+    Given the base URL, return a ``RemoteHealthResult``. The default
+    implementation does ``GET <url>/healthz`` and parses the JSON response
+    for ``ok`` and ``version`` fields — the same shape as the local
+    ``<tool> doctor --json`` contract.
+    """
+
+    def __call__(self, url: str) -> RemoteHealthResult: ...
+
+
+def _default_remote_check(url: str) -> RemoteHealthResult:
+    """Default remote health check: GET <url>/healthz, parse JSON.
+
+    Uses only stdlib (urllib) — no external HTTP library. A non-200 status,
+    connection error, timeout, or invalid JSON is a named failure, never a
+    traceback (the doctor is read-only and must never crash).
+
+    Security: redirects are NOT followed (prevents SSRF via an attacker-
+    controlled ``DOSSIER_URL`` redirecting to internal services). The URL
+    scheme must be ``http`` or ``https`` — ``file:``, ``ftp:``, etc. are
+    rejected before any request is made.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return RemoteHealthResult(
+            ok=False,
+            detail=f"refusing non-http(s) URL scheme '{parsed.scheme}' for {url}",
+        )
+    healthz_url = f"{url.rstrip('/')}/healthz"
+
+    class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args: object, **kwargs: object) -> None:
+            return None
+
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    try:
+        with opener.open(healthz_url, timeout=10) as resp:
+            body = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (301, 302, 303, 307, 308):
+            return RemoteHealthResult(
+                ok=False, detail=f"redirect refused from {healthz_url} (SSRF guard)"
+            )
+        return RemoteHealthResult(ok=False, detail=f"HTTP {exc.code} from {healthz_url}")
+    except urllib.error.URLError as exc:
+        return RemoteHealthResult(ok=False, detail=f"unreachable: {healthz_url} ({exc.reason})")
+    except Exception as exc:
+        return RemoteHealthResult(ok=False, detail=f"error checking {healthz_url}: {exc}")
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return RemoteHealthResult(ok=False, detail=f"non-JSON response from {healthz_url}")
+
+    if not isinstance(data, dict):
+        return RemoteHealthResult(
+            ok=False, detail=f"healthz returned non-dict JSON ({type(data).__name__})"
+        )
+
+    return RemoteHealthResult(
+        ok=bool(data.get("ok", False)),
+        version=data.get("version"),
+        detail=data.get("detail", ""),
+    )
 
 
 @dataclass
@@ -155,22 +237,80 @@ class SuiteReport:
         return d
 
 
+def _check_shared_service(
+    comp: Component,
+    *,
+    endpoints: dict[str, str],
+    remote_checker: RemoteHealthChecker,
+) -> ComponentReport:
+    """Check a shared-service component by endpoint (Plan 004 WI-1.6).
+
+    When no endpoint is configured, the component is ``NOT_CONFIGURED`` — a
+    named state distinct from both ``ABSENT`` (not installed) and ``FAILED``
+    (broken). When an endpoint is configured, the doctor probes ``<url>/healthz``
+    and renders ``remote: ok @ <version>`` on success or a legible failure
+    naming the URL on failure.
+    """
+    endpoint = endpoints.get(comp.ident)
+    if not endpoint:
+        return ComponentReport(
+            component=comp.ident,
+            tier=comp.tier,
+            status=ComponentStatus.NOT_CONFIGURED,
+            ok=False,
+            detail=f"{comp.ident} not configured (shared service)",
+        )
+
+    result = remote_checker(endpoint)
+    if result.ok:
+        ver = result.version or "unknown"
+        return ComponentReport(
+            component=comp.ident,
+            tier=comp.tier,
+            status=ComponentStatus.REMOTE,
+            ok=True,
+            version=result.version,
+            detail=f"remote: ok @ {ver}",
+        )
+    return ComponentReport(
+        component=comp.ident,
+        tier=comp.tier,
+        status=ComponentStatus.FAILED,
+        ok=False,
+        detail=f"remote endpoint {endpoint}: {result.detail}",
+    )
+
+
 def _check_one(
     comp: Component,
     *,
     installed: Installed,
     runner: Runner,
+    remote_checker: RemoteHealthChecker = _default_remote_check,
+    shared_endpoints: dict[str, str] | None = None,
 ) -> ComponentReport:
     cli_name = comp.doctor_cmd[0]
 
     if not installed(cli_name):
-        return ComponentReport(
-            component=comp.ident,
-            tier=comp.tier,
-            status=ComponentStatus.ABSENT,
-            ok=False,
-            detail=f"{cli_name} not installed (tier: {comp.tier.value})",
-        )
+        # Not installed locally — for shared-service components, check the
+        # configured endpoint instead of reporting absent (Plan 004 WI-1.6).
+        match comp.locality:
+            case Locality.SHARED_SERVICE:
+                return _check_shared_service(
+                    comp,
+                    endpoints=shared_endpoints or {},
+                    remote_checker=remote_checker,
+                )
+            case Locality.PER_BOX:
+                return ComponentReport(
+                    component=comp.ident,
+                    tier=comp.tier,
+                    status=ComponentStatus.ABSENT,
+                    ok=False,
+                    detail=f"{cli_name} not installed (tier: {comp.tier.value})",
+                )
+            case other:
+                assert_never(other)
 
     try:
         result = runner(comp.doctor_cmd)
@@ -273,7 +413,13 @@ def _compute_suite_ok(reports: list[ComponentReport]) -> bool:
         match r.status:
             case ComponentStatus.UNREACHABLE | ComponentStatus.FAILED:
                 return False
-            case ComponentStatus.OK | ComponentStatus.DEGRADED | ComponentStatus.ABSENT:
+            case (
+                ComponentStatus.OK
+                | ComponentStatus.DEGRADED
+                | ComponentStatus.ABSENT
+                | ComponentStatus.REMOTE
+                | ComponentStatus.NOT_CONFIGURED
+            ):
                 continue
             case other:
                 assert_never(other)
@@ -283,7 +429,12 @@ def _compute_suite_ok(reports: list[ComponentReport]) -> bool:
         return False
 
     # Nothing deployed at all => not ok (don't smooth an empty box into "healthy").
-    if all(r.status is ComponentStatus.ABSENT for r in reports):
+    # A suite where every component is absent or not-configured has no functioning
+    # piece — REMOTE counts as functioning (a shared service is reachable).
+    if all(
+        r.status in (ComponentStatus.ABSENT, ComponentStatus.NOT_CONFIGURED)
+        for r in reports
+    ):
         return False
 
     return True
@@ -300,6 +451,8 @@ def aggregate(
     verify_restore_dsn: str | None = None,
     key_watch_checks: bool = True,
     profile: Profile | None = None,
+    shared_endpoints: dict[str, str] | None = None,
+    remote_checker: RemoteHealthChecker | None = None,
 ) -> SuiteReport:
     """Run each component's doctor and fold into one umbrella report.
 
@@ -324,8 +477,22 @@ def aggregate(
     installation against the profile matrix and attaches the result as
     ``profile_classification``. The classification reports the detected profile,
     any missing required components, and any extra optional components.
+
+    When ``shared_endpoints`` is provided (Plan 004 WI-1.6), shared-service
+    components that are not installed locally are checked by endpoint instead of
+    being reported as absent. ``remote_checker`` is injectable for testing.
     """
-    reports = [_check_one(c, installed=installed, runner=runner) for c in components]
+    rc: RemoteHealthChecker = remote_checker if remote_checker is not None else _default_remote_check
+    reports = [
+        _check_one(
+            c,
+            installed=installed,
+            runner=runner,
+            remote_checker=rc,
+            shared_endpoints=shared_endpoints,
+        )
+        for c in components
+    ]
     lock_result = _check_lock_drift(
         reports,
         lock_path=lock_path if lock_path is not None else lock.DEFAULT_LOCK_PATH,
@@ -376,7 +543,7 @@ def format_text(report: SuiteReport) -> str:
         tag = f"[{c.tier.value.upper()}]"
         ver = f" v{c.version}" if c.version else ""
         detail = f"  {c.detail}" if c.detail else ""
-        lines.append(f"  {c.component:<22} {tag:<10} {c.status.value:<11}{ver}{detail}")
+        lines.append(f"  {c.component:<22} {tag:<10} {c.status.value:<15}{ver}{detail}")
     lines.append("")
     lines.append(lock.format_drift_text(report.lock))
     if report.post_restore is not None:
