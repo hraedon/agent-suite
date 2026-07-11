@@ -35,16 +35,17 @@ class MutationKind(Enum):
     CHAIN_REORDER = "chain_reorder"
     ANCHOR_MISMATCH = "anchor_mismatch"
     UNAUTHORIZED_PROJECT_ACCESS = "unauthorized_project_access"
+    REVOKED_KEY = "revoked_key"
 
 
 _INTEGRATION_MUTATIONS = list(MutationKind)
 
 _DEFERRED_MUTATIONS = [
-    "revoked_key — requires regista Plan 026 principal key registry at suite level",
-    "hook_omission — requires agent-provenance hook wiring in a live session",
+    "hook_omission — deferred from the parameterized integration path; "
+    "test_hook_omission covers the doctor-level detection path, but "
+    "live-session hook firing requires a running Claude Code session",
     "replayed_wake_event — requires agent-wake component",
     "capability_clobber — requires agent-capability-broker component",
-    "corrupted_backup — requires live pg_dump/restore cycle (partially in test_restore_drill)",
 ]
 
 
@@ -492,6 +493,103 @@ def _mutate_unauthorized_project_access(proj: RegistaProject) -> None:
         drop_project_schema(proj.dsn, project_b)
 
 
+def _mutate_revoked_key(proj: RegistaProject) -> None:
+    """Revoke a principal's Ed25519 key and verify detection.
+
+    Generates an Ed25519 keypair, registers the public key in the principal
+    key registry, creates an Ed25519-signed event (in memory), verifies the
+    principal binding passes, revokes the key, and verifies the binding now
+    fails with ``key-revoked``.
+
+    The owning layer is ``verify_event_principal_binding`` (regista Plan 026),
+    not ``replay`` — replay verifies HMAC envelope integrity, not asymmetric
+    principal binding.  This mirrors how ``anchor_mismatch`` tests
+    ``verify_anchor_receipt`` rather than ``replay``.
+    """
+    import nacl.signing
+    from datetime import UTC, datetime
+
+    from regista import Event
+    from regista._events import sign_event
+    from regista._signing_scheme import Ed25519Scheme
+
+    pytest.importorskip("nacl.signing")
+
+    _drive_to_done(proj)
+
+    signing_key = nacl.signing.SigningKey.generate()
+    private_key_bytes = bytes(signing_key)
+    public_key_bytes = bytes(signing_key.verify_key)
+
+    principal_id = f"revoked-key-test-{uuid.uuid4().hex[:8]}"
+
+    reg_result = proj.sub.principals.register(
+        principal_id, public_key_bytes, scheme="ed25519",
+        registered_by="test",
+    )
+    key_id = reg_result["key_id"]
+
+    event_id = uuid.uuid4()
+    work_item_id = uuid.uuid4()
+    timestamp = datetime.now(UTC)
+    payload = {"note": "Ed25519 signed test event"}
+    transition = "note"
+
+    signature, canonical_hash, envelope = sign_event(
+        event_id=event_id,
+        work_item_id=work_item_id,
+        actor_id=principal_id,
+        key_id=key_id,
+        event_seq=99,
+        workflow_name="canonical",
+        workflow_version=1,
+        timestamp=timestamp,
+        transition=transition,
+        payload=payload,
+        key=private_key_bytes,
+        scheme=Ed25519Scheme(),
+        entity_kind="work_item",
+        hash_alg="sha-256",
+    )
+
+    event = Event(
+        event_id=event_id,
+        work_item_id=work_item_id,
+        event_seq=99,
+        actor_id=principal_id,
+        actor_kind="agent",
+        actor_metadata=None,
+        key_id=key_id,
+        workflow_name="canonical",
+        workflow_version=1,
+        timestamp=timestamp,
+        transition=transition,
+        payload=payload,
+        payload_canonical_hash=canonical_hash,
+        signature=signature,
+        canonical_envelope=envelope,
+        scheme_id="ed25519",
+        entity_kind="work_item",
+        entity_id=work_item_id,
+        hash_alg="sha-256",
+    )
+
+    result = proj.sub.verify_event_principal_binding(event)
+    assert result["verified"] is True, (
+        f"Binding should pass with active key: {result}"
+    )
+
+    proj.sub.principals.revoke(principal_id, key_id, reason="test revocation")
+
+    result = proj.sub.verify_event_principal_binding(event)
+    assert result["verified"] is False, (
+        f"Binding should fail with revoked key: {result}"
+    )
+    assert "key-revoked" in str(result.get("error", "")), (
+        f"Expected key-revoked error, got: {result}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Secret exposure (no live infra — uses StubRunner pattern)
 # ---------------------------------------------------------------------------
@@ -609,6 +707,8 @@ def test_adversarial_mutation(mutation: MutationKind, regista_project: RegistaPr
             _mutate_anchor_mismatch(regista_project)
         case MutationKind.UNAUTHORIZED_PROJECT_ACCESS:
             _mutate_unauthorized_project_access(regista_project)
+        case MutationKind.REVOKED_KEY:
+            _mutate_revoked_key(regista_project)
         case other:
             assert_never(other)
 
@@ -672,3 +772,190 @@ def test_secret_exposure(
     captured = capsys.readouterr()
     output = captured.out + captured.err
     assert secret not in output, "bootstrap --dry-run leaked a secret value"
+
+
+# ---------------------------------------------------------------------------
+# Corrupted backup (needs pg_dump/psql — extends restore-drill pattern)
+# ---------------------------------------------------------------------------
+
+
+def test_corrupted_backup(regista_project: RegistaProject) -> None:
+    """A corrupted backup is detected by verify_restore.
+
+    Drives a work-item to ``done``, dumps the project schema with pg_dump
+    (using ``--inserts`` for text-level corruption), modifies a payload
+    value in the SQL, restores to a fresh database, and asserts
+    ``verify_restore`` reports failure — proving the restored backup is
+    not silently accepted as intact.
+    """
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+
+    from tests.conftest import _InteropDsn
+
+    if not shutil.which("pg_dump") or not shutil.which("psql"):
+        pytest.skip("pg_dump/psql not available")
+
+    proj = regista_project
+    wi_id = _drive_to_done(proj)
+    _assert_clean_chain(proj.sub, wi_id)
+
+    dsn_info = _InteropDsn(proj.dsn)
+    pg_env = dict(os.environ)
+    pg_env["PGPASSWORD"] = dsn_info.password
+    restored_db = f"corrupted_{uuid.uuid4().hex}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dump_path = Path(tmpdir) / "store_dump.sql"
+
+        dump_cmd = [
+            "pg_dump",
+            "--host", dsn_info.host,
+            "--port", dsn_info.port,
+            "--username", dsn_info.user,
+            "--dbname", dsn_info.db,
+            "--schema", proj.project,
+            "--no-owner",
+            "--no-privileges",
+            "--inserts",
+            "-f", str(dump_path),
+        ]
+        r = subprocess.run(dump_cmd, capture_output=True, text=True, env=pg_env)
+        assert r.returncode == 0, f"pg_dump failed: {r.stderr}"
+
+        dump_text = dump_path.read_text()
+        corrupted_text = dump_text.replace(
+            "Adversarial corpus work-item",
+            "CORRUPTED-BACKUP-TEST",
+        )
+        if corrupted_text == dump_text:
+            pytest.skip("Could not find expected payload text in dump to corrupt")
+        dump_path.write_text(corrupted_text)
+
+        create_cmd = [
+            "psql",
+            "--host", dsn_info.host,
+            "--port", dsn_info.port,
+            "--username", dsn_info.user,
+            "--dbname", dsn_info.db,
+            "-c", f'CREATE DATABASE "{restored_db}"',
+        ]
+        r = subprocess.run(create_cmd, capture_output=True, text=True, env=pg_env)
+        assert r.returncode == 0, f"CREATE DATABASE failed: {r.stderr}"
+
+        try:
+            restore_cmd = [
+                "psql",
+                "--host", dsn_info.host,
+                "--port", dsn_info.port,
+                "--username", dsn_info.user,
+                "--dbname", restored_db,
+                "-f", str(dump_path),
+            ]
+            r = subprocess.run(restore_cmd, capture_output=True, text=True, env=pg_env)
+            assert r.returncode == 0, f"psql restore failed: {r.stderr}"
+
+            restored_dsn = (
+                f"postgresql://{dsn_info.user}:{dsn_info.password}"
+                f"@{dsn_info.host}:{dsn_info.port}/{restored_db}"
+            )
+
+            from agent_suite.verify_restore import ProjectVerifyStatus, verify_restore
+
+            result = verify_restore(
+                dsn=restored_dsn,
+                projects=[proj.project],
+                key_path=proj.key_path,
+            )
+            assert result.ok is False, (
+                f"verify_restore should fail on corrupted backup: "
+                f"ok={result.ok}, "
+                f"projects={[(p.project, p.status.value, p.detail) for p in result.projects]}"
+            )
+            assert len(result.projects) == 1
+            assert result.projects[0].status is ProjectVerifyStatus.DRIFT_DETECTED, (
+                f"Expected DRIFT_DETECTED, got {result.projects[0].status.value}: "
+                f"{result.projects[0].detail}"
+            )
+        finally:
+            drop_cmd = [
+                "psql",
+                "--host", dsn_info.host,
+                "--port", dsn_info.port,
+                "--username", dsn_info.user,
+                "--dbname", dsn_info.db,
+                "-c", f'DROP DATABASE IF EXISTS "{restored_db}"',
+            ]
+            r = subprocess.run(drop_cmd, capture_output=True, text=True, env=pg_env)
+            if r.returncode != 0:
+                import warnings
+                warnings.warn(
+                    f"Failed to drop restored database {restored_db!r}: {r.stderr.strip()}",
+                    stacklevel=2,
+                )
+
+
+# ---------------------------------------------------------------------------
+# Hook omission (needs cairn — doctor-level detection path)
+# ---------------------------------------------------------------------------
+
+
+def test_hook_omission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """cairn doctor detects missing hooks in the Claude settings file.
+
+    Writes a settings.json with all cairn hook events present, verifies
+    ``_check_harness_wired`` does not report a failure, removes one hook
+    event, and verifies the doctor reports the omission as a failure.
+
+    This covers the doctor-level detection path: the live-session hook
+    firing path requires a running Claude Code session and is not testable
+    in CI.
+    """
+    try:
+        from cairn._doctor import _check_harness_wired
+        from cairn._install import HOOK_EVENTS
+    except ImportError:
+        pytest.skip("cairn (agent-provenance) not available")
+
+    def _make_hook_entry(event_name: str) -> dict[str, Any]:
+        return {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": f"python3 -m cairn._claude_hook {HOOK_EVENTS[event_name]}",
+                }
+            ]
+        }
+
+    settings: dict[str, Any] = {
+        "hooks": {event: [_make_hook_entry(event)] for event in HOOK_EVENTS},
+        "env": {
+            "REGISTA_DSN": "postgresql://user:pass@localhost/db",
+            "CAIRN_PROJECT": "test-project",
+        },
+    }
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps(settings))
+    monkeypatch.setenv("CAIRN_CLAUDE_SETTINGS", str(settings_path))
+
+    result = _check_harness_wired(None)
+    assert result["status"] != "fail", (
+        f"Doctor should pass with all hooks present: {result}"
+    )
+
+    removed_event = next(iter(HOOK_EVENTS))
+    del settings["hooks"][removed_event]
+    settings_path.write_text(json.dumps(settings))
+
+    result = _check_harness_wired(None)
+    assert result["status"] == "fail", (
+        f"Doctor should fail with missing hook: {result}"
+    )
+    assert "missing hooks" in result["detail"], (
+        f"Expected 'missing hooks' in detail, got: {result}"
+    )
+    assert removed_event in result["detail"], (
+        f"Expected {removed_event!r} in detail, got: {result['detail']!r}"
+    )

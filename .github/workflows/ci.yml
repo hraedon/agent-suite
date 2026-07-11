@@ -36,10 +36,10 @@ jobs:
         run: pytest tests/test_architecture.py -q
 
       - name: Lint (ruff)
-        run: ruff check src tests scripts/plan-index.py
+        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py
 
       - name: Type check (mypy)
-        run: mypy --strict src
+        run: mypy --strict src scripts/feature-matrix.py
 
       - name: Run tests
         run: pytest --tb=short -q
@@ -92,6 +92,9 @@ jobs:
           pip install "git+https://github.com/hraedon/agent-notes.git@main" \
                       "git+https://github.com/hraedon/dossier.git@main"
 
+      - name: Install agent-provenance (cairn)
+        run: pip install "git+https://github.com/hraedon/agent-provenance.git@main"
+
       - name: Run interop + tamper + restore-drill + adversarial-corpus tests
         run: pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py tests/test_adversarial_corpus.py -v --tb=short
 
@@ -118,10 +121,10 @@ jobs:
         run: pytest tests/test_architecture.py -q
 
       - name: Lint (ruff)
-        run: ruff check src tests
+        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py
 
       - name: Type check (mypy)
-        run: mypy --strict src
+        run: mypy --strict src scripts/feature-matrix.py
 
       - name: Run tests
         run: pytest --tb=short -q
