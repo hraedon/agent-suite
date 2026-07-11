@@ -399,52 +399,60 @@ def _mutate_chain_reorder(proj: RegistaProject) -> None:
 
 
 def _mutate_anchor_mismatch(proj: RegistaProject) -> None:
+    """Tamper a real anchor receipt and assert the anchoring layer detects it.
+
+    Anchor mismatch is owned by regista's anchor verification
+    (``verify_anchor_receipt`` → ``verify_content_anchor``), not by ``replay``
+    — replay never consults anchor receipts. The corpus therefore creates a
+    real receipt (file provider over the driven chain), tampers its
+    ``merkle_root``, and asserts verification fails, then passes again after
+    restore.
+    """
+    import tempfile
+
     import psycopg
     from psycopg.sql import SQL, Identifier
+
+    try:
+        from regista._anchoring import FileAnchorProvider
+    except ImportError:
+        pytest.skip("regista has no anchoring support (pre-Plan-019 spine)")
 
     wi_id = _drive_to_done(proj)
     _assert_clean_chain(proj.sub, wi_id)
 
-    set_path = SQL("SET search_path TO {}, public").format(Identifier(proj.project))
-    conn = psycopg.connect(proj.dsn)
-    try:
-        conn.execute(set_path)
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-                "WHERE table_schema = %s AND table_name = 'anchor_receipts')",
-                [proj.project],
-            )
-            has_anchor = cur.fetchone()[0]
-        if not has_anchor:
-            pytest.skip("anchor_receipts table not present — anchoring unavailable")
-
-        with conn.cursor() as cur:
-            cur.execute("SELECT merkle_root FROM anchor_receipts LIMIT 1")
-            row = cur.fetchone()
-        if row is None:
-            pytest.skip("anchor_receipts is empty — no anchor to tamper")
-        original_root = bytes(row[0])
-        conn.execute(
-            "UPDATE anchor_receipts SET merkle_root = %s "
-            "WHERE merkle_root = %s",
-            [b"\x00" * len(original_root), original_root],
+    with tempfile.TemporaryDirectory() as anchor_dir:
+        proj.sub.anchoring.set_provider(FileAnchorProvider(anchor_dir))
+        receipt = proj.sub.trigger_anchoring()
+        assert receipt is not None, (
+            "anchoring produced no receipt over a non-empty event chain"
         )
-        conn.commit()
+        assert proj.sub.verify_anchor_receipt(receipt.receipt_id) != "failed"
+
+        set_path = SQL("SET search_path TO {}, public").format(Identifier(proj.project))
+        conn = psycopg.connect(proj.dsn)
         try:
-            report = proj.sub.replay(work_item_id=wi_id)
-            assert report.halted > 0 or report.warnings > 0, (
-                f"Anchor mismatch not detected: halted={report.halted}, "
-                f"drift={report.replayed_drift}, warnings={report.warnings}"
-            )
-        finally:
+            conn.execute(set_path)
+            original_root = bytes(receipt.merkle_root)
             conn.execute(
-                "UPDATE anchor_receipts SET merkle_root = %s WHERE merkle_root = %s",
-                [original_root, b"\x00" * len(original_root)],
+                "UPDATE anchor_receipts SET merkle_root = %s WHERE receipt_id = %s",
+                [b"\x00" * len(original_root), receipt.receipt_id],
             )
             conn.commit()
-    finally:
-        conn.close()
+            try:
+                status = proj.sub.verify_anchor_receipt(receipt.receipt_id)
+                assert status == "failed", (
+                    f"Anchor mismatch not detected: verify returned {status!r}"
+                )
+            finally:
+                conn.execute(
+                    "UPDATE anchor_receipts SET merkle_root = %s WHERE receipt_id = %s",
+                    [original_root, receipt.receipt_id],
+                )
+                conn.commit()
+            assert proj.sub.verify_anchor_receipt(receipt.receipt_id) != "failed"
+        finally:
+            conn.close()
 
 
 def _mutate_unauthorized_project_access(proj: RegistaProject) -> None:
