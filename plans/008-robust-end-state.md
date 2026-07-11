@@ -1,6 +1,6 @@
 # Plan 008 — Robust end state: complete product, reproducible deployment, defensible assurance
 
-**Status:** In Progress (Phase 0 complete 2026-07-11).  
+**Status:** In Progress (Phase 0 complete 2026-07-11; Phase 1 F-1/F-2/F-3/F-5/F-6 remediation complete 2026-07-11).  
 **Author:** GPT-5.6 Sol, following the holistic suite review and first blocker-remediation pass.  
 **Strategic role:** Define the bounded end state at which the suite is a
 complete, operable, security-reviewable product rather than a collection of
@@ -368,6 +368,8 @@ supersedes, implementation commits, proof artifact, and last review.
 drift are detected in CI.
 
 ### Phase 1 — Truth and independent assurance
+
+**Progress (2026-07-11):** F-1 (Critical, regista anchoring content commitment), F-2 (Critical, agent-provenance live proof session binding), F-3 (High, regista receipt concurrency), F-5 (High, agent-notes DSN fallback), and F-6 (High, doctor honest health) are fixed and committed. F-4 (High, deployment identifiers) was already fixed. Adversarial review of regista anchoring found and fixed 3 additional issues (ambiguous binding serialization, hardcoded SHA-256 in verify, failure_count reset). Claims ledger CL-007/CL-008/CL-012/CL-013 updated. Remaining for WI-1.1: archive-chain verification and full bundle export with anchor receipts. Remaining for WI-1.2: live proof against a real Claude Code session. Remaining for WI-1.3: shared adversarial corpus.
 
 #### WI-1.1 — Close integrity proof end to end
 
