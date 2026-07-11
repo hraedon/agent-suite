@@ -1,6 +1,6 @@
 # Plan 009 — Feature-complete v1: shared work, knowledge, evidence, and operations
 
-**Status:** Proposed 2026-07-10.  
+**Status:** In Progress — Phase 0 started 2026-07-11.  
 **Author:** GPT-5.6 Sol.  
 **Strategic role:** Define the bounded product surface that fulfills the suite's
 actual goals. Plan 008 defines how the product becomes robust, deployable, and
@@ -452,13 +452,13 @@ targets remain explicit.
 ## 8. Implementation phases
 
 **Known concrete blockers.** The 2026-07-10 holistic review findings F-1–F-6
-(`docs/2026-07-10-holistic-suite-review.md`) gate specific work below and are
-cited where they bite. Two deserve emphasis because they are foundations, not
-polish: harness capture is currently non-functional (hooks unwired, and the
-hook reads `tool_output` where the harness sends `tool_response` —
-agent-provenance Plan 009 is the fix), and the provenance live proof can pass
-against decoy events (F-2). Phase 2 work must not be started as if capture
-were merely incomplete.
+(`docs/2026-07-10-holistic-suite-review.md`) were resolved by Plan 008 Phase 1
+(2026-07-11). They are retained below for context; the current state is reflected
+in the WI-0.1 matrix. Two were foundations, not polish: harness capture was
+non-functional (hooks unwired, and the hook read `tool_output` where the harness
+sent `tool_response`) and the provenance live proof could pass against decoy
+events (F-2). Both were fixed before Plan 008 Phase 1 closed, but Phase 2 work
+must still verify that capture remains functional as the face code evolves.
 
 ### Phase 0 — Freeze v1 scope and golden-journey contracts
 
@@ -491,6 +491,8 @@ produces the matrix's observed state rather than a second document.
 
 **AC:** the remaining plan contains only observed gaps; stale proposed work that
 already landed is marked complete rather than reimplemented.
+
+**Progress (2026-07-11):** WI-0.1 initial matrix created in `data/v1-feature-matrix.json` with generator `scripts/feature-matrix.py` and rendered human-readable matrix `docs/v1-feature-matrix.md`. The matrix covers all nine golden journeys, seven components, and forty-six public surfaces, using statuses pass/partial/blocked/absent with source noted as `hand-assessed`. WI-0.3 probe automation is stubbed; current statuses will be replaced by executable probes as Phase 0 continues.
 
 ### Phase 1 — Complete shared work and knowledge
 

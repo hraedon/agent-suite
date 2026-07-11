@@ -1,0 +1,757 @@
+#!/usr/bin/env python3
+"""Generate and validate the Plan 009 v1 feature matrix.
+
+Implements Plan 009 WI-0.1 / WI-0.3. The matrix defines the warranted v1 public
+surface per golden journey and component. This script emits both the machine
+JSON artifact and a human-readable Markdown table.
+
+Status values (Plan 009 §8 baseline vocabulary):
+  pass     — the surface works end-to-end against current main
+  partial  — the surface exists but has a documented gap or gate
+  blocked  — implementation is stopped on an unresolved dependency/defect
+  absent   — not yet implemented
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+from typing import assert_never
+
+
+class Status(Enum):
+    PASS = "pass"
+    PARTIAL = "partial"
+    BLOCKED = "blocked"
+    ABSENT = "absent"
+
+
+@dataclass(frozen=True)
+class MatrixRow:
+    journey: str
+    component: str
+    surface: str
+    profile: str
+    status: str
+    dependency: str
+    proof: str
+    excluded: str
+    notes: str
+
+
+@dataclass(frozen=True)
+class Matrix:
+    version: str
+    generated_at: str
+    status_source: str
+    profiles: list[str]
+    golden_journeys: dict[str, str]
+    rows: list[MatrixRow]
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DATA_PATH = REPO_ROOT / "data" / "v1-feature-matrix.json"
+DOCS_PATH = REPO_ROOT / "docs" / "v1-feature-matrix.md"
+
+
+def _allowed_statuses() -> set[str]:
+    return {s.value for s in Status}
+
+
+def _status_label(status: Status) -> str:
+    match status:
+        case Status.PASS:
+            return "pass"
+        case Status.PARTIAL:
+            return "partial"
+        case Status.BLOCKED:
+            return "blocked"
+        case Status.ABSENT:
+            return "absent"
+        case _:
+            assert_never(status)
+
+
+def _matrix_rows() -> list[MatrixRow]:
+    """Static definition of the v1 warranted surface.
+
+    Statuses in this initial matrix are hand-assessed from the 2026-07-11
+    cross-project review. Future runs of the baseline (WI-0.3) should replace
+    hand-assessed statuses with probe results where feasible.
+    """
+    return [
+        # GJ-1 — Start a project
+        MatrixRow(
+            journey="GJ-1",
+            component="agent-suite",
+            surface="profile-aware bootstrap / deploy CLI",
+            profile="A",
+            status=_status_label(Status.ABSENT),
+            dependency="Plan 008 WI-3.2, Plan 009 WI-4.1",
+            proof="—",
+            excluded="SaaS, Kubernetes operator, fleet remote management",
+            notes="No single deploy front door exists; bootstrap is per-component.",
+        ),
+        MatrixRow(
+            journey="GJ-1",
+            component="agent-suite",
+            surface="project onboarding and harness selection",
+            profile="A",
+            status=_status_label(Status.ABSENT),
+            dependency="Plan 009 WI-1.3, Plan 009 WI-4.1",
+            proof="—",
+            excluded="—",
+            notes="Project provisioning is component-local today.",
+        ),
+        MatrixRow(
+            journey="GJ-1",
+            component="regista",
+            surface="project / schema provisioning",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="Regista.create_project, regista provision; tests/test_provision.py",
+            excluded="Multi-region active/active replication",
+            notes="PostgreSQL schema + roles created idempotently.",
+        ),
+        MatrixRow(
+            journey="GJ-1",
+            component="regista",
+            surface="workflow registration and discovery",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="Regista.register_workflow, regista workflow validate",
+            excluded="General saga / workflow execution engine",
+            notes="Canonical workflow is versioned and stored per project.",
+        ),
+        MatrixRow(
+            journey="GJ-1",
+            component="agent-notes",
+            surface="project discovery from cwd and per-user identity",
+            profile="A",
+            status=_status_label(Status.PARTIAL),
+            dependency="agent-notes WI-013",
+            proof="src/agent_notes/core/face_factory.py",
+            excluded="—",
+            notes="Per-project RegistaFace exists but write-through is gated.",
+        ),
+        MatrixRow(
+            journey="GJ-1",
+            component="dossier",
+            surface="authenticated project switcher",
+            profile="B",
+            status=_status_label(Status.PARTIAL),
+            dependency="dossier WI-017",
+            proof="src/dossier/app.py:149-175, src/dossier/authz.py",
+            excluded="—",
+            notes="Authz implementation exists but defaults to flat-open.",
+        ),
+        MatrixRow(
+            journey="GJ-1",
+            component="regista",
+            surface="principal enrollment, rotation, revocation, delegation",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="src/regista/_principal_keys.py; regista principal revoke CLI",
+            excluded="—",
+            notes="Asymmetric principal key registry with validity windows and revocation.",
+        ),
+        MatrixRow(
+            journey="GJ-1",
+            component="agent-suite",
+            surface="identity lifecycle / onboarding / offboarding",
+            profile="A",
+            status=_status_label(Status.ABSENT),
+            dependency="Plan 009 WI-1.3, Plan 009 WI-2.2",
+            proof="—",
+            excluded="—",
+            notes="No suite-level onboarding/offboarding front door exists.",
+        ),
+        # GJ-2 — Plan and execute work
+        MatrixRow(
+            journey="GJ-2",
+            component="regista",
+            surface="work-item lifecycle (create, claim, transition)",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="Regista.create_work_item / transition / replay; adversarial corpus",
+            excluded="—",
+            notes="Canonical workflow covers start, submit, review, accept, done.",
+        ),
+        MatrixRow(
+            journey="GJ-2",
+            component="agent-notes",
+            surface="work-item skills / CLI",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="src/agent_notes/cli/work_items.py",
+            excluded="—",
+            notes="Full create / claim / transition / review CLI surface.",
+        ),
+        MatrixRow(
+            journey="GJ-2",
+            component="dossier",
+            surface="work queues, detail, transition, review forms",
+            profile="B",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="src/dossier/app.py:779-1028",
+            excluded="Sprint planning, time tracking, billing",
+            notes="Web create/edit/transition/review flows are present.",
+        ),
+        MatrixRow(
+            journey="GJ-2",
+            component="regista",
+            surface="race-free claim / assignment",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="src/regista/_api_claim.py; tests/test_claims.py",
+            excluded="—",
+            notes="Lease-based claims with expiry and heartbeat.",
+        ),
+        MatrixRow(
+            journey="GJ-2",
+            component="dossier",
+            surface="separation-of-duties enforcement in review",
+            profile="B",
+            status=_status_label(Status.BLOCKED),
+            dependency="dossier WI-014",
+            proof="src/dossier/assurance.py:55-59",
+            excluded="—",
+            notes="compute_assurance_level fails open on undeclared reviewer lineage.",
+        ),
+        # GJ-3 — Capture and reuse knowledge
+        MatrixRow(
+            journey="GJ-3",
+            component="agent-notes",
+            surface="breadcrumb / memory / reflection skills and CLI",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="skills/file-breadcrumb/SKILL.md, skills/add-memory/SKILL.md, skills/reflect/SKILL.md; src/agent_notes/cli/memory.py",
+            excluded="General wiki / document authoring",
+            notes="Skills and CLI both present.",
+        ),
+        MatrixRow(
+            journey="GJ-3",
+            component="agent-notes",
+            surface="signed note write-through to regista",
+            profile="A",
+            status=_status_label(Status.PARTIAL),
+            dependency="agent-notes WI-013, dossier Plan 009",
+            proof="src/agent_notes/core/note_model.py, src/agent_notes/core/memory_model.py",
+            excluded="—",
+            notes="Write-through implemented but gated; dossier has no note read surface.",
+        ),
+        MatrixRow(
+            journey="GJ-3",
+            component="dossier",
+            surface="knowledge read / browse / search",
+            profile="B",
+            status=_status_label(Status.ABSENT),
+            dependency="dossier Plan 009",
+            proof="—",
+            excluded="—",
+            notes="No routes or templates for note / knowledge entities.",
+        ),
+        MatrixRow(
+            journey="GJ-3",
+            component="agent-notes",
+            surface="search across breadcrumbs, memories, links",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="src/agent_notes/cli/search.py",
+            excluded="—",
+            notes="CLI search covers all three entity kinds.",
+        ),
+        # GJ-4 — Review with separation of duties
+        MatrixRow(
+            journey="GJ-4",
+            component="agent-notes",
+            surface="review CLI (pass, accept, reject, request-changes)",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="src/agent_notes/cli/work_items.py:1053-1131",
+            excluded="—",
+            notes="Adversarial-review skill consumes the same surface.",
+        ),
+        MatrixRow(
+            journey="GJ-4",
+            component="dossier",
+            surface="review queue and verdict forms",
+            profile="B",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="src/dossier/app.py:629-665, :923-1028",
+            excluded="—",
+            notes="Accept/reject/request-changes supported in web UI.",
+        ),
+        MatrixRow(
+            journey="GJ-4",
+            component="regista",
+            surface="cross-lineage review validators",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="regista canonical workflow; adversarial corpus unauthorized_project_access",
+            excluded="—",
+            notes="Workflow enforces distinct actor roles.",
+        ),
+        MatrixRow(
+            journey="GJ-4",
+            component="dossier",
+            surface="honest assurance level / independent-review signal",
+            profile="B",
+            status=_status_label(Status.BLOCKED),
+            dependency="dossier WI-014, WI-012",
+            proof="src/dossier/assurance.py",
+            excluded="—",
+            notes="Fails open and is home-grown instead of delegated to regista.",
+        ),
+        # GJ-5 — Understand agent activity
+        MatrixRow(
+            journey="GJ-5",
+            component="agent-provenance",
+            surface="session and tool begin/end capture",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="src/cairn/_claude_hook.py; live proof passed 2026-07-11",
+            excluded="Covert monitoring of unsanctioned harnesses, screen recording",
+            notes="Claude and OpenCode hooks are proven; Hermes is provisional.",
+        ),
+        MatrixRow(
+            journey="GJ-5",
+            component="agent-provenance",
+            surface="principal / delegation / work binding",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="src/cairn/adapter.py:744-782; CairnClient.tool_call work_item_id",
+            excluded="—",
+            notes="Subagent attribution and on_behalf_of are captured.",
+        ),
+        MatrixRow(
+            journey="GJ-5",
+            component="dossier",
+            surface="session / tool / file activity views",
+            profile="B",
+            status=_status_label(Status.PARTIAL),
+            dependency="dossier Plan 017/018",
+            proof="src/dossier/app.py:563-625, src/dossier/provenance.py",
+            excluded="—",
+            notes="Session list/detail and tool trail exist; verification UX is partial.",
+        ),
+        MatrixRow(
+            journey="GJ-5",
+            component="dossier",
+            surface="degraded / unsupported capture rendered honestly",
+            profile="B",
+            status=_status_label(Status.PARTIAL),
+            dependency="dossier WI-012",
+            proof="src/dossier/assurance.py",
+            excluded="—",
+            notes="Relies on assurance level, which currently fails open.",
+        ),
+        # GJ-6 — Supply an approved capability
+        MatrixRow(
+            journey="GJ-6",
+            component="agent-capability-broker",
+            surface="manifest, reconcile, exec, install-harness",
+            profile="C",
+            status=_status_label(Status.PARTIAL),
+            dependency="acb Plan 006 WI-1.2",
+            proof="src/agent_capability_broker/cli.py:448-505; tests/test_doctor_conformance.py",
+            excluded="Credential marketplace, device management",
+            notes="Core verbs exist; e2e exec is NotImplementedError.",
+        ),
+        MatrixRow(
+            journey="GJ-6",
+            component="agent-capability-broker",
+            surface="credential provider with secret-safe injection",
+            profile="C",
+            status=_status_label(Status.PARTIAL),
+            dependency="acb Plan 006 WI-1.2",
+            proof="src/agent_capability_broker/providers.py:352-494; tests/test_exec.py",
+            excluded="—",
+            notes="Provider injection works and is unit-tested; full end-to-end `acb exec` invocation is NotImplementedError.",
+        ),
+        MatrixRow(
+            journey="GJ-6",
+            component="agent-capability-broker",
+            surface="browser / E2E provider and live proof",
+            profile="C",
+            status=_status_label(Status.PARTIAL),
+            dependency="acb Plan 006 WI-1.2, Plan 007",
+            proof="src/agent_capability_broker/providers.py:118-258; tests/test_e2e.py",
+            excluded="—",
+            notes="E2eProvider.inspect exists; exec is not implemented; Codex deferred.",
+        ),
+        MatrixRow(
+            journey="GJ-6",
+            component="agent-capability-broker",
+            surface="rogue / clobbered capability detection",
+            profile="C",
+            status=_status_label(Status.ABSENT),
+            dependency="agent-suite WI-001 capability_clobber",
+            proof="—",
+            excluded="—",
+            notes="Doctor only inspects manifest-listed capabilities.",
+        ),
+        # GJ-7 — Deliver a signal
+        MatrixRow(
+            journey="GJ-7",
+            component="agent-wake",
+            surface="authenticated HTTP ingress",
+            profile="C",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="daemon/src/agent_waked/ingest.py:140-182",
+            excluded="Universal wake protocol",
+            notes="HMAC-SHA256 per-source auth.",
+        ),
+        MatrixRow(
+            journey="GJ-7",
+            component="agent-wake",
+            surface="durable dedup / retry / outbox / dead-letter",
+            profile="C",
+            status=_status_label(Status.PARTIAL),
+            dependency="agent-wake BC-WAKE-004, BC-WAKE-012",
+            proof="daemon/src/agent_waked/ingest.py:57-73; tests/test_ingest.py:93-108",
+            excluded="Exactly-once delivery across external systems",
+            notes="Dedup is in-memory FIFO; no durable inbox or dead-letter visibility.",
+        ),
+        MatrixRow(
+            journey="GJ-7",
+            component="agent-wake",
+            surface="live_wake (Claude, OpenCode)",
+            profile="C",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="adapters/opencode/src/wake.ts:88-157; adapters/claude/src/agent_wake_claude/channel.py",
+            excluded="—",
+            notes="Both adapters can deliver live prompts.",
+        ),
+        MatrixRow(
+            journey="GJ-7",
+            component="agent-wake",
+            surface="silent_inject",
+            profile="C",
+            status=_status_label(Status.PARTIAL),
+            dependency="agent-wake Plan 006",
+            proof="adapters/opencode/src/wake.ts:125-126",
+            excluded="—",
+            notes="OpenCode supports silent inject; Claude adapter drops silent events.",
+        ),
+        MatrixRow(
+            journey="GJ-7",
+            component="agent-wake",
+            surface="next_session / managed_session delivery",
+            profile="C",
+            status=_status_label(Status.ABSENT),
+            dependency="agent-wake Plan 006",
+            proof="—",
+            excluded="—",
+            notes="Design exists; no implementation.",
+        ),
+        MatrixRow(
+            journey="GJ-7",
+            component="agent-wake",
+            surface="human webhook and email delivery",
+            profile="C",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="daemon/src/agent_waked/channels/webhook.py; daemon/src/agent_waked/channels/email.py",
+            excluded="Replacing chat/email providers",
+            notes="Signed webhook and SMTP email channels implemented.",
+        ),
+        MatrixRow(
+            journey="GJ-7",
+            component="agent-wake",
+            surface="replayed event rejection",
+            profile="C",
+            status=_status_label(Status.PARTIAL),
+            dependency="agent-wake BC-WAKE-004, BC-WAKE-012",
+            proof="daemon/src/agent_waked/ingest.py:209-210; tests/test_ingest.py:93-108; tests/test_e2e.py:309-343",
+            excluded="—",
+            notes="Duplicate event_id rejected while daemon is running; in-memory dedup is lost on restart, so post-restart replay is not prevented.",
+        ),
+        MatrixRow(
+            journey="GJ-7",
+            component="dossier",
+            surface="notification preferences and review/recovery deep links",
+            profile="B",
+            status=_status_label(Status.ABSENT),
+            dependency="Plan 009 WI-3.3, dossier Plan 018",
+            proof="—",
+            excluded="Replacing chat/email providers",
+            notes="No notification preference UI or deep-link routing exists.",
+        ),
+        # GJ-8 — Investigate and export evidence
+        MatrixRow(
+            journey="GJ-8",
+            component="regista",
+            surface="scoped evidence bundle export",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="Regista.export_audit_bundle; src/regista/_bundle.py:71",
+            excluded="—",
+            notes="Self-contained JSON with events, receipts, segments, public keys.",
+        ),
+        MatrixRow(
+            journey="GJ-8",
+            component="regista",
+            surface="offline bundle verification",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="Regista.verify_audit_bundle_offline; src/regista/_bundle.py:230",
+            excluded="—",
+            notes="v2 verifies ed25519 signatures; v1 reports skipped honestly.",
+        ),
+        MatrixRow(
+            journey="GJ-8",
+            component="agent-provenance",
+            surface="bundle export, diff/chain verify, human report",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="src/cairn/_cli.py:318-750; src/cairn/proof.py",
+            excluded="—",
+            notes="cairn verify, verify-chain, export, diff, portal all present.",
+        ),
+        MatrixRow(
+            journey="GJ-8",
+            component="agent-suite",
+            surface="suite-level evidence export orchestration",
+            profile="A",
+            status=_status_label(Status.ABSENT),
+            dependency="Plan 009 WI-2.3",
+            proof="—",
+            excluded="—",
+            notes="Components export individually; no suite orchestration yet.",
+        ),
+        # GJ-9 — Operate and recover
+        MatrixRow(
+            journey="GJ-9",
+            component="agent-suite",
+            surface="profile-aware doctor aggregation",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="src/agent_suite/doctor.py; tests/test_doctor.py",
+            excluded="—",
+            notes="Honest health reporting for required/optional components.",
+        ),
+        MatrixRow(
+            journey="GJ-9",
+            component="agent-suite",
+            surface="compatibility lock and drift check",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="src/agent_suite/lock.py; tests/test_lock.py",
+            excluded="—",
+            notes="SUITE.lock parsing and drift detection implemented.",
+        ),
+        MatrixRow(
+            journey="GJ-9",
+            component="agent-suite",
+            surface="backup / restore / disaster recovery orchestration",
+            profile="A",
+            status=_status_label(Status.ABSENT),
+            dependency="Plan 008 WI-4.1, Plan 009 WI-4.2",
+            proof="—",
+            excluded="—",
+            notes="No scheduled protection or restore orchestration yet.",
+        ),
+        MatrixRow(
+            journey="GJ-9",
+            component="agent-suite",
+            surface="upgrade / rollback / forward-recovery gates",
+            profile="A",
+            status=_status_label(Status.ABSENT),
+            dependency="Plan 008 WI-3.4, Plan 009 WI-4.2",
+            proof="—",
+            excluded="—",
+            notes="No staged upgrade flow exists.",
+        ),
+        MatrixRow(
+            journey="GJ-9",
+            component="regista",
+            surface="version / config / secret / doctor contracts",
+            profile="A",
+            status=_status_label(Status.PASS),
+            dependency="—",
+            proof="regista doctor --json; src/regista/_cli.py doctor commands",
+            excluded="—",
+            notes="Doctor, version, and config contracts are exposed.",
+        ),
+    ]
+
+
+def _matrix() -> Matrix:
+    return Matrix(
+        version="v1",
+        generated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        status_source="hand-assessed",
+        profiles=["A", "B", "C"],
+        golden_journeys={
+            "GJ-1": "Start a project",
+            "GJ-2": "Plan and execute work",
+            "GJ-3": "Capture and reuse knowledge",
+            "GJ-4": "Review with separation of duties",
+            "GJ-5": "Understand agent activity",
+            "GJ-6": "Supply an approved capability",
+            "GJ-7": "Deliver a signal",
+            "GJ-8": "Investigate and export evidence",
+            "GJ-9": "Operate and recover",
+        },
+        rows=_matrix_rows(),
+    )
+
+
+def _validate(matrix: Matrix) -> list[str]:
+    errors: list[str] = []
+    allowed = _allowed_statuses()
+    seen: set[tuple[str, str, str]] = set()
+    for row in matrix.rows:
+        key = (row.journey, row.component, row.surface)
+        if key in seen:
+            errors.append(f"duplicate row: {key}")
+        seen.add(key)
+        if row.status not in allowed:
+            errors.append(
+                f"invalid status {row.status!r} for {key}; expected one of {sorted(allowed)}"
+            )
+        if row.journey not in matrix.golden_journeys:
+            errors.append(f"unknown journey {row.journey!r} for {key}")
+        if row.profile not in matrix.profiles:
+            errors.append(f"invalid profile {row.profile!r} for {key}")
+    return errors
+
+
+def _matrix_to_json(matrix: Matrix) -> str:
+    payload = {
+        "version": matrix.version,
+        "generated_at": matrix.generated_at,
+        "status_source": matrix.status_source,
+        "profiles": matrix.profiles,
+        "golden_journeys": matrix.golden_journeys,
+        "rows": [asdict(row) for row in matrix.rows],
+    }
+    return json.dumps(payload, indent=2) + "\n"
+
+
+def _matrix_to_markdown(matrix: Matrix) -> str:
+    lines: list[str] = []
+    lines.append("# v1 Feature Matrix (Plan 009 WI-0.1)")
+    lines.append("")
+    lines.append(f"**Version:** {matrix.version}  ")
+    lines.append(f"**Generated:** {matrix.generated_at}  ")
+    lines.append(f"**Status source:** {matrix.status_source}")
+    lines.append("**Status values:** pass / partial / blocked / absent")
+    lines.append("")
+    if matrix.status_source == "probe-emitted":
+        lines.append(
+            "This matrix is emitted by the WI-0.3 baseline run; do not hand-edit the status column."
+        )
+    else:
+        lines.append(
+            "Status values are hand-assessed from cross-project review. "
+            "The WI-0.3 baseline run will replace them with probe-emitted statuses."
+        )
+    lines.append("")
+    lines.append("## Golden journeys")
+    lines.append("")
+    for key, value in matrix.golden_journeys.items():
+        lines.append(f"- **{key}** — {value}")
+    lines.append("")
+    lines.append("## Matrix")
+    lines.append("")
+    header = "| Journey | Profile | Component | Surface | Status | Dependency | Proof | Excluded | Notes |"
+    separator = "|---|---|---|---|---|---|---|---|---|"
+    lines.append(header)
+    lines.append(separator)
+    for row in matrix.rows:
+        cells = [
+            row.journey,
+            row.profile,
+            row.component,
+            row.surface,
+            row.status,
+            row.dependency,
+            row.proof,
+            row.excluded,
+            row.notes,
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Generate the Plan 009 v1 feature matrix.")
+    parser.add_argument(
+        "--data",
+        type=Path,
+        default=DATA_PATH,
+        help="Path to write the JSON matrix artifact",
+    )
+    parser.add_argument(
+        "--docs",
+        type=Path,
+        default=DOCS_PATH,
+        help="Path to write the Markdown matrix",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate and exit non-zero on errors",
+    )
+    parser.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Print Markdown to stdout instead of writing files",
+    )
+    args = parser.parse_args(argv)
+
+    matrix = _matrix()
+    errors = _validate(matrix)
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    if args.check:
+        return 0
+
+    markdown = _matrix_to_markdown(matrix)
+    if args.stdout:
+        print(markdown)
+        return 0
+
+    args.data.parent.mkdir(parents=True, exist_ok=True)
+    args.docs.parent.mkdir(parents=True, exist_ok=True)
+    args.data.write_text(_matrix_to_json(matrix), encoding="utf-8")
+    args.docs.write_text(markdown, encoding="utf-8")
+    print(f"Wrote {args.data}")
+    print(f"Wrote {args.docs}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
