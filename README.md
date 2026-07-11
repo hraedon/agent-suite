@@ -3,12 +3,12 @@
 **Deploy the agent suite as one system, not six installs.**
 
 `agent-suite` is the thin orchestration layer that turns six independently-useful
-tools — [regista](https://github.com/hraedon/regista) (the store),
-[dossier](https://github.com/hraedon/dossier) (human face),
-[agent-notes](https://github.com/hraedon/agent-notes) (agent face),
-[agent-provenance](https://github.com/hraedon/agent-provenance) (`cairn`,
-attestation), [agent-capability-broker](https://github.com/hraedon/agent-capability-broker)
-(`acb`, capability parity), and [agent-wake](https://github.com/hraedon/agent-wake)
+tools — [regista](https://github.com/YOUR-ORG/regista) (the store),
+[dossier](https://github.com/YOUR-ORG/dossier) (human face),
+[agent-notes](https://github.com/YOUR-ORG/agent-notes) (agent face),
+[agent-provenance](https://github.com/YOUR-ORG/agent-provenance) (`cairn`,
+attestation), [agent-capability-broker](https://github.com/YOUR-ORG/agent-capability-broker)
+(`acb`, capability parity), and [agent-wake](https://github.com/YOUR-ORG/agent-wake)
 (signaling) — into a suite that deploys, checks out, and versions as a unit.
 
 It owns five things and no more:

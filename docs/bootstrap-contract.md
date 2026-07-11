@@ -92,12 +92,12 @@ regista_workflow_version = "canonical/1"
 regista_envelope_version = "v4"
 
 [components]
-regista        = { repo = "hraedon/regista",        rev = "<sha>" }
-dossier        = { repo = "hraedon/dossier",        rev = "<sha>" }
-agent-notes    = { repo = "hraedon/agent-notes",    rev = "<sha>" }
-agent-provenance = { repo = "hraedon/agent-provenance", rev = "<sha>" }
-agent-capability-broker = { repo = "hraedon/agent-capability-broker", rev = "<sha>" }
-agent-wake     = { repo = "hraedon/agent-wake",     rev = "<sha>" }
+regista        = { repo = "YOUR-ORG/regista",        rev = "<sha>" }
+dossier        = { repo = "YOUR-ORG/dossier",        rev = "<sha>" }
+agent-notes    = { repo = "YOUR-ORG/agent-notes",    rev = "<sha>" }
+agent-provenance = { repo = "YOUR-ORG/agent-provenance", rev = "<sha>" }
+agent-capability-broker = { repo = "YOUR-ORG/agent-capability-broker", rev = "<sha>" }
+agent-wake     = { repo = "YOUR-ORG/agent-wake",     rev = "<sha>" }
 ```
 
 `agent-suite lock` regenerates it from the currently-pinned set; `doctor` compares
@@ -128,7 +128,7 @@ Plan 026). A lock that can't do this is not a release.
 ## 7. Substrate posture (Plan 003 WI-0)
 
 The suite's deployment target includes **Windows** (blueprint decision 1: Linux +
-Docker + Windows Service). The confirmed posture (Paul, 2026-07-06) is:
+Docker + Windows Service). The confirmed posture (OPERATOR, 2026-07-06) is:
 
 - **Native Windows Python core** for the library, CLI, and harness layer (cairn's
   attestation hook fires on every tool call inside Claude Code's own process —

@@ -33,7 +33,7 @@ as Generic Credentials with a target name the suite will reference.
 ### DSN password
 
 ```powershell
-cmdkey /generic:agent-suite/regista/dsn-password /user:regista_service /pass:"<the regista_service role password>"
+cmdkey /generic:agent-suite/regista/dsn-password /user:DB-SERVICE-ACCOUNT /pass:"<the DB-SERVICE-ACCOUNT role password>"
 ```
 
 ### Regista system signing key
@@ -75,7 +75,7 @@ In the system `suite.env`
 (`%ProgramData%\agent-suite\suite.env`):
 
 ```env
-REGISTA_DSN=postgresql://regista_service@suite-db.example:5432/regista
+REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista
 REGISTA_DSN_PASSWORD=wincred:agent-suite/regista/dsn-password
 REGISTA_KEY_PATH=wincred:agent-suite/regista/signing-key
 REGISTA_REQUIRE_SSL=true

@@ -5,7 +5,7 @@ description = "Deploy the agent suite as one system: bootstrap, compatibility lo
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "hraedon" }]
+authors = [{ name = "YOUR-ORG" }]
 dependencies = []  # stdlib-only core
 
 [project.optional-dependencies]

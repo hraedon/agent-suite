@@ -1,9 +1,9 @@
-# Deployment #1 — mvmhermes01 (2026-07-10)
+# Deployment #1 — WORK-STATION-01 (2026-07-10)
 
-**Target:** mvmhermes01 (192.168.1.90), Ubuntu 26.04, Python 3.14.4
-**Operator:** operator
+**Target:** WORK-STATION-01 (WORK-STATION-IP), Ubuntu 26.04, Python 3.14.4
+**Operator:** OPERATOR-NAME
 **Plan:** agent-suite Plan 004 (dogfood deployment)
-**Postgres:** suite-db.example (192.168.1.22) — shared converged store
+**Postgres:** suite-db.example (SUITE-DB-IP) — shared converged store
 **Harness:** Hermes (pre-installed, no prior agent-* integration)
 
 ## What was deployed
@@ -28,18 +28,18 @@ Tier 0–1 core + agent-suite orchestration layer:
    regista (with `[ed25519]` extra for PyNaCl), agent-notes (with PyNaCl),
    cairn, agent-suite.
 3. **Set up suite.env** at `~/.config/agent-suite/suite.env` with:
-   - `REGISTA_DSN` pointing to the regista database on 192.168.1.22 (via IP —
+   - `REGISTA_DSN` pointing to the regista database on SUITE-DB-IP (via IP —
      DNS is mangled on this box)
    - `REGISTA_KEY_PATH` pointing to the store-level signing key
    - `REGISTA_PROJECT=agent_notes`, `CAIRN_PROJECT=agent_provenance`
-   - `PRINCIPAL_ID=hermes-agent`
+   - `PRINCIPAL_ID=WORK-PRINCIPAL`
    - `AGENT_NOTES_DSN` pointing to the separate `agent_notes` database
    - `AGENT_NOTES_REGISTA_WRITES=1`
 4. **Copied the store-level HMAC key** from the operator box
    (`~/.config/regista/keys.json`) — needed for chain verification.
-5. **Provisioned Ed25519 principal** `hermes-agent` for two projects:
-   - `agent_provenance` (key_id `pk_be8ebbac...`, file backend)
-   - `agent_notes` (key_id `pk_6c345369...`, file backend)
+5. **Provisioned Ed25519 principal** `WORK-PRINCIPAL` for two projects:
+   - `agent_provenance` (key_id `pk_PLACEHOLDER...`, file backend)
+   - `agent_notes` (key_id `pk_PLACEHOLDER2...`, file backend)
 6. **Ran `agent-suite bootstrap --tier 0-1`** — all steps passed:
    - probe_secrets: done
    - probe_db: done
@@ -78,13 +78,13 @@ package data. A proper fix requires adding `include` rules to each repo's
 
 ## Findings (deviations from the docs)
 
-1. **DNS is mangled on mvmhermes01** — `suite-db.example.ad.example.com` does
-   not resolve. All DSNs use the IP `192.168.1.22` instead. The operator
+1. **DNS is mangled on WORK-STATION-01** — `suite-db.example` does
+   not resolve. All DSNs use the IP `SUITE-DB-IP` instead. The operator
    should fix DNS or add `/etc/hosts` entries.
 
 2. **agent-notes has two databases** — the native DB (`agent_notes` database,
-   owned by `notes_service`) is separate from the regista store (`regista`
-   database, owned by `regista_service`). The suite.env must set both
+   owned by `DB-SERVICE-ACCOUNT-2`) is separate from the regista store (`regista`
+   database, owned by `DB-SERVICE-ACCOUNT`). The suite.env must set both
    `REGISTA_DSN` and `AGENT_NOTES_DSN`. The agent-notes `resolve_dsn()`
    function does not fall back to `REGISTA_DSN` — it only reads
    `AGENT_NOTES_DSN` or the config file. This is a Plan 017 tail item.
@@ -153,23 +153,23 @@ regista_workflow_version = "canonical/2"
 regista_envelope_version = "v4"
 
 [components]
-regista = { repo = "hraedon/regista", version = "0.5.0" }
-agent-provenance = { repo = "hraedon/agent-provenance", version = "0.1.0" }
+regista = { repo = "YOUR-ORG/regista", version = "0.5.0" }
+agent-provenance = { repo = "YOUR-ORG/agent-provenance", version = "0.1.0" }
 ```
 
 ### Principal provisioned
-- `hermes-agent` @ `agent_provenance` — Ed25519, key_id `pk_be8ebbac...`
-- `hermes-agent` @ `agent_notes` — Ed25519, key_id `pk_6c345369...`
+- `WORK-PRINCIPAL` @ `agent_provenance` — Ed25519, key_id `pk_PLACEHOLDER...`
+- `WORK-PRINCIPAL` @ `agent_notes` — Ed25519, key_id `pk_PLACEHOLDER2...`
 
 ### Hermes .env (cairn managed block)
 ```
 # BEGIN cairn-harness-managed
-REGISTA_DSN=postgresql://regista_service:...@192.168.1.22:5432/regista
-REGISTA_KEY_PATH=/home/operator/.config/regista/keys.json
+REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT:...@SUITE-DB-IP:5432/regista
+REGISTA_KEY_PATH=/home/OPERATOR-NAME/.config/regista/keys.json
 CAIRN_PROJECT=agent_provenance
 CAIRN_HARNESS_NAME=hermes
 CAIRN_HARNESS_VERSION=Hermes
-PRINCIPAL_ID=hermes-agent
+PRINCIPAL_ID=WORK-PRINCIPAL
 # END cairn-harness-managed
 ```
 

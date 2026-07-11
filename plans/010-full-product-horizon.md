@@ -1,6 +1,6 @@
 # Plan 010 — Full product horizon: every warranted suite capability
 
-**Status:** Exploratory product horizon, proposed 2026-07-10.  
+**Status:** Proposed (exploratory product horizon), proposed 2026-07-10.  
 **Author:** GPT-5.6 Sol.  
 **Strategic role:** Describe the complete set of features that make sense for
 the suite if time and adoption justify them. Unlike Plan 009, this is not a v1

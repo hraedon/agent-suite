@@ -16,6 +16,7 @@ from agent_suite.doctor import (
     aggregate,
     format_text,
 )
+from agent_suite.profiles import Profile
 
 
 def _aggregate_safe(
@@ -232,6 +233,71 @@ def test_degraded_not_failure() -> None:
     assert report.suite_ok is True
 
 
+# --- missing ok field (fail-honest) ------------------------------------------
+
+
+def test_missing_ok_with_empty_checks_is_failed() -> None:
+    missing_ok = json.dumps({"checks": []})
+    base = {c.doctor_cmd[0]: _completed(stdout=_ok_json(c.ident)) for c in COMPONENTS}
+    base["regista"] = _completed(stdout=missing_ok)
+    report = _aggregate_safe(installed=_installed_all(), runner=StubRunner(base))
+    r = next(x for x in report.components if x.tier is Tier.SPINE)
+    assert r.status is ComponentStatus.FAILED
+    assert r.ok is False
+    assert "ok" in r.detail
+    assert report.suite_ok is False
+
+
+def test_empty_dict_is_failed() -> None:
+    base = {c.doctor_cmd[0]: _completed(stdout=_ok_json(c.ident)) for c in COMPONENTS}
+    base["regista"] = _completed(stdout="{}")
+    report = _aggregate_safe(installed=_installed_all(), runner=StubRunner(base))
+    r = next(x for x in report.components if x.tier is Tier.SPINE)
+    assert r.status is ComponentStatus.FAILED
+    assert r.ok is False
+    assert "ok" in r.detail
+
+
+def test_missing_ok_with_all_ok_checks_is_failed() -> None:
+    missing_ok = json.dumps({"checks": [{"status": "ok"}]})
+    base = {c.doctor_cmd[0]: _completed(stdout=_ok_json(c.ident)) for c in COMPONENTS}
+    base["regista"] = _completed(stdout=missing_ok)
+    report = _aggregate_safe(installed=_installed_all(), runner=StubRunner(base))
+    r = next(x for x in report.components if x.tier is Tier.SPINE)
+    assert r.status is ComponentStatus.FAILED
+    assert r.ok is False
+    assert "ok" in r.detail
+
+
+def test_missing_ok_no_checks_key_is_failed() -> None:
+    missing_ok = json.dumps({"version": "1.0.0"})
+    base = {c.doctor_cmd[0]: _completed(stdout=_ok_json(c.ident)) for c in COMPONENTS}
+    base["regista"] = _completed(stdout=missing_ok)
+    report = _aggregate_safe(installed=_installed_all(), runner=StubRunner(base))
+    r = next(x for x in report.components if x.tier is Tier.SPINE)
+    assert r.status is ComponentStatus.FAILED
+    assert r.ok is False
+    assert "ok" in r.detail
+
+
+def test_present_ok_true_with_checks_is_ok() -> None:
+    base = {c.doctor_cmd[0]: _completed(stdout=_ok_json(c.ident)) for c in COMPONENTS}
+    report = _aggregate_safe(installed=_installed_all(), runner=StubRunner(base))
+    r = next(x for x in report.components if x.tier is Tier.SPINE)
+    assert r.status is ComponentStatus.OK
+    assert r.ok is True
+
+
+def test_present_ok_false_is_failed() -> None:
+    bad = json.dumps({"ok": False, "checks": []})
+    base = {c.doctor_cmd[0]: _completed(stdout=_ok_json(c.ident)) for c in COMPONENTS}
+    base["regista"] = _completed(stdout=bad)
+    report = _aggregate_safe(installed=_installed_all(), runner=StubRunner(base))
+    r = next(x for x in report.components if x.tier is Tier.SPINE)
+    assert r.status is ComponentStatus.FAILED
+    assert r.ok is False
+
+
 # --- read-only / no mutation -------------------------------------------------
 
 
@@ -278,7 +344,7 @@ def test_doctor_lock_section_reports_drift(tmp_path: Path) -> None:
     locked = SuiteLock(
         release="1.0.0",
         regista_quad=None,
-        components={"regista": ComponentPin(repo="hraedon/regista", version="0.1.0")},
+        components={"regista": ComponentPin(repo="YOUR-ORG/regista", version="0.1.0")},
     )
     lock_path = tmp_path / "SUITE.lock"
     write_lock_file(locked, lock_path)
@@ -380,3 +446,83 @@ def test_aggregate_post_restore_failure_makes_suite_not_ok(tmp_path: Path) -> No
     assert report.suite_ok is False
     assert report.post_restore is not None
     assert report.post_restore.ok is False
+
+
+# --- profile classification (Plan 008 WI-0.1) ---------------------------------
+
+
+def test_aggregate_with_profile_attaches_classification(tmp_path: Path) -> None:
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = aggregate(
+        installed=_installed_all(),
+        runner=_runner_for(outputs),
+        lock_path=tmp_path / "SUITE.lock",
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+        profile=Profile.C,
+    )
+    assert report.profile_classification is not None
+    assert report.profile_classification.profile is Profile.C
+    assert report.profile_classification.missing_required == []
+    assert report.profile_classification.extra_optional == []
+
+
+def test_aggregate_without_profile_has_no_classification(tmp_path: Path) -> None:
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = aggregate(
+        installed=_installed_all(),
+        runner=_runner_for(outputs),
+        lock_path=tmp_path / "SUITE.lock",
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+    )
+    assert report.profile_classification is None
+
+
+def test_aggregate_profile_classification_json_round_trip(tmp_path: Path) -> None:
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = aggregate(
+        installed=_installed_all(),
+        runner=_runner_for(outputs),
+        lock_path=tmp_path / "SUITE.lock",
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+        profile=Profile.C,
+    )
+    d = report.to_dict()
+    assert "profile_classification" in d
+    pc = d["profile_classification"]
+    assert isinstance(pc, dict)
+    assert pc["profile"] == "C"
+    assert pc["missing_required"] == []
+    assert pc["extra_optional"] == []
+
+
+def test_aggregate_profile_classification_text_section(tmp_path: Path) -> None:
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = aggregate(
+        installed=_installed_all(),
+        runner=_runner_for(outputs),
+        lock_path=tmp_path / "SUITE.lock",
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+        profile=Profile.A,
+    )
+    text = format_text(report)
+    assert "profile classification" in text
+    assert "profile: C (Operated full suite)" in text
+
+
+def test_aggregate_profile_classification_without_profile_omits_from_dict(
+    tmp_path: Path,
+) -> None:
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = aggregate(
+        installed=_installed_all(),
+        runner=_runner_for(outputs),
+        lock_path=tmp_path / "SUITE.lock",
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+    )
+    d = report.to_dict()
+    assert "profile_classification" not in d

@@ -63,7 +63,7 @@ notepad "$env:ProgramData\agent-suite\suite.env"
 Fill in the placeholders. Secrets are backend refs, never literals:
 
 ```env
-REGISTA_DSN=postgresql://regista_service@suite-db.example:5432/regista
+REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista
 REGISTA_DSN_PASSWORD=wincred:agent-suite/regista/dsn-password
 REGISTA_KEY_PATH=wincred:agent-suite/regista/signing-key
 REGISTA_REQUIRE_SSL=true

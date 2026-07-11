@@ -23,6 +23,7 @@ _CORE_MODULES = (
     "schedule",
     "alerting",
     "key_watch",
+    "profiles",
 )
 _FORBIDDEN_PREFIXES = (
     "hvac",  # Vault

@@ -9,9 +9,9 @@ named state, not silence — and not a failure for an optional tier); a componen
 that's installed but unreachable or reports `ok:false` is a failure. The umbrella
 is strictly read-only.
 
-The component `<tool> doctor --json` contract is not yet implemented by any
-component, so this module parses defensively: a missing/`ok:false`/non-JSON result
-is a named status, never a traceback.
+The component `<tool> doctor --json` contract requires a top-level `ok` boolean.
+Components that omit it are treated as failed (fail-honest: unknown health is
+not healthy). A missing/non-JSON result is a named status, never a traceback.
 """
 
 from __future__ import annotations
@@ -28,6 +28,12 @@ from agent_suite import key_watch
 from agent_suite import lock
 from agent_suite import verify_restore
 from agent_suite.components import COMPONENTS, Component, Tier
+from agent_suite.profiles import (
+    Profile,
+    ProfileClassification,
+    classify_doctor,
+    profile_label,
+)
 
 
 class ComponentStatus(Enum):
@@ -130,6 +136,7 @@ class SuiteReport:
     post_restore: verify_restore.VerifyRestoreResult | None = None
     key_rotation: key_watch.KeyRotationResult | None = None
     store_growth: key_watch.StoreGrowthResult | None = None
+    profile_classification: ProfileClassification | None = None
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -143,6 +150,8 @@ class SuiteReport:
             d["key_rotation"] = self.key_rotation.to_dict()
         if self.store_growth is not None:
             d["store_growth"] = self.store_growth.to_dict()
+        if self.profile_classification is not None:
+            d["profile_classification"] = self.profile_classification.to_dict()
         return d
 
 
@@ -223,19 +232,18 @@ def _check_one(
             detail=f"{cli_name} doctor emitted JSON but not a dict (got {type(data).__name__})",
         )
 
+    if "ok" not in data:
+        return ComponentReport(
+            component=comp.ident,
+            tier=comp.tier,
+            status=ComponentStatus.FAILED,
+            ok=False,
+            detail=f"{cli_name} doctor did not emit top-level 'ok' field",
+        )
+
     ok = bool(data.get("ok", False))
     degraded = bool(data.get("degraded", False))
 
-    # If ok is absent, infer from checks: no fails means ok (Plan 004 WI-1.4).
-    # Some components (e.g. regista) don't emit a top-level ok yet.
-    if "ok" not in data:
-        checks_list = data.get("checks", [])
-        if isinstance(checks_list, list):
-            has_fail = any(
-                isinstance(c, dict) and c.get("status") == "fail"
-                for c in checks_list
-            )
-            ok = not has_fail
     if not ok:
         status = ComponentStatus.FAILED
     elif degraded:
@@ -291,6 +299,7 @@ def aggregate(
     version_installed: lock.Installed | None = None,
     verify_restore_dsn: str | None = None,
     key_watch_checks: bool = True,
+    profile: Profile | None = None,
 ) -> SuiteReport:
     """Run each component's doctor and fold into one umbrella report.
 
@@ -310,6 +319,11 @@ def aggregate(
     past its rotation cadence makes ``suite_ok`` False; store growth is
     informational. These checks are read-only and use the same ``runner`` /
     ``installed`` as the component checks.
+
+    When ``profile`` is set (Plan 008 WI-0.1), the doctor classifies the
+    installation against the profile matrix and attaches the result as
+    ``profile_classification``. The classification reports the detected profile,
+    any missing required components, and any extra optional components.
     """
     reports = [_check_one(c, installed=installed, runner=runner) for c in components]
     lock_result = _check_lock_drift(
@@ -332,6 +346,13 @@ def aggregate(
         key_rotation = key_watch.check_key_rotation(runner=runner, installed=installed)
         store_growth = key_watch.check_store_growth(runner=runner, installed=installed)
 
+    profile_classification: ProfileClassification | None = None
+    if profile is not None:
+        component_statuses = {r.component: r.status.value for r in reports}
+        profile_classification = classify_doctor(
+            component_statuses, reference_profile=profile
+        )
+
     suite_ok = _compute_suite_ok(reports)
     if post_restore is not None and not post_restore.ok:
         suite_ok = False
@@ -344,6 +365,7 @@ def aggregate(
         post_restore=post_restore,
         key_rotation=key_rotation,
         store_growth=store_growth,
+        profile_classification=profile_classification,
     )
 
 
@@ -367,5 +389,17 @@ def format_text(report: SuiteReport) -> str:
     if report.store_growth is not None:
         lines.append("")
         lines.append(key_watch.format_store_growth_text(report.store_growth))
+    if report.profile_classification is not None:
+        cls = report.profile_classification
+        lines.append("")
+        lines.append("profile classification:")
+        if cls.profile is not None:
+            lines.append(f"  profile: {profile_label(cls.profile)}")
+        else:
+            lines.append("  profile: none (below Profile A)")
+        missing = ", ".join(cls.missing_required) if cls.missing_required else "(none)"
+        extra = ", ".join(cls.extra_optional) if cls.extra_optional else "(none)"
+        lines.append(f"  missing required: {missing}")
+        lines.append(f"  extra optional: {extra}")
     lines.append(f"suite: {'OK' if report.suite_ok else 'NOT OK'}")
     return "\n".join(lines)

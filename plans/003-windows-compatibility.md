@@ -1,6 +1,6 @@
 # Plan 003 — Windows compatibility (Claude Code on Windows)
 
-**Status:** WI-0 ✅ (posture confirmed + recorded in bootstrap-contract.md §7 and
+**Status:** In Progress (WI-0 posture confirmed + recorded in bootstrap-contract.md §7 and
 install-windows.md); WI-5.1 ✅ for agent-suite (windows-latest CI job added).
 Phases 1–4 (component fixes) and WI-5.2 (real-Windows e2e) remain — they live in
 the component repos. Phase 2 (DPAPI-custody) interlocks with regista Plan 029
@@ -84,7 +84,7 @@ native Python fixes (Phases 1–3) are declined.
   (network-reachable) — and imposes the WSL setup tax on every operator. If chosen,
   Phases 1–4 shrink to "correctness insurance" and Phase 5 targets WSL, not native.
 
-**Linchpin — CONFIRMED 2026-07-06 (Paul):** Claude Code runs natively on Windows
+**Linchpin — CONFIRMED 2026-07-06 (OPERATOR):** Claude Code runs natively on Windows
 without WSL. The recommended posture is therefore settled, not pending.
 
 **Sandboxing caveat (record in the operator runbook, agent-suite Plan 001):** on

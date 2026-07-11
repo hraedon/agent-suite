@@ -16,7 +16,7 @@ from agent_suite import verify_restore as verify_restore_mod
 from agent_suite.alerting import AlertResult, EmissionStatus
 from agent_suite.cli import Command, main
 
-_DSN = "postgresql://regista_service@suite-db.example:5432/regista"
+_DSN = "postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista"
 
 
 def _stub_lock(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,7 +164,7 @@ def test_lock_check_exits_nonzero_on_drift(monkeypatch: pytest.MonkeyPatch) -> N
     existing = SuiteLock(
         release="1.0.0",
         regista_quad=None,
-        components={"dossier": ComponentPin(repo="hraedon/dossier", version="0.1.0")},
+        components={"dossier": ComponentPin(repo="YOUR-ORG/dossier", version="0.1.0")},
     )
     monkeypatch.setattr(lock_mod, "load_lock_file", lambda path=None: existing)
     monkeypatch.setattr(lock_mod, "read_regista_quad", lambda **kw: None)
@@ -278,3 +278,71 @@ def test_lock_json_emits_valid_json(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_no_subcommand_errors() -> None:
     with pytest.raises(SystemExit):
         main([])
+
+
+# --- doctor --profile (Plan 008 WI-0.1) --------------------------------------
+
+
+def test_doctor_profile_flag_json_includes_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_suite.profiles import Profile, ProfileClassification
+
+    classification = ProfileClassification(
+        profile=Profile.A, missing_required=[], extra_optional=[]
+    )
+    monkeypatch.setattr(
+        doctor_mod,
+        "aggregate",
+        lambda **kw: doctor_mod.SuiteReport(
+            suite_ok=True,
+            components=[],
+            profile_classification=classification,
+        ),
+    )
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["doctor", "--profile", "A", "--json"])
+    assert rc == 0
+    parsed = json.loads(buf.getvalue())
+    assert "profile_classification" in parsed
+    assert parsed["profile_classification"]["profile"] == "A"
+
+
+def test_doctor_profile_flag_text_includes_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_suite.profiles import Profile, ProfileClassification
+
+    classification = ProfileClassification(
+        profile=Profile.B, missing_required=["dossier"], extra_optional=["agent-wake"]
+    )
+    monkeypatch.setattr(
+        doctor_mod,
+        "aggregate",
+        lambda **kw: doctor_mod.SuiteReport(
+            suite_ok=True,
+            components=[],
+            profile_classification=classification,
+        ),
+    )
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["doctor", "--profile", "B"])
+    assert rc == 0
+    out = buf.getvalue()
+    assert "profile classification" in out
+    assert "B (Team workflow)" in out
+    assert "dossier" in out
+
+
+def test_doctor_without_profile_has_no_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_aggregate(monkeypatch, suite_ok=True)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["doctor", "--json"])
+    assert rc == 0
+    parsed = json.loads(buf.getvalue())
+    assert "profile_classification" not in parsed

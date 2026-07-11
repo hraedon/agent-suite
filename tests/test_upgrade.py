@@ -56,7 +56,7 @@ def _lock(versions: dict[str, str], quad: RegistaVersionQuad | None = None) -> S
         release="1.0.0",
         regista_quad=quad or _QUAD,
         components={
-            ident: ComponentPin(repo=f"hraedon/{ident}", version=ver)
+            ident: ComponentPin(repo=f"YOUR-ORG/{ident}", version=ver)
             for ident, ver in versions.items()
         },
     )

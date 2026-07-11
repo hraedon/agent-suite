@@ -100,15 +100,15 @@ def test_round_trip_with_quad() -> None:
         release="1.0.0",
         regista_quad=_QUAD,
         components={
-            "regista": ComponentPin(repo="hraedon/regista", version="0.4.0"),
-            "dossier": ComponentPin(repo="hraedon/dossier", version="0.1.0"),
+            "regista": ComponentPin(repo="YOUR-ORG/regista", version="0.4.0"),
+            "dossier": ComponentPin(repo="YOUR-ORG/dossier", version="0.1.0"),
         },
     )
     text = serialize_lock(lock)
     restored = deserialize_lock(text)
     assert restored.release == "1.0.0"
     assert restored.regista_quad == _QUAD
-    assert restored.components["regista"].repo == "hraedon/regista"
+    assert restored.components["regista"].repo == "YOUR-ORG/regista"
     assert restored.components["regista"].version == "0.4.0"
     assert restored.components["dossier"].version == "0.1.0"
 
@@ -117,7 +117,7 @@ def test_round_trip_without_quad() -> None:
     lock = SuiteLock(
         release="0.0.1",
         regista_quad=None,
-        components={"regista": ComponentPin(repo="hraedon/regista", version="0.4.0")},
+        components={"regista": ComponentPin(repo="YOUR-ORG/regista", version="0.4.0")},
     )
     text = serialize_lock(lock)
     restored = deserialize_lock(text)
@@ -143,7 +143,7 @@ def test_serialize_is_tomllib_parseable() -> None:
     lock = SuiteLock(
         release="1.0.0",
         regista_quad=_QUAD,
-        components={"regista": ComponentPin(repo="hraedon/regista", version="0.4.0")},
+        components={"regista": ComponentPin(repo="YOUR-ORG/regista", version="0.4.0")},
     )
     text = serialize_lock(lock)
     import tomllib
@@ -192,7 +192,7 @@ def test_file_round_trip(tmp_path: Path) -> None:
     lock = SuiteLock(
         release="1.0.0",
         regista_quad=_QUAD,
-        components={"regista": ComponentPin(repo="hraedon/regista", version="0.4.0")},
+        components={"regista": ComponentPin(repo="YOUR-ORG/regista", version="0.4.0")},
     )
     path = tmp_path / "SUITE.lock"
     write_lock_file(lock, path)
@@ -332,7 +332,7 @@ def _lock_with(versions: dict[str, str], quad: RegistaVersionQuad | None = None)
         release="1.0.0",
         regista_quad=quad or _QUAD,
         components={
-            ident: ComponentPin(repo=f"hraedon/{ident}", version=ver)
+            ident: ComponentPin(repo=f"YOUR-ORG/{ident}", version=ver)
             for ident, ver in versions.items()
         },
     )
@@ -432,7 +432,7 @@ def test_lock_without_quad_and_regista_still_absent_is_not_drift() -> None:
     lock = SuiteLock(
         release="1.0.0",
         regista_quad=None,
-        components={"dossier": ComponentPin(repo="hraedon/dossier", version="1.0.0")},
+        components={"dossier": ComponentPin(repo="YOUR-ORG/dossier", version="1.0.0")},
     )
     result = check_drift(
         lock,
@@ -448,7 +448,7 @@ def test_lock_without_quad_but_regista_now_installed_is_drift() -> None:
     lock = SuiteLock(
         release="1.0.0",
         regista_quad=None,
-        components={"dossier": ComponentPin(repo="hraedon/dossier", version="1.0.0")},
+        components={"dossier": ComponentPin(repo="YOUR-ORG/dossier", version="1.0.0")},
     )
     result = check_drift(
         lock,
@@ -465,8 +465,8 @@ def test_serialize_sorts_component_keys() -> None:
         release="1.0.0",
         regista_quad=None,
         components={
-            "zebra": ComponentPin(repo="hraedon/zebra", version="1.0.0"),
-            "alpha": ComponentPin(repo="hraedon/alpha", version="1.0.0"),
+            "zebra": ComponentPin(repo="YOUR-ORG/zebra", version="1.0.0"),
+            "alpha": ComponentPin(repo="YOUR-ORG/alpha", version="1.0.0"),
         },
     )
     text = serialize_lock(lock)
@@ -480,7 +480,7 @@ def test_atomic_write_does_not_leave_partial(tmp_path: Path) -> None:
     lock = SuiteLock(
         release="1.0.0",
         regista_quad=_QUAD,
-        components={"regista": ComponentPin(repo="hraedon/regista", version="0.4.0")},
+        components={"regista": ComponentPin(repo="YOUR-ORG/regista", version="0.4.0")},
     )
     path = tmp_path / "SUITE.lock"
     write_lock_file(lock, path)

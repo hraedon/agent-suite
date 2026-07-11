@@ -45,6 +45,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--restore-dsn",
         help="Postgres DSN for --verify-restore (or REGISTA_DSN); errors if --verify-restore is set and neither is provided",
     )
+    doctor.add_argument(
+        "--profile",
+        choices=["A", "B", "C"],
+        help="classify the installation against a deployment profile (Plan 008 §3)",
+    )
     lock = sub.add_parser(
         Command.LOCK.value, help="generate / check the SUITE.lock compatibility manifest"
     )
@@ -147,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     match command:
         case Command.DOCTOR:
             from agent_suite.doctor import aggregate, format_text
+            from agent_suite.profiles import Profile
             import json as _json
             import sys
 
@@ -162,7 +168,11 @@ def main(argv: list[str] | None = None) -> int:
                         file=sys.stderr,
                     )
                     return 1
-            report = aggregate(verify_restore_dsn=verify_restore_dsn)
+            profile: Profile | None = None
+            profile_arg: str | None = getattr(args, "profile", None)
+            if profile_arg is not None:
+                profile = Profile(profile_arg)
+            report = aggregate(verify_restore_dsn=verify_restore_dsn, profile=profile)
             if getattr(args, "json", False):
                 print(_json.dumps(report.to_dict(), indent=2, default=str))
             else:
