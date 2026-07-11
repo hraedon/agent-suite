@@ -73,12 +73,17 @@ report:
 
 Rules: a component that isn't installed is `absent` (not a failure — the suite may
 not deploy Tier 2); a component that's installed but unreachable is a failure; the
-umbrella is read-only and never mutates. `--exit-code` gates a monitoring run.
-When `--verify-restore` is passed, `post_restore` is populated with the
-`verify_restore` result (Plan 001 WI-4.2) and a failed post-restore check makes
-`suite_ok` false; when `--verify-restore` is not passed, `post_restore` is `null`.
-`--verify-restore` requires a DSN (`--restore-dsn` or `REGISTA_DSN`) — the command
-errors if neither is provided.
+umbrella is read-only and never mutates. A **shared-service** component (dossier,
+Plan 004 WI-1.6) is checked by **endpoint** when not installed locally: with an
+endpoint configured in suite.env (e.g. `DOSSIER_URL`), the doctor probes
+`<url>/healthz` and reports `remote: ok @ <version>`; with the endpoint down, a
+legible failure naming the URL; with no endpoint configured, `not configured
+(shared service)` — a named state distinct from both `absent` and `failed`.
+`--exit-code` gates a monitoring run. When `--verify-restore` is passed,
+`post_restore` is populated with the `verify_restore` result (Plan 001 WI-4.2) and
+a failed post-restore check makes `suite_ok` false; when `--verify-restore` is not
+passed, `post_restore` is `null`. `--verify-restore` requires a DSN (`--restore-dsn`
+or `REGISTA_DSN`) — the command errors if neither is provided.
 
 ## 4. The compatibility lock (`SUITE.lock`)
 
@@ -89,7 +94,7 @@ A committed manifest pinning the known-good set:
 release = "1.0.0"
 regista_schema_version = "…"
 regista_workflow_version = "canonical/1"
-regista_envelope_version = "v4"
+regista_envelope_version = "v5"
 
 [components]
 regista        = { repo = "YOUR-ORG/regista",        rev = "<sha>" }

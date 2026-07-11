@@ -20,6 +20,21 @@ class Tier(Enum):
     PLUMBING = "plumbing"  # acb, agent-wake — optional for a first deployment
 
 
+class Locality(Enum):
+    """Where a component runs — decides how the doctor checks it (Plan 004 WI-1.6).
+
+    ``assert_never`` is used over this enum so a newly added locality can't be
+    silently unhandled in the doctor dispatch.
+
+    PER_BOX: installed and checked locally on each machine (most components).
+    SHARED_SERVICE: deployed centrally; the doctor checks it by endpoint
+    (reachability + /healthz + version) rather than a local CLI.
+    """
+
+    PER_BOX = "per_box"
+    SHARED_SERVICE = "shared_service"
+
+
 class UpgradeKind(Enum):
     """How a component is upgraded (Plan 005 WI-1.1).
 
@@ -37,7 +52,10 @@ class Component:
     umbrella aggregates; `repo` is the pin target recorded in SUITE.lock;
     ``upgrade_kind`` / ``upgrade_package`` declare how the component is advanced
     (Plan 005 WI-1.1); ``service_unit`` names the OS service to restart after an
-    upgrade (empty string if the component is not a long-running service)."""
+    upgrade (empty string if the component is not a long-running service);
+    ``locality`` declares whether the doctor checks it locally or by endpoint
+    (Plan 004 WI-1.6); ``endpoint_env_var`` is the suite.env key that holds the
+    shared-service URL (only meaningful when locality is SHARED_SERVICE)."""
 
     ident: str
     repo: str
@@ -46,6 +64,8 @@ class Component:
     upgrade_kind: UpgradeKind = UpgradeKind.PIPX
     upgrade_package: str = ""
     service_unit: str = ""
+    locality: Locality = Locality.PER_BOX
+    endpoint_env_var: str = ""
 
 
 def _component(
@@ -57,6 +77,8 @@ def _component(
     upgrade_kind: UpgradeKind = UpgradeKind.PIPX,
     upgrade_package: str = "",
     service_unit: str = "",
+    locality: Locality = Locality.PER_BOX,
+    endpoint_env_var: str = "",
 ) -> Component:
     """Build a Component, defaulting upgrade_package to the CLI name (doctor_cmd[0])."""
     if not upgrade_package:
@@ -69,6 +91,8 @@ def _component(
         upgrade_kind=upgrade_kind,
         upgrade_package=upgrade_package,
         service_unit=service_unit,
+        locality=locality,
+        endpoint_env_var=endpoint_env_var,
     )
 
 
@@ -77,6 +101,8 @@ COMPONENTS: tuple[Component, ...] = (
     _component(
         "dossier", "YOUR-ORG/dossier", Tier.FACE, ("dossier", "doctor", "--json"),
         service_unit="dossier",
+        locality=Locality.SHARED_SERVICE,
+        endpoint_env_var="DOSSIER_URL",
     ),
     _component(
         "agent-notes", "YOUR-ORG/agent-notes", Tier.FACE, ("agent-notes", "doctor", "--json"),
@@ -117,3 +143,10 @@ def upgrade_kind_label(kind: UpgradeKind) -> str:
             return "docker"
         case other:
             assert_never(other)
+
+
+def shared_service_components(
+    components: tuple[Component, ...] = COMPONENTS,
+) -> tuple[Component, ...]:
+    """Return only the shared-service components (Plan 004 WI-1.6)."""
+    return tuple(c for c in components if c.locality is Locality.SHARED_SERVICE)

@@ -264,8 +264,12 @@ def classify_doctor(
     """Classify a doctor snapshot against the profile matrix.
 
     ``component_statuses`` maps component idents to their doctor status strings
-    (e.g. ``"ok"``, ``"absent"``, ``"failed"``). A component is considered
-    installed when its status is not ``"absent"``.
+    (e.g. ``"ok"``, ``"absent"``, ``"remote"``, ``"not_configured"``). A
+    component is considered installed when its status indicates the component
+    is actually available — ``"ok"``, ``"degraded"``, ``"remote"``, or
+    ``"unreachable"`` (the last is installed but broken, not absent).
+    ``"absent"`` and ``"not_configured"`` (Plan 004 WI-1.6) mean the component
+    is not available for profile purposes.
 
     When ``reference_profile`` is provided (e.g. from ``--profile C``), the
     classification uses that profile as the reference: ``missing_required``
@@ -274,8 +278,9 @@ def classify_doctor(
     ``reference_profile`` is ``None``, the reference is auto-detected (the
     highest profile whose requirements are satisfied, or Profile A if none).
     """
+    unavailable = {"absent", "not_configured"}
     installed = {
-        ident for ident, status in component_statuses.items() if status != "absent"
+        ident for ident, status in component_statuses.items() if status not in unavailable
     }
     profile = profile_for_components(installed)
     reference = reference_profile if reference_profile is not None else (profile if profile is not None else Profile.A)
