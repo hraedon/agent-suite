@@ -1,0 +1,32 @@
+{
+  "contract": "evidence-export",
+  "version": "1.0.0",
+  "description": "The audit bundle export and offline verification contract. regista exports a self-contained JSON bundle with events, receipts, segments, and public keys; agent-provenance exports cairn bundles. The suite-level export orchestration is not yet implemented (Plan 009 WI-2.3).",
+  "owned_by": "regista",
+  "consumers": ["agent-provenance", "agent-suite"],
+  "envelope_versions": [1, 2],
+  "envelope_descriptions": {
+    "1": "HMAC envelope — canonical_envelope is HMAC-SHA256 over the event hash; signature is HMAC",
+    "2": "Ed25519 envelope — canonical_envelope is Ed25519 signature over the event hash; signature is Ed25519"
+  },
+  "bundle_sections": ["events", "receipts", "segments", "public_keys", "manifest"],
+  "verification_checks": [
+    "format — bundle is valid JSON with required sections",
+    "signatures — each event's signature verifies against the declared key",
+    "principal_binding — verify_event_principal_binding checks key status (active/revoked)",
+    "entity_chain — per-work-item event chain integrity (prev_event_hash, event_seq)",
+    "global_chain — global sequence integrity",
+    "delegation — on_behalf_of chain is valid",
+    "gaps — missing event_seq or global_seq detected",
+    "timestamps_anchors — anchor receipt merkle_root matches",
+    "bundle_linkage — cairn bundles link to regista events via correlation IDs"
+  ],
+  "anchor_receipt_status_values": ["verified", "failed", "skipped"],
+  "invariants": [
+    "Export requires no production credentials — only public keys are included",
+    "v1 envelopes report 'skipped' for Ed25519 verification (honestly, not falsely)",
+    "v2 envelopes verify Ed25519 signatures against public_keys section",
+    "A stale-session or tamper decoy must fail verification",
+    "Anchor mismatch is detected by verify_anchor_receipt, not by replay"
+  ]
+}

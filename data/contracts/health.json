@@ -1,0 +1,38 @@
+{
+  "contract": "health",
+  "version": "1.0.0",
+  "description": "The doctor --json output contract. Each component's doctor emits a top-level ok boolean; agent-suite aggregates into a SuiteReport. Honest health: absent is a named state, not silence; unknown is never smoothed into ok.",
+  "owned_by": "agent-suite",
+  "consumers": ["regista", "agent-notes", "dossier", "agent-provenance", "agent-capability-broker", "agent-wake"],
+  "component_status_values": ["ok", "degraded", "absent", "unreachable", "failed"],
+  "tier_values": ["spine", "face", "plumbing"],
+  "component_doctor_output": {
+    "ok": {"type": "boolean", "required": true, "description": "Top-level health boolean; false => component is broken"},
+    "version": {"type": "string", "required": false, "description": "Component version string"},
+    "degraded": {"type": "boolean", "required": false, "default": false, "description": "True when ok but in a non-fatal degrade mode"},
+    "detail": {"type": "string", "required": false, "description": "Human-readable detail"},
+    "regista": {"type": "object", "required": false, "description": "Regista connectivity info (project, reachable, chain_ok)"},
+    "checks": {"type": "array", "required": false, "description": "Per-check detail list with name/status/detail"}
+  },
+  "suite_report_output": {
+    "suite_ok": {"type": "boolean", "required": true},
+    "components": {"type": "array", "required": true, "description": "One ComponentReport per suite component"},
+    "lock": {"type": "object", "required": true, "description": "LockDriftResult: matches (bool|null), drift (array), note (string)"},
+    "post_restore": {"type": "object", "required": false, "description": "VerifyRestoreResult when verify_restore_dsn is provided"},
+    "key_rotation": {"type": "object", "required": false, "description": "KeyRotationResult when key_watch_checks is True"},
+    "store_growth": {"type": "object", "required": false, "description": "StoreGrowthResult when key_watch_checks is True"},
+    "profile_classification": {"type": "object", "required": false, "description": "ProfileClassification when profile is set"}
+  },
+  "verify_restore_status_values": ["verified", "drift", "warnings", "unreachable", "error"],
+  "key_age_status_values": ["ok", "approaching", "expired", "unsupported", "unreachable", "error"],
+  "store_growth_status_values": ["ok", "unsupported", "unreachable", "error"],
+  "drift_kind_values": ["version_mismatch", "quad_mismatch", "component_missing", "unexpected_component"],
+  "invariants": [
+    "A component that is not installed is 'absent' (named state, not failure for optional tier)",
+    "A component that is installed but unreachable or reports ok:false is 'failed'",
+    "Spine absent => suite_ok is false",
+    "All components absent => suite_ok is false (do not smooth an empty box into healthy)",
+    "verify_restore parses JSON even when regista replay exits non-zero (drift detection exits 1)",
+    "Lock drift matches is null (not false) when no lock file exists"
+  ]
+}

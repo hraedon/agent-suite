@@ -32,14 +32,17 @@ jobs:
       - name: Plan index check
         run: python3 scripts/plan-index.py --check
 
+      - name: Contract conformance check (WI-0.2)
+        run: python3 scripts/validate-contracts.py --check
+
       - name: Architecture test (import boundary)
         run: pytest tests/test_architecture.py -q
 
       - name: Lint (ruff)
-        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py
+        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py
 
       - name: Type check (mypy)
-        run: mypy --strict src scripts/feature-matrix.py
+        run: mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py
 
       - name: Run tests
         run: pytest --tb=short -q
@@ -120,11 +123,14 @@ jobs:
       - name: Architecture test (import boundary)
         run: pytest tests/test_architecture.py -q
 
+      - name: Contract conformance check (WI-0.2)
+        run: python3 scripts/validate-contracts.py --check
+
       - name: Lint (ruff)
-        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py
+        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py
 
       - name: Type check (mypy)
-        run: mypy --strict src scripts/feature-matrix.py
+        run: mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py
 
       - name: Run tests
         run: pytest --tb=short -q

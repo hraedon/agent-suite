@@ -1,0 +1,29 @@
+{
+  "contract": "notification",
+  "version": "1.0.0",
+  "description": "The agent-wake event schema and delivery contract. Authenticated HTTP ingress with portable event schema; durable dedup, retry/outbox, dead-letter visibility, routing, and identity. At least one agent delivery and one human delivery must be supported end to end.",
+  "owned_by": "agent-wake",
+  "consumers": ["agent-suite", "agent-notes", "dossier"],
+  "delivery_modes": ["live_wake", "silent_inject", "next_session", "managed_session", "webhook", "email"],
+  "supported_delivery_modes": ["live_wake", "webhook", "email"],
+  "partial_delivery_modes": ["silent_inject"],
+  "absent_delivery_modes": ["next_session", "managed_session"],
+  "event_fields": {
+    "source": {"type": "string", "required": true, "description": "Authorized source identifier (HMAC-authenticated)"},
+    "event_id": {"type": "string", "required": true, "description": "Globally unique event ID; used for dedup"},
+    "target": {"type": "string", "required": true, "description": "Routing label (e.g. oncall, build-bot) or principal/session/project"},
+    "payload": {"type": "object", "required": true, "description": "Event payload"},
+    "delivery_mode": {"type": "enum", "enum_values": ["live_wake", "silent_inject", "next_session", "managed_session", "webhook", "email"], "required": false, "description": "Requested delivery mode; defaults to source-configured default"},
+    "content": {"type": "string", "required": false, "description": "Content to inject/prompt with"},
+    "meta": {"type": "object", "required": false, "description": "Metadata (correlation, priority, etc.)"}
+  },
+  "dedup_strategy": "in-memory event_id set; lost on restart (post-restart replay not prevented)",
+  "auth": "HMAC-SHA256 per-source authentication",
+  "invariants": [
+    "Duplicate event_id rejected while daemon is running",
+    "Unsupported delivery modes are reported explicitly, not silently dropped",
+    "OpenCode supports silent_inject; Claude adapter drops silent events (honest partial)",
+    "Human webhook and email channels are signed/verified",
+    "Provenance correlation: resulting session/work retains source event correlation"
+  ]
+}

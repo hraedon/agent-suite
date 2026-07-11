@@ -1,0 +1,36 @@
+{
+  "contract": "install-harness",
+  "version": "1.0.0",
+  "description": "The harness installation and hook wiring contract. Each component that needs harness hooks (currently agent-provenance/cairn) exposes install/uninstall/doctor and wires hooks into the harness settings file. The suite's bootstrap calls each component's own install-harness; it never reimplements hook wiring.",
+  "owned_by": "agent-provenance",
+  "consumers": ["agent-suite", "agent-notes"],
+  "supported_harnesses": ["claude", "opencode"],
+  "experimental_harnesses": ["codex"],
+  "hook_events": [
+    "SessionStart",
+    "SessionStop",
+    "ToolBegin",
+    "ToolEnd"
+  ],
+  "hook_entry_shape": {
+    "hooks": {
+      "type": "array",
+      "required": true,
+      "description": "List of hook handlers for one event"
+    },
+    "hooks[].type": {"type": "string", "required": true, "description": "Hook type (e.g. command)"},
+    "hooks[].command": {"type": "string", "required": true, "description": "Shell command to execute"}
+  },
+  "settings_shape": {
+    "hooks": {"type": "object", "required": true, "description": "Map of event name to hook handler list"},
+    "env": {"type": "object", "required": true, "description": "Environment variables (REGISTA_DSN, CAIRN_PROJECT, etc.)"}
+  },
+  "required_env_vars": ["REGISTA_DSN", "CAIRN_PROJECT"],
+  "doctor_check": "cairn._doctor._check_harness_wired verifies all HOOK_EVENTS are present in settings",
+  "invariants": [
+    "Installation is idempotent — re-running changes nothing already done",
+    "Doctor detects missing hooks and reports 'missing hooks' with the event name",
+    "Uninstall preserves unrelated settings entries",
+    "Hermes harness is provisional — not in supported_harnesses"
+  ]
+}
