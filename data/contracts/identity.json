@@ -1,0 +1,34 @@
+{
+  "contract": "identity",
+  "version": "1.0.0",
+  "description": "Canonical identity vocabulary — principal, actor, session, delegation, and harness binding. Each field has one definition and serialization consumed by all components.",
+  "owned_by": "regista",
+  "consumers": ["agent-notes", "dossier", "agent-provenance", "agent-suite"],
+  "actor_kinds": ["human", "agent", "system"],
+  "signing_schemes": ["hmac", "ed25519"],
+  "principal_key_statuses": ["active", "revoked"],
+  "fields": {
+    "principal_id": {"type": "string", "required": true, "description": "Stable identifier for a human or agent principal enrolled in regista's key registry"},
+    "actor_id": {"type": "string", "required": true, "description": "The acting principal for a transition or event; must be an enrolled principal_id"},
+    "actor_kind": {"type": "enum", "enum_values": ["human", "agent", "system"], "required": true, "description": "Mirrors role so the cross-lineage gate can distinguish agent from human"},
+    "actor_metadata": {"type": "object", "required": false, "description": "Free-form metadata (e.g. role, team) attached to the actor for a transition"},
+    "key_id": {"type": "string", "required": false, "description": "The signing key used for the event; required when scheme is ed25519"},
+    "session_id": {"type": "string", "required": false, "description": "Provenance session correlation ID"},
+    "turn_id": {"type": "string", "required": false, "description": "Sub-session turn correlation ID"},
+    "agent_id": {"type": "string", "required": false, "description": "Model-driven actor identifier (may differ from principal_id for subagents)"},
+    "on_behalf_of": {"type": "string", "required": false, "description": "Delegation: the principal on whose behalf the actor is acting"},
+    "delegated_by": {"type": "string", "required": false, "description": "The principal that established the delegation"},
+    "harness_name": {"type": "string", "required": false, "description": "Harness identifier (e.g. claude, opencode, codex)"},
+    "harness_version": {"type": "string", "required": false, "description": "Harness version at the time of capture"},
+    "model_lineage": {"type": "string", "required": false, "description": "Model identifier for agent actors (e.g. model name and version)"},
+    "project": {"type": "string", "required": true, "description": "The regista project slug the event belongs to"},
+    "work_item_id": {"type": "string", "required": false, "description": "The work-item the event is bound to; null for entity-level events"}
+  },
+  "invariants": [
+    "actor_id must be an enrolled principal_id with an active key at event time",
+    "actor_kind must match the principal's registered role",
+    "Subagent attribution: agent_id may differ from principal_id when one agent delegates to another",
+    "Delegation chain: on_behalf_of must itself be an enrolled principal_id",
+    "Revoked keys fail verify_event_principal_binding with 'key-revoked' error"
+  ]
+}

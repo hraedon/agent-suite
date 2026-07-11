@@ -44,6 +44,8 @@ _DEFERRED_MUTATIONS = [
     "hook_omission — deferred from the parameterized integration path; "
     "test_hook_omission covers the doctor-level detection path, but "
     "live-session hook firing requires a running Claude Code session",
+    "corrupted_backup — has standalone test test_corrupted_backup; not in "
+    "MutationKind because it needs pg_dump/psql, not just Postgres",
     "replayed_wake_event — requires agent-wake component",
     "capability_clobber — requires agent-capability-broker component",
 ]
@@ -969,3 +971,31 @@ def test_hook_omission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert removed_event in result["detail"], (
         f"Expected {removed_event!r} in detail, got: {result['detail']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Deferred-mutations registry guard (prevents silent regression)
+# ---------------------------------------------------------------------------
+
+_EXPECTED_DEFERRED = {
+    "hook_omission",
+    "corrupted_backup",
+    "replayed_wake_event",
+    "capability_clobber",
+}
+
+
+def test_deferred_mutations_registry() -> None:
+    """The _DEFERRED_MUTATIONS list must name every known deferred mutation.
+
+    Without this guard, someone could silently delete an entry from the list
+    and the mutation would vanish from the corpus without a trace. The test
+    fails if any expected name is missing, ensuring that a deferred mutation
+    is either implemented (and moved to MutationKind) or explicitly listed.
+    """
+    deferred_names = {entry.split(" — ")[0] for entry in _DEFERRED_MUTATIONS}
+    for name in _EXPECTED_DEFERRED:
+        assert name in deferred_names, (
+            f"{name!r} is missing from _DEFERRED_MUTATIONS — either "
+            f"implement the mutation or restore the entry"
+        )

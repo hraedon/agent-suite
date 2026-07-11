@@ -483,6 +483,17 @@ and notification contracts as versioned conformance fixtures.
 **AC:** consumers validate fixtures in CI; no face or adapter maintains a
 semantically divergent copy.
 
+**Progress (2026-07-11):** Seven versioned JSON fixtures created in
+`data/contracts/` (lifecycle, identity, health, evidence-export,
+install-harness, knowledge, notification). `scripts/validate-contracts.py`
+validates fixture meta-structure, cross-references health-contract enums
+against live Python enums in the codebase (ComponentStatus, Tier, DriftKind,
+ProjectVerifyStatus, KeyAgeStatus, StoreGrowthStatus), and validates
+snapshot assertions plus referential integrity and partition constraints
+for the other contracts. `tests/test_contracts.py` provides 26 tests
+running in CI. The contract check runs in both the `lint-and-test` and
+`windows-test` CI jobs.
+
 #### WI-0.3 — Baseline and gap burn-down
 
 Run every golden journey against current `main` and write the sanitized status

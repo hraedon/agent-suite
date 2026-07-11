@@ -1,0 +1,32 @@
+{
+  "contract": "knowledge",
+  "version": "1.0.0",
+  "description": "The canonical knowledge split. Breadcrumbs with lifecycle remain work items; memories/reflections are signed note entities. One canonical knowledge record with two faces (CLI and web); embeddings/search indexes remain projections.",
+  "owned_by": "agent-notes",
+  "consumers": ["regista", "dossier", "agent-suite"],
+  "entity_kinds": ["breadcrumb", "memory", "reflection"],
+  "breadcrumb": {
+    "storage": "regista work item (entity_kind=work_item, work_item_type=breadcrumb)",
+    "has_lifecycle": true,
+    "fields": ["title", "display_key", "description", "severity", "kind", "external_refs", "diagnostic_keys", "source_identifier"]
+  },
+  "memory": {
+    "storage": "regista signed note entity (entity_kind=note)",
+    "has_lifecycle": false,
+    "fields": ["name", "memory_type", "body", "attributes"],
+    "memory_types": ["project", "feedback", "reflection", "breadcrumb"]
+  },
+  "reflection": {
+    "storage": "regista signed note entity (entity_kind=note, memory_type=reflection)",
+    "has_lifecycle": false,
+    "fields": ["name", "memory_type", "body", "attributes"],
+    "body_frontmatter": ["model", "datetime", "project"]
+  },
+  "invariants": [
+    "Deleting/rebuilding the search projection does not alter canonical records",
+    "Duplicate suggestions are advisory and do not silently discard a new fact",
+    "Both faces read the same canonical record from regista",
+    "Memories and reflections are signed note entities, not work items",
+    "Breadcrumbs are work items with lifecycle (open/in_progress/done/etc.)"
+  ]
+}
