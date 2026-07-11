@@ -20,8 +20,8 @@ can see at a glance what is proven vs. provisional.
 | CL-009 | Lock integrity | supported | agent-suite | — |
 | CL-010 | Key rotation safety | experimental | regista | — |
 | CL-011 | Delegation chain | experimental | regista | — |
-| CL-012 | External anchoring | provisional | regista | F-1, F-3 |
-| CL-013 | Offline verification | provisional | agent-provenance | F-2 |
+| CL-012 | External anchoring | experimental | regista | F-1, F-3 |
+| CL-013 | Offline verification | experimental | agent-provenance | F-2 |
 | CL-014 | Upgrade safety | supported | agent-suite | — |
 
 ## Maturity counts
@@ -29,16 +29,16 @@ can see at a glance what is proven vs. provisional.
 | Maturity | Count | Claims |
 |----------|-------|--------|
 | supported | 7 | CL-001, CL-003, CL-004, CL-005, CL-006, CL-009, CL-014 |
-| experimental | 5 | CL-002, CL-007, CL-008, CL-010, CL-011 |
-| provisional | 2 | CL-012, CL-013 |
+| experimental | 7 | CL-002, CL-007, CL-008, CL-010, CL-011, CL-012, CL-013 |
+| provisional | 0 | |
 
 ## Holistic review findings mapped to claims
 
 | Finding | Severity | Claim | Status |
 |---------|----------|-------|--------|
-| F-1 | Critical | CL-012 | Provisional — anchor does not commit to content |
-| F-2 | Critical | CL-013 | Provisional — live proof can pass against unrelated events |
-| F-3 | High | CL-012 | Provisional — receipt concurrency/retry state unsafe |
+| F-1 | Critical | CL-012 | Experimental — anchor commits to content; bundle export + offline verification implemented |
+| F-2 | Critical | CL-013 | Experimental — live proof session binding + SQL fidelity tests implemented |
+| F-3 | High | CL-012 | Experimental — receipt concurrency safe; cross-segment chain verification implemented |
 | F-4 | High | CL-008 | Experimental — deployment evidence contains identifiers |
 | F-5 | High | — (agent-notes) | Not a suite-level claim; tracked in agent-notes |
 | F-6 | High | CL-007 | Experimental — fail-honest fix applied but legacy path remains |
