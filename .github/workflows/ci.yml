@@ -92,8 +92,8 @@ jobs:
           pip install "git+https://github.com/hraedon/agent-notes.git@main" \
                       "git+https://github.com/hraedon/dossier.git@main"
 
-      - name: Run interop + tamper + restore-drill tests
-        run: pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py -v --tb=short
+      - name: Run interop + tamper + restore-drill + adversarial-corpus tests
+        run: pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py tests/test_adversarial_corpus.py -v --tb=short
 
   # Plan 003 WI-5.1 — prove agent-suite imports and unit tests pass on native
   # Windows. agent-suite is stdlib-only, so this is primarily a guard against

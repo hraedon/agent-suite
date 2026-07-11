@@ -201,6 +201,14 @@ class RegistaProject:
 def regista_project(interop_dsn: str, tmp_path: Path) -> Generator[RegistaProject, None, None]:
     """Create a fresh regista project with the canonical workflow + 3 roles."""
     if not _regista_available():
+        # In CI (INTEROP_REQUIRE_FACES=1) a missing spine is an install
+        # regression, not an optional proof — fail instead of skipping, so the
+        # adversarial corpus cannot silently regress to a skip (Plan 002 WI-2).
+        if os.environ.get("INTEROP_REQUIRE_FACES", "").strip().lower() in {"1", "true", "yes"}:
+            pytest.fail(
+                "INTEROP_REQUIRE_FACES=1 is set but regista is not importable — "
+                "verify the spine-install step in CI."
+            )
         pytest.skip("regista is not installed")
 
     from regista import Regista
