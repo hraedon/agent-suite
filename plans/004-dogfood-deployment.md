@@ -82,8 +82,26 @@ true and legible.
   remediation hint per known failure class.
 - **AC:** `agent-suite doctor` on the converged box: all six components `ok`
   (wake's identity warn resolved by wake Plan 005 WI-1.1 or explicitly
-  accepted); breaking a component's config yields a failure a newcomer can act
+  accepted; dossier via the WI-1.6 shared-service check, not a local install);
+  breaking a component's config yields a failure a newcomer can act
   on without reading source.
+
+### WI-1.6 — Shared-service locality for the doctor and profiles
+- Ratified 2026-07-11: components have a **locality** — per-box (agent-notes,
+  cairn, acb, wake) or shared service (dossier; regista's Postgres already
+  implicitly is). dossier deploys centrally as the team URL (dossier Plan 023,
+  k8s namespace on the operator's cluster; the suite itself stays
+  k8s-agnostic — systemd/Windows profiles remain the documented alternative).
+  The umbrella therefore checks a shared-service component by **endpoint**:
+  reachability + `/healthz` + lock-compatibility against the configured URL
+  from suite.env, rendering `remote: ok @ <version>` instead of `absent`.
+  Update the doctor contract doc + Plan 008/009 profile language so Profile B
+  does not imply a per-box dossier install.
+- **AC:** with a dossier endpoint configured, doctor on a box with no local
+  dossier reports it `remote: ok @ <version>`; with the endpoint down, a
+  legible failure naming the URL; with none configured, an explicit
+  `not configured (shared service)` state distinct from failure; contract doc
+  updated and the check covered by a test against a stub endpoint.
 
 ### WI-1.5 — Record deployment #1
 - A dated deployment record in `docs/deployments/` : what was run, what
