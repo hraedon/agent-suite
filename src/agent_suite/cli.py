@@ -182,10 +182,13 @@ def main(argv: list[str] | None = None) -> int:
                 url = os.environ.get(comp.endpoint_env_var)
                 if url:
                     shared_endpoints[comp.ident] = url
+            from agent_suite.config import MemoryProviderConfig
+
             report = aggregate(
                 verify_restore_dsn=verify_restore_dsn,
                 profile=profile,
                 shared_endpoints=shared_endpoints or None,
+                memory_provider_config=MemoryProviderConfig.from_env(),
             )
             if getattr(args, "json", False):
                 print(_json.dumps(report.to_dict(), indent=2, default=str))
@@ -232,8 +235,12 @@ def main(argv: list[str] | None = None) -> int:
                     print(format_drift_text(drift_result))
                 return 0 if drift_result.matches else 1
             else:
+                from agent_suite.config import memory_provider_config
+
+                mp_engine = str(memory_provider_config()["engine"])
                 lock = generate_lock(
                     component_versions=component_versions,
+                    memory_engine=mp_engine,
                 )
                 if getattr(args, "json", False):
                     import json as _json
@@ -245,13 +252,21 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
         case Command.BOOTSTRAP:
             from agent_suite.bootstrap import format_text as _fmt_bs, run_bootstrap
+            from agent_suite.config import memory_provider_config
 
+            mp_config = memory_provider_config()
             bs_result = run_bootstrap(
                 dry_run=args.dry_run,
                 tier=args.tier,
                 user=args.user,
                 project=os.environ.get("REGISTA_PROJECT"),
                 dsn=os.environ.get("REGISTA_DSN"),
+                memory_engine=str(mp_config["engine"]),
+                hindsight_url=(
+                    mp_config["hindsight_url"]
+                    if isinstance(mp_config["hindsight_url"], str)
+                    else None
+                ),
             )
             if getattr(args, "json", False):
                 import json as _json

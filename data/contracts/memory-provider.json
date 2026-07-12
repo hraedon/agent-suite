@@ -1,0 +1,41 @@
+{
+  "contract": "memory-provider",
+  "version": "1.0.0",
+  "description": "The pluggable memory-engine protocol. agent-notes exposes a memory-provider surface (describe, ingest, operation_status, recall, forget) that the suite composes via subprocess — never by importing agent-notes internals. The suite's role is thin orchestration: configure the engine, check its health, and pin its version in SUITE.lock. Native is the default (no external dependency); Hindsight is a learned-context engine whose results are derived and untrusted.",
+  "owned_by": "agent-notes",
+  "consumers": ["agent-suite", "agent-notes"],
+  "protocol_version": "1.0",
+  "repository_role": "exact",
+  "repository_description": "regista stores signed notes — the canonical, replay-verifiable record. Memory operations that touch durable storage write through regista.",
+  "engine_role": "learned",
+  "engine_description": "Derived and recallable context (embeddings, search indexes, synthesized summaries). Learned results are derived and untrusted; exact notes are canonical.",
+  "capabilities": ["ingest", "recall", "forget", "synthesize", "exact_source", "update", "export"],
+  "protocol_operations": ["describe", "ingest", "operation_status", "recall", "forget"],
+  "scope_mappings": ["project", "workspace", "user", "agent", "session"],
+  "consistency_states": ["pending", "indexed", "failed", "cancelled", "stale"],
+  "origin_classes": ["raw", "extracted", "derived", "synthesized"],
+  "authority_semantics": "exact notes are canonical; learned results are derived and untrusted",
+  "degradation_semantics": "configured external outage is unhealthy; no silent fallback to native",
+  "health_shape": {
+    "state": {"type": "string", "required": true, "description": "Consistency state of the memory engine"},
+    "capabilities": {"type": "array", "required": true, "description": "Capability names the engine provides"},
+    "version": {"type": "string", "required": true, "description": "Engine adapter version"},
+    "protocol_version": {"type": "string", "required": true, "description": "Memory-provider protocol version"},
+    "engine_name": {"type": "string", "required": true, "description": "Engine name (native or hindsight)"},
+    "indexing_backlog": {"type": "integer", "required": false, "description": "Number of pending ingest operations not yet indexed"},
+    "indexing_freshness": {"type": "string", "required": false, "description": "ISO timestamp of the last successful index operation"},
+    "detail": {"type": "string", "required": false, "description": "Human-readable detail"}
+  },
+  "engine_values": ["native", "hindsight"],
+  "deployment_modes": ["local", "remote"],
+  "support_levels": ["supported", "experimental"],
+  "invariants": [
+    "The suite composes the memory provider via subprocess (agent-notes memory-provider <verb> --json), never by importing agent-notes code",
+    "Native engine is the default and requires no external dependency; its health does not affect suite_ok",
+    "A configured Hindsight outage is unhealthy and DOES affect suite_ok — no silent fallback to native",
+    "Hindsight not configured (no HINDSIGHT_URL) is treated the same as native — no suite_ok impact",
+    "Learned results from the engine are derived and untrusted; exact notes in regista are canonical",
+    "The provider extension pin in SUITE.lock records the engine name, adapter version, protocol version, deployment mode, and support level",
+    "Provider drift (engine change, version change, mode change) is a named drift kind, not silence"
+  ]
+}

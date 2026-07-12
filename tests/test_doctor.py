@@ -42,6 +42,7 @@ def _aggregate_safe(
         key_watch_checks=False,
         shared_endpoints=shared_endpoints,
         remote_checker=remote_checker,
+        memory_provider_checks=False,
     )
 
 

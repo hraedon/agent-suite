@@ -14,6 +14,7 @@ from pathlib import Path
 _CORE_MODULES = (
     "cli",
     "components",
+    "config",
     "doctor",
     "lock",
     "bootstrap",
