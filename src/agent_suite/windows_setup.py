@@ -684,7 +684,8 @@ class SigningKeyStore:
             )
         self._key_dir.mkdir(parents=True, exist_ok=True)
         try:
-            fd = os.open(str(key_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+            fd = os.open(str(key_path), flags, 0o600)
             try:
                 os.write(fd, blob)
             finally:
