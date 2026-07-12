@@ -46,8 +46,6 @@ _DEFERRED_MUTATIONS = [
     "live-session hook firing requires a running Claude Code session",
     "corrupted_backup — has standalone test test_corrupted_backup; not in "
     "MutationKind because it needs pg_dump/psql, not just Postgres",
-    "replayed_wake_event — requires agent-wake component",
-    "capability_clobber — requires agent-capability-broker component",
 ]
 
 
@@ -975,14 +973,123 @@ def test_hook_omission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Replayed wake event (needs agent-wake — dedup logic, in-process)
+# ---------------------------------------------------------------------------
+
+
+def test_replayed_wake_event() -> None:
+    """agent-wake's ingress rejects a duplicate ``event_id`` (replay protection).
+
+    Exercises the ``Dedupe`` class from ``agent_waked.ingest`` directly — the
+    in-memory FIFO dedup window that the HTTP ingress uses to reject replayed
+    wake events.  A full end-to-end test would POST to the running daemon, but
+    the dedup logic itself is pure and testable in-process (mirrors how
+    ``test_hook_omission`` calls ``_check_harness_wired`` directly instead of
+    spawning the full doctor).
+    """
+    try:
+        from agent_waked.ingest import Dedupe
+    except ImportError:
+        pytest.skip("agent-wake not available")
+
+    dedupe = Dedupe()
+    event_id = str(uuid.uuid4())
+
+    # First submission: not a duplicate → accepted.
+    assert dedupe.check(event_id) is False, (
+        "First submission of event_id should not be flagged as a duplicate"
+    )
+
+    # Replayed event_id: duplicate → rejected.
+    assert dedupe.check(event_id) is True, (
+        "Replayed event_id should be detected as a duplicate"
+    )
+
+    # A different event_id: not a duplicate → accepted.
+    assert dedupe.check(str(uuid.uuid4())) is False, (
+        "A different event_id should not be flagged as a duplicate"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Capability clobber (needs agent-capability-broker — inspect detection path)
+# ---------------------------------------------------------------------------
+
+
+def test_capability_clobber(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ACB detects a clobbered capability via ``inspect`` returning ``PRESENT_BROKEN``.
+
+    Writes an opencode config with a working, pinned Playwright MCP server and
+    browser binaries present, verifies ``E2eProvider.inspect`` returns
+    ``PRESENT_OK``, then clobbers the config (disables the server) and verifies
+    ``inspect`` now returns ``PRESENT_BROKEN`` — proving the doctor-level
+    detection path catches a rogue/clobbered capability.
+    """
+    try:
+        from agent_capability_broker.adapters import OpencodeAdapter
+        from agent_capability_broker.model import Capability, Status
+        from agent_capability_broker.providers import E2eProvider
+    except ImportError:
+        pytest.skip("agent-capability-broker not available")
+
+    # Browser binaries present so inspect does not fail on the missing-binary axis.
+    cache = tmp_path / "ms-playwright"
+    (cache / "chromium-1223").mkdir(parents=True)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(cache))
+
+    config_path = tmp_path / "opencode.json"
+    config_path.write_text(json.dumps({
+        "mcp": {
+            "playwright": {
+                "type": "local",
+                "enabled": True,
+                "command": ["npx", "-y", "@playwright/mcp@1.43.0", "--headless"],
+            }
+        }
+    }))
+
+    adapter = OpencodeAdapter(config_path=config_path)
+    cap = Capability(
+        id="e2e:chromium",
+        provider="e2e",
+        harnesses=("opencode",),
+        options={"pin": "1.43.0"},
+    )
+
+    # Baseline: capability is present and OK.
+    verdict = E2eProvider().inspect(cap, "opencode", adapter)
+    assert verdict.status is Status.PRESENT_OK, (
+        f"Capability should be PRESENT_OK with valid config: {verdict}"
+    )
+
+    # Clobber: disable the Playwright server (rogue edit).
+    config_path.write_text(json.dumps({
+        "mcp": {
+            "playwright": {
+                "type": "local",
+                "enabled": False,
+                "command": ["npx", "-y", "@playwright/mcp@1.43.0", "--headless"],
+            }
+        }
+    }))
+
+    # Detection: inspect now reports PRESENT_BROKEN.
+    verdict = E2eProvider().inspect(cap, "opencode", adapter)
+    assert verdict.status is Status.PRESENT_BROKEN, (
+        f"Clobbered capability should be detected as PRESENT_BROKEN: {verdict}"
+    )
+    assert "disabled" in verdict.detail, (
+        f"Expected 'disabled' in detail, got: {verdict.detail}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Deferred-mutations registry guard (prevents silent regression)
 # ---------------------------------------------------------------------------
 
 _EXPECTED_DEFERRED = {
     "hook_omission",
     "corrupted_backup",
-    "replayed_wake_event",
-    "capability_clobber",
 }
 
 
