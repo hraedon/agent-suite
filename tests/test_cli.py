@@ -147,6 +147,8 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
             assert main([command.value, "list"]) == 0
         elif command is Command.ONBOARD:
             assert main([command.value, "project-slug"]) == 0
+        elif command is Command.PREFLIGHT:
+            assert main([command.value]) == 1
         else:
             assert main([command.value]) == 0
 

@@ -25,11 +25,16 @@ _CORE_MODULES = (
     "alerting",
     "key_watch",
     "profiles",
+    "windows_setup",
+    "windows_observation",
+    "winsw",
+    "dual_control",
 )
 _FORBIDDEN_PREFIXES = (
     "hvac",  # Vault
     "azure",  # Azure Key Vault
     "win32",  # pywin32 / DPAPI
+    "jwt",  # PyJWT (Entra edge adapter)
     "regista",  # compose via CLI, never import a component
     "dossier",
     "agent_notes",
@@ -37,6 +42,8 @@ _FORBIDDEN_PREFIXES = (
     "acb",
     "agent_wake",
 )
+
+_EDGE_MODULES = ("dpapi", "entra")
 
 
 def _imports_of(module_name: str) -> set[str]:
@@ -60,3 +67,10 @@ def test_core_imports_no_backend_sdk_or_component() -> None:
                 f"core module {module_name!r} imports forbidden {forbidden!r} — "
                 "backend SDKs belong at the secret edge; components are composed via CLI"
             )
+
+
+def test_edge_modules_are_not_in_core() -> None:
+    for edge in _EDGE_MODULES:
+        assert edge not in _CORE_MODULES, (
+            f"{edge!r} is an edge module — it must not be in _CORE_MODULES"
+        )

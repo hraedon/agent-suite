@@ -47,6 +47,8 @@ EXPECTED_CONTRACTS = (
     "knowledge",
     "notification",
     "memory-provider",
+    "human-surfaces",
+    "windows-setup",
 )
 
 

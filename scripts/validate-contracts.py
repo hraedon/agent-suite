@@ -57,6 +57,8 @@ EXPECTED_CONTRACTS = (
     "knowledge",
     "notification",
     "memory-provider",
+    "human-surfaces",
+    "windows-setup",
 )
 
 
@@ -331,12 +333,81 @@ def _snapshot_notification(fixture: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _cross_reference_human_surfaces(fixture: dict[str, Any]) -> list[str]:
+    from agent_suite.human_surfaces import (
+        HumanRole,
+        STATUS_VOCABULARY,
+        SupportLevel,
+        SurfaceArea,
+        SurfaceRisk,
+        load_registry,
+    )
+
+    errors: list[str] = []
+    expected = {
+        "area_values": _enum_values(SurfaceArea),
+        "role_values": _enum_values(HumanRole),
+        "risk_values": _enum_values(SurfaceRisk),
+        "support_values": _enum_values(SupportLevel),
+    }
+    for field, code_values in expected.items():
+        contract_values = set(fixture.get(field, []))
+        if contract_values != code_values:
+            errors.append(
+                f"human-surfaces: {field} mismatch — "
+                f"contract={sorted(contract_values)}, code={sorted(code_values)}"
+            )
+    if fixture.get("status_vocabulary") != list(STATUS_VOCABULARY):
+        errors.append("human-surfaces: status_vocabulary mismatch")
+    try:
+        load_registry(CONTRACTS_DIR / "human-surfaces.json")
+    except ValueError as exc:
+        errors.append(f"human-surfaces: {exc}")
+    return errors
+
+
+def _cross_reference_windows_setup(fixture: dict[str, Any]) -> list[str]:
+    from agent_suite.windows_setup import (
+        PROTOCOL_VERSION,
+        ActionState,
+        PlanState,
+        PreflightState,
+        ProbeState,
+        ReceiptState,
+        SetupOperation,
+    )
+    from agent_suite.profiles import Profile
+
+    errors: list[str] = []
+    expected = {
+        "profile_values": _enum_values(Profile),
+        "probe_state_values": _enum_values(ProbeState),
+        "preflight_state_values": _enum_values(PreflightState),
+        "operation_values": _enum_values(SetupOperation),
+        "plan_state_values": _enum_values(PlanState),
+        "action_state_values": _enum_values(ActionState),
+        "receipt_state_values": _enum_values(ReceiptState),
+    }
+    for field, code_values in expected.items():
+        contract_values = set(fixture.get(field, []))
+        if contract_values != code_values:
+            errors.append(
+                f"windows-setup: {field} mismatch — "
+                f"contract={sorted(contract_values)}, code={sorted(code_values)}"
+            )
+    if fixture.get("protocol_version") != PROTOCOL_VERSION:
+        errors.append("windows-setup: protocol_version mismatch")
+    return errors
+
+
 _VALIDATORS = {
     "health": _cross_reference_health,
     "lifecycle": _snapshot_lifecycle,
     "identity": _snapshot_identity,
     "install-harness": _snapshot_install_harness,
     "notification": _snapshot_notification,
+    "human-surfaces": _cross_reference_human_surfaces,
+    "windows-setup": _cross_reference_windows_setup,
 }
 
 
