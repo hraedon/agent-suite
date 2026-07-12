@@ -121,7 +121,7 @@ class EntraTokenValidator:
         now = time.time()
         if (
             self._jwks_client is None
-            or now - self._last_jwks_fetch > self._jwks_cache_ttl
+            or now - self._last_jwks_fetch >= self._jwks_cache_ttl
         ):
             self._jwks_client = jwt.PyJWKClient(self._jwks_url)
             self._last_jwks_fetch = now
