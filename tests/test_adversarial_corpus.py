@@ -752,6 +752,7 @@ def test_secret_exposure(
         )
         kwargs.setdefault("installed", lambda _n: True)
         kwargs.setdefault("key_watch_checks", False)
+        kwargs.setdefault("memory_provider_checks", False)
         return real_aggregate(*args, **kwargs)
 
     monkeypatch.setattr(doctor, "aggregate", stub_aggregate)

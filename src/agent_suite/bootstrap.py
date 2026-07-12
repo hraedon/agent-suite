@@ -64,6 +64,7 @@ class StepKind(Enum):
     PROBE_DB = "probe_db"
     PROVISION = "provision"
     FACES = "faces"
+    MEMORY_PROVIDER = "memory_provider"
     PROVENANCE = "provenance"
     CAPABILITIES = "capabilities"
     SIGNALING = "signaling"
@@ -102,6 +103,7 @@ _INSTALL_ORDER: tuple[StepKind, ...] = (
     StepKind.PROBE_DB,
     StepKind.PROVISION,
     StepKind.FACES,
+    StepKind.MEMORY_PROVIDER,
     StepKind.PROVENANCE,
     StepKind.CAPABILITIES,
     StepKind.SIGNALING,
@@ -429,6 +431,85 @@ def _step_install_harness(
     )
 
 
+def _step_memory_provider(
+    *,
+    runner: Runner,
+    installed: Installed,
+    dry_run: bool,
+    memory_engine: str,
+    hindsight_url: str | None,
+) -> StepResult:
+    if not installed("agent-notes"):
+        return StepResult(
+            StepKind.MEMORY_PROVIDER,
+            StepStatus.FAILED,
+            "agent-notes not installed — cannot configure memory provider",
+        )
+    if dry_run:
+        return StepResult(
+            StepKind.MEMORY_PROVIDER,
+            StepStatus.PENDING,
+            f"would configure memory provider (engine: {memory_engine})",
+        )
+    if memory_engine == "native":
+        return StepResult(
+            StepKind.MEMORY_PROVIDER,
+            StepStatus.DONE,
+            "memory provider: native (no external configuration needed)",
+        )
+    if memory_engine != "hindsight":
+        return StepResult(
+            StepKind.MEMORY_PROVIDER,
+            StepStatus.FAILED,
+            f"unknown memory engine: {memory_engine}",
+        )
+    if not hindsight_url:
+        return StepResult(
+            StepKind.MEMORY_PROVIDER,
+            StepStatus.FAILED,
+            "hindsight engine selected but HINDSIGHT_URL not set",
+        )
+    describe_cmd: tuple[str, ...] = (
+        "agent-notes", "memory-provider", "describe", "--json",
+    )
+    try:
+        result = runner(describe_cmd)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        return StepResult(
+            StepKind.MEMORY_PROVIDER,
+            StepStatus.FAILED,
+            f"memory-provider describe failed: {exc}",
+        )
+    if result.returncode != 0:
+        return StepResult(
+            StepKind.MEMORY_PROVIDER,
+            StepStatus.FAILED,
+            f"hindsight unreachable: {result.stderr.strip() or 'no detail'}",
+        )
+    import json
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return StepResult(
+            StepKind.MEMORY_PROVIDER,
+            StepStatus.FAILED,
+            "hindsight describe emitted non-JSON stdout",
+        )
+    if not isinstance(data, dict):
+        return StepResult(
+            StepKind.MEMORY_PROVIDER,
+            StepStatus.FAILED,
+            "hindsight describe emitted JSON but not a dict",
+        )
+    engine_name = data.get("engine", "unknown")
+    return StepResult(
+        StepKind.MEMORY_PROVIDER,
+        StepStatus.DONE,
+        f"memory provider: hindsight (engine: {engine_name}) reachable at {hindsight_url}",
+    )
+
+
 def _step_user_onboarding(
     *,
     runner: Runner,
@@ -473,6 +554,8 @@ def _run_step(
     user: str | None,
     config_path: str | None,
     harness: str,
+    memory_engine: str = "native",
+    hindsight_url: str | None = None,
 ) -> StepResult:
     match step:
         case StepKind.PROBE_SECRETS:
@@ -489,6 +572,14 @@ def _run_step(
             comp = next(c for c in COMPONENTS if c.ident == "agent-notes")
             return _step_install_harness(
                 step, comp, runner=runner, installed=installed, dry_run=dry_run, harness=harness
+            )
+        case StepKind.MEMORY_PROVIDER:
+            return _step_memory_provider(
+                runner=runner,
+                installed=installed,
+                dry_run=dry_run,
+                memory_engine=memory_engine,
+                hindsight_url=hindsight_url,
             )
         case StepKind.PROVENANCE:
             comp = next(c for c in COMPONENTS if c.ident == "agent-provenance")
@@ -571,12 +662,16 @@ def run_bootstrap(
     runner: Runner = _default_runner,
     installed: Installed = _default_installed,
     config_path: str | None = None,
+    memory_engine: str = "native",
+    hindsight_url: str | None = None,
 ) -> BootstrapResult:
     """Run the documented install order idempotently.
 
     Each step is gated on the prior step's success. ``dry_run`` prints the plan
     without acting. A step that would clobber an existing key or schema refuses.
     Missing external dependencies fail with a named, actionable message.
+    ``memory_engine`` and ``hindsight_url`` control the MEMORY_PROVIDER step
+    (Plan 012 WI-1.2): native is a no-op; hindsight verifies reachability.
     """
     tier_enum = BootstrapTier(tier)
     steps_to_run = _steps_for_tier(tier_enum)
@@ -597,6 +692,8 @@ def run_bootstrap(
             user=user,
             config_path=config_path,
             harness=harness,
+            memory_engine=memory_engine,
+            hindsight_url=hindsight_url,
         )
         results.append(result)
         if _is_terminal(result.status):

@@ -31,6 +31,7 @@ from agent_suite import key_watch
 from agent_suite import lock
 from agent_suite import verify_restore
 from agent_suite.components import COMPONENTS, Component, Locality, Tier
+from agent_suite.config import MemoryProviderConfig
 from agent_suite.profiles import (
     Profile,
     ProfileClassification,
@@ -182,6 +183,7 @@ def _check_lock_drift(
     lock_path: Path = lock.DEFAULT_LOCK_PATH,
     version_runner: lock.VersionRunner = lock._default_runner,
     version_installed: lock.Installed = lock._default_installed,
+    current_provider_extension: lock.ProviderExtension | None = None,
 ) -> lock.LockDriftResult:
     """Compare installed component versions against SUITE.lock.
 
@@ -205,6 +207,7 @@ def _check_lock_drift(
         existing,
         current_quad=current_quad,
         component_versions=component_versions,
+        current_provider_extension=current_provider_extension,
     )
 
 
@@ -219,6 +222,7 @@ class SuiteReport:
     key_rotation: key_watch.KeyRotationResult | None = None
     store_growth: key_watch.StoreGrowthResult | None = None
     profile_classification: ProfileClassification | None = None
+    memory_provider: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -234,6 +238,8 @@ class SuiteReport:
             d["store_growth"] = self.store_growth.to_dict()
         if self.profile_classification is not None:
             d["profile_classification"] = self.profile_classification.to_dict()
+        if self.memory_provider is not None:
+            d["memory_provider"] = self.memory_provider
         return d
 
 
@@ -440,6 +446,61 @@ def _compute_suite_ok(reports: list[ComponentReport]) -> bool:
     return True
 
 
+_MEMORY_PROVIDER_DOCTOR_CMD: tuple[str, ...] = (
+    "agent-notes", "memory-provider", "doctor", "--json",
+)
+
+
+def _check_memory_provider(
+    *,
+    installed: Installed,
+    runner: Runner,
+    mp_config: MemoryProviderConfig,
+) -> dict[str, object] | None:
+    """Shell ``agent-notes memory-provider doctor --json`` and parse the result.
+
+    Returns ``None`` when agent-notes is not installed. Returns a dict with
+    at least ``engine`` and ``ok`` keys on success or failure. Never raises
+    — the doctor is read-only and must never traceback.
+    """
+    if not installed("agent-notes"):
+        return None
+    try:
+        result = runner(_MEMORY_PROVIDER_DOCTOR_CMD)
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "engine": mp_config.engine,
+            "detail": "agent-notes memory-provider doctor timed out",
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "engine": mp_config.engine,
+            "detail": f"agent-notes memory-provider doctor could not run: {exc}",
+        }
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {
+            "ok": False,
+            "engine": mp_config.engine,
+            "detail": "agent-notes memory-provider doctor emitted non-JSON stdout",
+        }
+
+    if not isinstance(data, dict):
+        return {
+            "ok": False,
+            "engine": mp_config.engine,
+            "detail": "agent-notes memory-provider doctor emitted non-dict JSON",
+        }
+
+    return data
+
+
 def aggregate(
     *,
     installed: Installed = _default_installed,
@@ -453,6 +514,8 @@ def aggregate(
     profile: Profile | None = None,
     shared_endpoints: dict[str, str] | None = None,
     remote_checker: RemoteHealthChecker | None = None,
+    memory_provider_config: MemoryProviderConfig | None = None,
+    memory_provider_checks: bool = True,
 ) -> SuiteReport:
     """Run each component's doctor and fold into one umbrella report.
 
@@ -481,6 +544,14 @@ def aggregate(
     When ``shared_endpoints`` is provided (Plan 004 WI-1.6), shared-service
     components that are not installed locally are checked by endpoint instead of
     being reported as absent. ``remote_checker`` is injectable for testing.
+
+    When ``memory_provider_checks`` is True (default) and agent-notes is
+    installed, the doctor shells ``agent-notes memory-provider doctor --json``
+    and attaches the result as ``memory_provider`` (Plan 012 WI-2.1). A native
+    engine never affects ``suite_ok``; a configured Hindsight outage (endpoint
+    set but doctor reports not-ok) makes ``suite_ok`` False. Hindsight without
+    an endpoint is treated the same as native. ``memory_provider_config`` is
+    injectable for testing.
     """
     rc: RemoteHealthChecker = remote_checker if remote_checker is not None else _default_remote_check
     reports = [
@@ -493,6 +564,26 @@ def aggregate(
         )
         for c in components
     ]
+
+    mp_config = (
+        memory_provider_config
+        if memory_provider_config is not None
+        else MemoryProviderConfig.from_env()
+    )
+    memory_provider: dict[str, object] | None = None
+    if memory_provider_checks:
+        memory_provider = _check_memory_provider(
+            installed=installed,
+            runner=runner,
+            mp_config=mp_config,
+        )
+
+    current_provider_extension = lock.read_provider_extension(
+        engine=mp_config.engine,
+        runner=version_runner if version_runner is not None else lock._default_runner,
+        installed=version_installed if version_installed is not None else lock._default_installed,
+    )
+
     lock_result = _check_lock_drift(
         reports,
         lock_path=lock_path if lock_path is not None else lock.DEFAULT_LOCK_PATH,
@@ -500,6 +591,7 @@ def aggregate(
         version_installed=version_installed
         if version_installed is not None
         else lock._default_installed,
+        current_provider_extension=current_provider_extension,
     )
     post_restore: verify_restore.VerifyRestoreResult | None = None
     if verify_restore_dsn is not None:
@@ -525,6 +617,12 @@ def aggregate(
         suite_ok = False
     if key_rotation is not None and not key_rotation.ok:
         suite_ok = False
+
+    if memory_provider is not None:
+        mp_ok = bool(memory_provider.get("ok", False))
+        if mp_config.engine == "hindsight" and mp_config.endpoint and not mp_ok:
+            suite_ok = False
+
     return SuiteReport(
         suite_ok=suite_ok,
         components=reports,
@@ -533,6 +631,7 @@ def aggregate(
         key_rotation=key_rotation,
         store_growth=store_growth,
         profile_classification=profile_classification,
+        memory_provider=memory_provider,
     )
 
 
@@ -568,5 +667,16 @@ def format_text(report: SuiteReport) -> str:
         extra = ", ".join(cls.extra_optional) if cls.extra_optional else "(none)"
         lines.append(f"  missing required: {missing}")
         lines.append(f"  extra optional: {extra}")
+    if report.memory_provider is not None:
+        mp = report.memory_provider
+        engine = str(mp.get("engine", "unknown"))
+        mp_ok = bool(mp.get("ok", False))
+        version = mp.get("version")
+        ver = f" v{version}" if version else ""
+        status = "ok" if mp_ok else "not ok"
+        detail = str(mp.get("detail", ""))
+        lines.append("")
+        lines.append("memory provider:")
+        lines.append(f"  engine: {engine}  {status}{ver}  {detail}".rstrip())
     lines.append(f"suite: {'OK' if report.suite_ok else 'NOT OK'}")
     return "\n".join(lines)

@@ -101,25 +101,59 @@ class ComponentPin:
 
 
 @dataclass(frozen=True)
+class ProviderExtension:
+    """A pinned memory-provider extension (Plan 012 WI-3.1).
+
+    When the memory engine is not native (e.g. Hindsight), the lock pins the
+    provider name, adapter version, protocol version, deployment mode, and
+    support level so ``doctor`` can detect drift if the operator switches
+    engines or the adapter is upgraded.
+    """
+
+    provider_name: str
+    adapter_version: str | None
+    protocol_version: str
+    deployment_mode: str
+    support_level: str
+    config_digest: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "provider_name": self.provider_name,
+            "adapter_version": self.adapter_version,
+            "protocol_version": self.protocol_version,
+            "deployment_mode": self.deployment_mode,
+            "support_level": self.support_level,
+            "config_digest": self.config_digest,
+        }
+
+
+@dataclass(frozen=True)
 class SuiteLock:
     """The full compatibility manifest.
 
     ``regista_quad`` is ``None`` when regista was not installed at lock-generation
     time (a suite without its spine is unusual but the lock must round-trip).
+    ``provider_extension`` is ``None`` when the memory engine is native (the
+    default) or when agent-notes was absent at lock-generation time.
     """
 
     release: str
     regista_quad: RegistaVersionQuad | None
     components: dict[str, ComponentPin] = field(default_factory=dict)
+    provider_extension: ProviderExtension | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        d: dict[str, object] = {
             "suite": {
                 "release": self.release,
                 "regista": self.regista_quad.to_dict() if self.regista_quad else None,
             },
             "components": {k: v.to_dict() for k, v in self.components.items()},
         }
+        if self.provider_extension is not None:
+            d["memory_provider"] = self.provider_extension.to_dict()
+        return d
 
 
 class DriftKind(Enum):
@@ -133,6 +167,7 @@ class DriftKind(Enum):
     QUAD_MISMATCH = "quad_mismatch"
     COMPONENT_MISSING = "component_missing"
     UNEXPECTED_COMPONENT = "unexpected_component"
+    PROVIDER_DRIFT = "provider_drift"
 
 
 _QUAD_FIELDS: tuple[str, ...] = (
@@ -227,9 +262,53 @@ def read_regista_quad(
         return None
 
 
-# ---------------------------------------------------------------------------
-# Lock generation
-# ---------------------------------------------------------------------------
+_PROVIDER_DESCRIBE_CMD: tuple[str, ...] = (
+    "agent-notes", "memory-provider", "describe", "--json",
+)
+
+
+def read_provider_extension(
+    *,
+    engine: str = "native",
+    runner: VersionRunner = _default_runner,
+    installed: Installed = _default_installed,
+) -> ProviderExtension | None:
+    """Shell ``agent-notes memory-provider describe --json`` and parse the pin.
+
+    Returns ``None`` when the engine is native (no external pin needed),
+    when agent-notes is absent, or when the command fails — never raises.
+    """
+    if engine == "native":
+        return None
+    if not installed("agent-notes"):
+        return None
+    try:
+        result = runner(_PROVIDER_DESCRIBE_CMD)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    provider_name = data.get("engine")
+    if not isinstance(provider_name, str):
+        return None
+    raw_adapter = data.get("version")
+    adapter_version: str | None = raw_adapter if isinstance(raw_adapter, str) else None
+    raw_protocol = data.get("protocol_version", "1.0")
+    protocol_version = raw_protocol if isinstance(raw_protocol, str) else "1.0"
+    return ProviderExtension(
+        provider_name=provider_name,
+        adapter_version=adapter_version,
+        protocol_version=protocol_version,
+        deployment_mode="remote",
+        support_level="supported",
+        config_digest=None,
+    )
 
 
 def generate_lock(
@@ -239,15 +318,21 @@ def generate_lock(
     installed: Installed = _default_installed,
     components: tuple[Component, ...] = COMPONENTS,
     release: str | None = None,
+    memory_engine: str = "native",
 ) -> SuiteLock:
     """Build a :class:`SuiteLock` from the current installed state.
 
     ``component_versions`` maps component ident → version (or ``None`` if
     absent). The regista quad is read from ``regista version --json``, not
     hardcoded. Only installed components are pinned in the lock. ``release``
-    defaults to the installed package version.
+    defaults to the installed package version. When ``memory_engine`` is not
+    ``"native"``, the provider extension is read from ``agent-notes
+    memory-provider describe --json`` and pinned in the lock (Plan 012 WI-3.1).
     """
     quad = read_regista_quad(runner=runner, installed=installed)
+    provider_ext = read_provider_extension(
+        engine=memory_engine, runner=runner, installed=installed
+    )
 
     pins: dict[str, ComponentPin] = {}
     for comp in components:
@@ -259,6 +344,7 @@ def generate_lock(
         release=release if release is not None else _suite_release(),
         regista_quad=quad,
         components=pins,
+        provider_extension=provider_ext,
     )
 
 
@@ -306,6 +392,19 @@ def serialize_lock(lock: SuiteLock) -> str:
         lines.append(f"[components.{ident}]")
         lines.append(f"repo = {_toml_escape(pin.repo)}")
         lines.append(f"version = {_toml_escape(pin.version)}")
+        lines.append("")
+
+    if lock.provider_extension is not None:
+        pe = lock.provider_extension
+        lines.append("[memory_provider]")
+        lines.append(f"provider_name = {_toml_escape(pe.provider_name)}")
+        if pe.adapter_version is not None:
+            lines.append(f"adapter_version = {_toml_escape(pe.adapter_version)}")
+        lines.append(f"protocol_version = {_toml_escape(pe.protocol_version)}")
+        lines.append(f"deployment_mode = {_toml_escape(pe.deployment_mode)}")
+        lines.append(f"support_level = {_toml_escape(pe.support_level)}")
+        if pe.config_digest is not None:
+            lines.append(f"config_digest = {_toml_escape(pe.config_digest)}")
         lines.append("")
 
     return "\n".join(lines)
@@ -356,7 +455,40 @@ def deserialize_lock(text: str) -> SuiteLock:
             )
         pins[ident] = ComponentPin(repo=repo, version=version)
 
-    return SuiteLock(release=release, regista_quad=quad, components=pins)
+    provider_extension: ProviderExtension | None = None
+    raw_mp = data.get("memory_provider")
+    if isinstance(raw_mp, dict):
+        provider_name = raw_mp.get("provider_name")
+        if not isinstance(provider_name, str):
+            raise ValueError("SUITE.lock: memory_provider.provider_name must be a string")
+        raw_adapter = raw_mp.get("adapter_version")
+        adapter_version: str | None = raw_adapter if isinstance(raw_adapter, str) else None
+        raw_protocol = raw_mp.get("protocol_version")
+        if not isinstance(raw_protocol, str):
+            raise ValueError("SUITE.lock: memory_provider.protocol_version must be a string")
+        raw_mode = raw_mp.get("deployment_mode")
+        if not isinstance(raw_mode, str):
+            raise ValueError("SUITE.lock: memory_provider.deployment_mode must be a string")
+        raw_support = raw_mp.get("support_level")
+        if not isinstance(raw_support, str):
+            raise ValueError("SUITE.lock: memory_provider.support_level must be a string")
+        raw_digest = raw_mp.get("config_digest")
+        config_digest: str | None = raw_digest if isinstance(raw_digest, str) else None
+        provider_extension = ProviderExtension(
+            provider_name=provider_name,
+            adapter_version=adapter_version,
+            protocol_version=raw_protocol,
+            deployment_mode=raw_mode,
+            support_level=raw_support,
+            config_digest=config_digest,
+        )
+
+    return SuiteLock(
+        release=release,
+        regista_quad=quad,
+        components=pins,
+        provider_extension=provider_extension,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +530,7 @@ def check_drift(
     *,
     current_quad: RegistaVersionQuad | None,
     component_versions: dict[str, str | None],
+    current_provider_extension: ProviderExtension | None = None,
 ) -> LockDriftResult:
     """Compare current state against a lock, reporting named drift.
 
@@ -497,6 +630,50 @@ def check_drift(
                 )
             )
 
+    # --- memory-provider extension drift (Plan 012 WI-3.1) ---
+    if lock.provider_extension is not None and current_provider_extension is not None:
+        pe = lock.provider_extension
+        cur = current_provider_extension
+        for field_name in (
+            "provider_name",
+            "adapter_version",
+            "protocol_version",
+            "deployment_mode",
+            "support_level",
+        ):
+            locked_val = str(getattr(pe, field_name) or "")
+            current_val = str(getattr(cur, field_name) or "")
+            if locked_val != current_val:
+                drift.append(
+                    DriftEntry(
+                        kind=DriftKind.PROVIDER_DRIFT,
+                        component="memory_provider",
+                        field=field_name,
+                        locked=locked_val,
+                        current=current_val,
+                    )
+                )
+    elif lock.provider_extension is not None and current_provider_extension is None:
+        drift.append(
+            DriftEntry(
+                kind=DriftKind.PROVIDER_DRIFT,
+                component="memory_provider",
+                field="provider_extension",
+                locked="pinned",
+                current="absent",
+            )
+        )
+    elif lock.provider_extension is None and current_provider_extension is not None:
+        drift.append(
+            DriftEntry(
+                kind=DriftKind.PROVIDER_DRIFT,
+                component="memory_provider",
+                field="provider_extension",
+                locked="(not pinned)",
+                current="present",
+            )
+        )
+
     matches = len(drift) == 0
     return LockDriftResult(
         matches=matches,
@@ -530,6 +707,10 @@ def format_drift_text(result: LockDriftResult) -> str:
             case DriftKind.UNEXPECTED_COMPONENT:
                 lines.append(
                     f"  {d.component:<22} not in lock (installed: {d.current})"
+                )
+            case DriftKind.PROVIDER_DRIFT:
+                lines.append(
+                    f"  memory_provider       {d.field}: {d.locked} → {d.current}"
                 )
             case other:
                 assert_never(other)

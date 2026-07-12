@@ -56,6 +56,7 @@ EXPECTED_CONTRACTS = (
     "install-harness",
     "knowledge",
     "notification",
+    "memory-provider",
 )
 
 

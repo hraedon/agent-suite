@@ -22,12 +22,13 @@
     "post_restore": {"type": "object", "required": false, "description": "VerifyRestoreResult when verify_restore_dsn is provided"},
     "key_rotation": {"type": "object", "required": false, "description": "KeyRotationResult when key_watch_checks is True"},
     "store_growth": {"type": "object", "required": false, "description": "StoreGrowthResult when key_watch_checks is True"},
-    "profile_classification": {"type": "object", "required": false, "description": "ProfileClassification when profile is set"}
+    "profile_classification": {"type": "object", "required": false, "description": "ProfileClassification when profile is set"},
+    "memory_provider": {"type": "object", "required": false, "description": "Memory provider health when agent-notes is installed and memory_provider_checks is True (Plan 012 WI-2.1)"}
   },
   "verify_restore_status_values": ["verified", "drift", "warnings", "unreachable", "error"],
   "key_age_status_values": ["ok", "approaching", "expired", "unsupported", "unreachable", "error"],
   "store_growth_status_values": ["ok", "unsupported", "unreachable", "error"],
-  "drift_kind_values": ["version_mismatch", "quad_mismatch", "component_missing", "unexpected_component"],
+  "drift_kind_values": ["version_mismatch", "quad_mismatch", "component_missing", "unexpected_component", "provider_drift"],
   "invariants": [
     "A component that is not installed is 'absent' (named state, not failure for optional tier)",
     "A component that is installed but unreachable or reports ok:false is 'failed'",
