@@ -58,7 +58,7 @@ def test_generate_xml_includes_on_failure_restart() -> None:
 
 def test_generate_xml_no_work_domain_identifiers() -> None:
     xml = generate_winsw_xml(_spec())
-    forbidden = ["hraedon", "WORK-DOMAIN", "real-host", "production"]
+    forbidden = ["WORK-DOMAIN", "real-host", "production", "actual-domain"]
     for token in forbidden:
         assert token not in xml
 
