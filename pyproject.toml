@@ -6,13 +6,18 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "YOUR-ORG" }]
+keywords = ["agent-suite", "orchestration", "bootstrap", "health-check", "deployment"]
 dependencies = []  # stdlib-only core
+
+[project.urls]
+Repository = "https://github.com/YOUR-ORG/agent-suite"
 
 [project.optional-dependencies]
 dev = ["ruff", "mypy", "pytest"]
 vault = ["hvac"]                     # HashiCorp Vault secret backend (edge only)
-azure = ["azure-identity", "azure-keyvault-secrets"]  # Azure Key Vault (edge only)
+azure = ["azure-identity", "azure-keyvault-secrets", "PyJWT[crypto]"]  # Azure Key Vault + Entra (edge only)
 windows = ["pywin32; sys_platform == 'win32'"]        # DPAPI / Credential Manager (edge only)
+windows-full = ["agent-suite[windows]", "agent-suite[azure]"]  # all Windows deps in one extra
 
 [project.scripts]
 agent-suite = "agent_suite.cli:main"
@@ -28,6 +33,10 @@ packages = ["src/agent_suite"]
 strict = true
 python_version = "3.12"
 files = ["src"]
+
+[[tool.mypy.overrides]]
+module = "jwt.*"
+ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100

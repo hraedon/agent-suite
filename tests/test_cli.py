@@ -149,6 +149,10 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
             assert main([command.value, "project-slug"]) == 0
         elif command is Command.PREFLIGHT:
             assert main([command.value]) == 1
+        elif command is Command.SETUP_INSTALL:
+            assert main([command.value, "--dry-run"]) == 1
+        elif command is Command.DUAL_CONTROL:
+            assert main([command.value, "list", "--store-path", "/tmp/test-dc-store.json"]) == 0
         else:
             assert main([command.value]) == 0
 

@@ -22,11 +22,19 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent_suite.entra import EntraConfig
 
 
 MEMORY_ENGINE_ENV = "AGENT_NOTES_MEMORY_ENGINE"
 HINDSIGHT_URL_ENV = "HINDSIGHT_URL"
 HINDSIGHT_TENANT_ENV = "HINDSIGHT_TENANT"
+
+ENTRA_TENANT_ID_ENV = "ENTRA_TENANT_ID"
+ENTRA_CLIENT_ID_ENV = "ENTRA_CLIENT_ID"
+ENTRA_AUDIENCE_ENV = "ENTRA_AUDIENCE"
 
 
 @dataclass(frozen=True)
@@ -137,3 +145,60 @@ def load_suite_env_into_environ(
             os.environ[key] = value
             injected += 1
     return injected
+
+
+@dataclass(frozen=True)
+class EntraEnvConfig:
+    """Entra configuration loaded from environment variables (Plan 014 WI-3.3).
+
+    When ``is_configured`` is True, the caller can construct an
+    ``EntraTokenValidator`` with automatic JWKS key fetching.
+    """
+
+    tenant_id: str | None = None
+    client_id: str | None = None
+    audience: str | None = None
+    jwks_url: str | None = None
+
+    @classmethod
+    def from_env(cls) -> EntraEnvConfig:
+        tenant_id = os.environ.get(ENTRA_TENANT_ID_ENV)
+        client_id = os.environ.get(ENTRA_CLIENT_ID_ENV)
+        audience = os.environ.get(ENTRA_AUDIENCE_ENV)
+        jwks_url: str | None = None
+        if tenant_id is not None:
+            jwks_url = (
+                f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys"
+            )
+        return cls(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            audience=audience,
+            jwks_url=jwks_url,
+        )
+
+    @property
+    def is_configured(self) -> bool:
+        """True when all required fields are present."""
+        return (
+            self.tenant_id is not None
+            and self.client_id is not None
+            and self.audience is not None
+        )
+
+    def to_entra_config(self) -> EntraConfig:
+        """Convert to EntraConfig. Raises ValueError if not configured."""
+        from agent_suite.entra import EntraConfig
+
+        if not self.is_configured:
+            raise ValueError("EntraEnvConfig is not fully configured")
+        assert self.tenant_id is not None
+        assert self.client_id is not None
+        assert self.audience is not None
+        issuer = f"https://login.microsoftonline.com/{self.tenant_id}/v2.0"
+        return EntraConfig(
+            tenant_id=self.tenant_id,
+            client_id=self.client_id,
+            issuer=issuer,
+            audience=self.audience,
+        )

@@ -74,3 +74,25 @@ def test_edge_modules_are_not_in_core() -> None:
         assert edge not in _CORE_MODULES, (
             f"{edge!r} is an edge module — it must not be in _CORE_MODULES"
         )
+
+
+def test_core_does_not_import_edge_at_module_level() -> None:
+    """Core modules must not import edge modules at module level (only lazily inside functions)."""
+    for module_name in _CORE_MODULES:
+        spec = importlib.util.find_spec(f"agent_suite.{module_name}")
+        assert spec and spec.origin, f"cannot locate agent_suite.{module_name}"
+        tree = ast.parse(Path(spec.origin).read_text())
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                for edge in _EDGE_MODULES:
+                    assert edge not in node.module, (
+                        f"core module {module_name!r} imports edge module {edge!r} at module level — "
+                        "edge modules must only be imported lazily inside functions"
+                    )
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    for edge in _EDGE_MODULES:
+                        assert edge not in alias.name, (
+                            f"core module {module_name!r} imports edge module {edge!r} at module level — "
+                            "edge modules must only be imported lazily inside functions"
+                        )
