@@ -22,6 +22,7 @@ class Command(Enum):
     UPGRADE = "upgrade"
     SCHEDULE = "schedule"
     ALERT_CHECK = "alert-check"
+    PREFLIGHT = "preflight"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -140,6 +141,41 @@ def _build_parser() -> argparse.ArgumentParser:
         help="path to the state file for debouncing",
     )
     alert_check.add_argument("--json", action="store_true", help="emit the result as JSON")
+    preflight = sub.add_parser(
+        Command.PREFLIGHT.value,
+        help="read-only Windows host preflight check (Plan 013 WI-0.3)",
+    )
+    preflight.add_argument("--json", action="store_true", help="emit the report as JSON")
+    preflight.add_argument(
+        "--profile",
+        choices=["A", "B", "C"],
+        default="B",
+        help="deployment profile to evaluate against (default: B)",
+    )
+    preflight.add_argument(
+        "--postgres-host", default="localhost", help="Postgres host to probe"
+    )
+    preflight.add_argument(
+        "--postgres-port", type=int, default=5432, help="Postgres port to probe"
+    )
+    preflight.add_argument(
+        "--dns-hostname", default="suite-db.example", help="hostname for DNS probe"
+    )
+    preflight.add_argument(
+        "--tls-host", default="suite-db.example", help="hostname for TLS probe"
+    )
+    preflight.add_argument(
+        "--tls-port", type=int, default=443, help="port for TLS probe"
+    )
+    preflight.add_argument(
+        "--release-file", help="path to release identity file"
+    )
+    preflight.add_argument(
+        "--lock-file", help="path to SUITE.lock file for lock identity"
+    )
+    preflight.add_argument(
+        "--install-dir", help="path to check for existing installation"
+    )
     return parser
 
 
@@ -406,6 +442,47 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(format_alert_text(alert_result))
             return 0 if alert_result.suite_ok else 1
+        case Command.PREFLIGHT:
+            from pathlib import Path
+
+            from agent_suite.profiles import Profile
+            from agent_suite.windows_observation import format_preflight_text, observe_host
+            from agent_suite.windows_setup import (
+                PreflightState,
+                SetupOperation,
+                SetupRequest,
+                run_preflight,
+            )
+
+            release_file = Path(args.release_file) if args.release_file else None
+            lock_file = Path(args.lock_file) if args.lock_file else None
+            install_dir = Path(args.install_dir) if args.install_dir else None
+
+            observation = observe_host(
+                postgres_host=args.postgres_host,
+                postgres_port=args.postgres_port,
+                dns_hostname=args.dns_hostname,
+                tls_host=args.tls_host,
+                tls_port=args.tls_port,
+                release_file=release_file,
+                lock_file=lock_file,
+                install_dir=install_dir,
+            )
+            profile = Profile(args.profile)
+            request = SetupRequest(
+                profile=profile,
+                target_release_identity=observation.artifact_release_identity,
+                target_lock_identity=observation.artifact_lock_identity,
+                operations=frozenset(SetupOperation),
+            )
+            preflight_report = run_preflight(observation, request)
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(preflight_report.to_dict(), indent=2, default=str))
+            else:
+                print(format_preflight_text(preflight_report))
+            return 0 if preflight_report.state is PreflightState.READY else 1
     assert_never(command)
 
 

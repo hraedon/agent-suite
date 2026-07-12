@@ -1,0 +1,165 @@
+{
+  "contract": "human-surfaces",
+  "version": "1.0.0-draft.1",
+  "description": "Cross-repository registry for the six dossier console areas. Support describes implementation maturity, not authorization or release qualification.",
+  "owned_by": "agent-suite",
+  "consumers": ["dossier", "regista", "agent-notes", "agent-provenance", "agent-capability-broker", "agent-wake"],
+  "status_vocabulary": ["ok", "warning", "failed", "unknown", "unsupported", "unreachable", "not_configured"],
+  "area_values": ["work", "knowledge", "activity", "evidence", "operations", "administration"],
+  "role_values": ["collaborator", "reviewer", "auditor", "security_administrator", "suite_operator"],
+  "risk_values": ["read_only", "routine_mutation", "protected_mutation", "host_authority"],
+  "support_values": ["supported", "prototype", "planned", "external_artifact"],
+  "routes": [
+    {
+      "id": "work.dashboard",
+      "area": "work",
+      "path": "/",
+      "roles": ["collaborator", "reviewer"],
+      "owning_component": "dossier",
+      "provider_operation": "dossier.work.list_authorized",
+      "risk": "read_only",
+      "support": "prototype",
+      "proof": "dossier route and authorization tests"
+    },
+    {
+      "id": "work.review",
+      "area": "work",
+      "path": "/review",
+      "roles": ["reviewer"],
+      "owning_component": "regista",
+      "provider_operation": "regista.review.record_verdict",
+      "risk": "routine_mutation",
+      "support": "prototype",
+      "proof": "independent-review golden journey"
+    },
+    {
+      "id": "knowledge.index",
+      "area": "knowledge",
+      "path": "/knowledge",
+      "roles": ["collaborator", "reviewer", "auditor"],
+      "owning_component": "agent-notes",
+      "provider_operation": "agent-notes.knowledge.browse",
+      "risk": "read_only",
+      "support": "planned",
+      "proof": "agent-notes public knowledge-provider contract tests; dossier route remains planned"
+    },
+    {
+      "id": "activity.sessions",
+      "area": "activity",
+      "path": "/sessions",
+      "roles": ["collaborator", "reviewer", "auditor"],
+      "owning_component": "agent-provenance",
+      "provider_operation": "cairn.activity.list_sessions",
+      "risk": "read_only",
+      "support": "prototype",
+      "proof": "session/tool/file coverage golden journey"
+    },
+    {
+      "id": "evidence.cases",
+      "area": "evidence",
+      "path": "/evidence/cases",
+      "roles": ["auditor", "reviewer"],
+      "owning_component": "agent-provenance",
+      "provider_operation": "cairn.evidence.prepare_case_export",
+      "risk": "protected_mutation",
+      "support": "planned",
+      "proof": "case-bound export and offline verification journey"
+    },
+    {
+      "id": "evidence.offline_report",
+      "area": "evidence",
+      "path": "/evidence/offline-report",
+      "roles": ["auditor"],
+      "owning_component": "agent-provenance",
+      "provider_operation": "cairn.report.render_static",
+      "risk": "read_only",
+      "support": "external_artifact",
+      "proof": "self-contained report verification test"
+    },
+    {
+      "id": "operations.estate",
+      "area": "operations",
+      "path": "/operations",
+      "roles": ["suite_operator", "auditor"],
+      "owning_component": "agent-suite",
+      "provider_operation": "agent-suite.doctor.describe_estate",
+      "risk": "read_only",
+      "support": "planned",
+      "proof": "estate provider and freshness-state conformance probe"
+    },
+    {
+      "id": "operations.configuration",
+      "area": "operations",
+      "path": "/operations/configuration",
+      "roles": ["suite_operator", "security_administrator"],
+      "owning_component": "agent-suite",
+      "provider_operation": "agent-suite.configuration.prepare_signed_bundle",
+      "risk": "protected_mutation",
+      "support": "planned",
+      "proof": "approved bundle digest and Windows dry-run receipt"
+    },
+    {
+      "id": "operations.capabilities",
+      "area": "operations",
+      "path": "/operations/capabilities",
+      "roles": ["suite_operator", "security_administrator", "auditor"],
+      "owning_component": "agent-capability-broker",
+      "provider_operation": "acb.capabilities.describe_drift",
+      "risk": "read_only",
+      "support": "planned",
+      "proof": "capability inventory and drift provider conformance probe"
+    },
+    {
+      "id": "operations.delivery",
+      "area": "operations",
+      "path": "/operations/delivery",
+      "roles": ["suite_operator", "auditor"],
+      "owning_component": "agent-wake",
+      "provider_operation": "agent-wake.delivery.describe_backlog",
+      "risk": "read_only",
+      "support": "planned",
+      "proof": "delivery backlog, retry, and dead-letter conformance probe"
+    },
+    {
+      "id": "administration.identities",
+      "area": "administration",
+      "path": "/admin/principals",
+      "roles": ["security_administrator"],
+      "owning_component": "regista",
+      "provider_operation": "regista.principal_lifecycle.describe",
+      "risk": "read_only",
+      "support": "prototype",
+      "proof": "project-by-project principal posture test"
+    },
+    {
+      "id": "administration.keys",
+      "area": "administration",
+      "path": "/administration/keys",
+      "roles": ["security_administrator", "collaborator"],
+      "owning_component": "regista",
+      "provider_operation": "regista.principal_lifecycle.prepare_enrollment",
+      "risk": "protected_mutation",
+      "support": "planned",
+      "proof": "step-up, possession, exact-digest approval, and reconciliation journey"
+    },
+    {
+      "id": "administration.integrations",
+      "area": "administration",
+      "path": "/administration/integrations",
+      "roles": ["security_administrator", "suite_operator"],
+      "owning_component": "dossier",
+      "provider_operation": "dossier.integrations.describe",
+      "risk": "read_only",
+      "support": "planned",
+      "proof": "provider availability and authorization tests"
+    }
+  ],
+  "invariants": [
+    "All six console areas have at least one registered route",
+    "Navigation visibility never substitutes for route/provider authorization",
+    "Provider operation names identify the owning component and do not move component logic into dossier or agent-suite",
+    "Host-authority actions are never executed by the browser surface",
+    "Unknown, stale, partial, unsupported, unreachable, and not-configured states are not rendered as success",
+    "A support value is implementation maturity only and does not claim Windows or release qualification"
+  ]
+}

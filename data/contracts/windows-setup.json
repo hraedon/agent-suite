@@ -1,0 +1,26 @@
+{
+  "contract": "windows-setup",
+  "version": "1.0.0-draft.1",
+  "description": "Non-acting protocol foundation shared by the future Windows Setup CLI and UI. This fixture does not claim an installer, Windows probe, elevation, DPAPI, service, or recovery implementation.",
+  "owned_by": "agent-suite",
+  "consumers": ["agent-suite-setup", "dossier"],
+  "protocol_version": "1.0.0-draft.1",
+  "profile_values": ["A", "B", "C"],
+  "probe_state_values": ["available", "unavailable", "unknown", "unsupported"],
+  "preflight_state_values": ["ready", "blocked"],
+  "operation_values": ["install_release", "configure_services", "wire_harnesses", "apply_signed_bundle", "repair", "restore_and_verify"],
+  "plan_state_values": ["ready", "no_op", "blocked"],
+  "action_state_values": ["planned", "no_op", "refused", "skipped_dry_run", "applied", "failed"],
+  "receipt_state_values": ["dry_run", "no_op", "blocked", "applied", "partial", "failed"],
+  "invariants": [
+    "The protocol module never executes a host action",
+    "The same observation and request produce byte-equivalent canonical plan content and the same plan id",
+    "A blocked preflight produces only refused actions",
+    "A target release or lock identity mismatch produces only refused actions",
+    "Dry-run receipts name every planned action and prove that no host action executed",
+    "Already-satisfied operations produce a no-op plan and no-op receipt",
+    "Applied, partial, and failed states are reserved for a future executor and are never emitted by the skeleton",
+    "Observations and serialization contain no secret or private-key values",
+    "Windows installation, elevation, DPAPI, WinSW, Scheduled Task, and live recovery remain unimplemented until separately qualified"
+  ]
+}
