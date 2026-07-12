@@ -18,7 +18,10 @@ import secrets
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol, assert_never
+from typing import TYPE_CHECKING, Protocol, assert_never
+
+if TYPE_CHECKING:
+    from agent_suite.dual_control_store import DualControlStore
 
 
 DEFAULT_TOKEN_TTL = 300
@@ -209,13 +212,54 @@ def evaluate_approval(
     approver_token: ValidatedToken,
     *,
     now: float | None = None,
+    store: DualControlStore | None = None,
 ) -> DualControlDecision:
     """Evaluate whether a request + approval + approver token satisfies dual control.
 
     This is the core security gate. It is fail-closed: any check failure
     produces REJECTED or EXPIRED, never APPROVED.
+
+    When ``store`` is provided, replay protection is enforced: the request
+    must exist in the store in PENDING state, and after a successful approval
+    the store records the transition to APPROVED.
     """
     current = now if now is not None else time.time()
+
+    if store is not None:
+        record = store.get(request.request_id)
+        if record is None:
+            return DualControlDecision(
+                state=DualControlState.REJECTED,
+                request_id=request.request_id,
+                operation=request.operation,
+                detail="request not found in store",
+            )
+        match record.state:
+            case DualControlState.PENDING:
+                request = record.request
+            case DualControlState.APPROVED:
+                return DualControlDecision(
+                    state=DualControlState.REJECTED,
+                    request_id=request.request_id,
+                    operation=request.operation,
+                    detail="request already approved — replay detected",
+                )
+            case DualControlState.EXECUTED:
+                return DualControlDecision(
+                    state=DualControlState.REJECTED,
+                    request_id=request.request_id,
+                    operation=request.operation,
+                    detail="request already executed — replay detected",
+                )
+            case DualControlState.REJECTED | DualControlState.EXPIRED | DualControlState.FAILED:
+                return DualControlDecision(
+                    state=DualControlState.REJECTED,
+                    request_id=request.request_id,
+                    operation=request.operation,
+                    detail=f"request state is {record.state.value}",
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
 
     if request.is_expired(current):
         return DualControlDecision(
@@ -294,12 +338,25 @@ def evaluate_approval(
             detail="approval approver_principal does not match approver token",
         )
 
-    return DualControlDecision(
+    decision = DualControlDecision(
         state=DualControlState.APPROVED,
         request_id=request.request_id,
         operation=request.operation,
         detail="dual control satisfied — two distinct principals authenticated",
     )
+
+    if store is not None:
+        try:
+            store.approve(request.request_id, approval)
+        except Exception:
+            return DualControlDecision(
+                state=DualControlState.REJECTED,
+                request_id=request.request_id,
+                operation=request.operation,
+                detail="concurrent approval rejected by store",
+            )
+
+    return decision
 
 
 def create_approval(
@@ -337,4 +394,32 @@ def create_approval(
         approved_at=time.time(),
         approver_token_hash=approver_token.token_hash,
         operation_digest=request.operation_digest,
+    )
+
+
+def mark_executed(request_id: str, store: DualControlStore) -> DualControlDecision:
+    """Mark a request as executed in the store.
+
+    Returns a FAILED decision if the store raises.
+    """
+    record = store.get(request_id)
+    if record is not None:
+        operation = record.request.operation
+    else:
+        operation = ProtectedOperation.SERVICE_REPAIR
+
+    try:
+        store.mark_executed(request_id)
+    except Exception as exc:
+        return DualControlDecision(
+            state=DualControlState.FAILED,
+            request_id=request_id,
+            operation=operation,
+            detail=f"store error: {exc}",
+        )
+    return DualControlDecision(
+        state=DualControlState.EXECUTED,
+        request_id=request_id,
+        operation=operation,
+        detail="request marked as executed",
     )

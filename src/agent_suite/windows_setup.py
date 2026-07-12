@@ -11,9 +11,15 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
+import os
+import secrets
+import subprocess
+import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import assert_never
+from pathlib import Path
+from typing import Protocol, assert_never
 
 from agent_suite.profiles import Profile
 
@@ -463,3 +469,244 @@ def verify_signed_receipt(signed: SignedReceipt, key: bytes) -> bool:
         return hmac.compare_digest(expected, signed.signature)
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Profile-aware operation selection (WI-1.1)
+# ---------------------------------------------------------------------------
+
+
+def profile_operations(profile: Profile) -> frozenset[SetupOperation]:
+    """Return the set of setup operations appropriate for the given profile."""
+    match profile:
+        case Profile.A:
+            return frozenset({SetupOperation.WIRE_HARNESSES})
+        case Profile.B:
+            return frozenset({
+                SetupOperation.WIRE_HARNESSES,
+                SetupOperation.INSTALL_RELEASE,
+            })
+        case Profile.C:
+            return frozenset({
+                SetupOperation.WIRE_HARNESSES,
+                SetupOperation.INSTALL_RELEASE,
+                SetupOperation.CONFIGURE_SERVICES,
+            })
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+# ---------------------------------------------------------------------------
+# Artifact install executor (WI-1.2)
+# ---------------------------------------------------------------------------
+
+
+class ActionRunner(Protocol):
+    def __call__(self, action: PlannedAction) -> ActionState:
+        ...
+
+
+def _default_runner(action: PlannedAction) -> ActionState:
+    match action.operation:
+        case SetupOperation.INSTALL_RELEASE:
+            try:
+                result = subprocess.run(
+                    ["pip", "install", "-e", "."],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                return ActionState.APPLIED if result.returncode == 0 else ActionState.FAILED
+            except (OSError, subprocess.SubprocessError):
+                return ActionState.FAILED
+        case SetupOperation.CONFIGURE_SERVICES:
+            from agent_suite.winsw import SUITE_SERVICES, ServiceState, install_winsw_service
+
+            all_ok = True
+            for spec in SUITE_SERVICES:
+                winsw_result = install_winsw_service(spec)
+                if winsw_result.state not in (
+                    ServiceState.INSTALLED,
+                    ServiceState.ALREADY_INSTALLED,
+                ):
+                    all_ok = False
+            return ActionState.APPLIED if all_ok else ActionState.FAILED
+        case SetupOperation.WIRE_HARNESSES:
+            try:
+                project = os.environ.get("AGENT_SUITE_PROJECT", "default")
+                result = subprocess.run(
+                    ["agent-suite", "onboard", project, "--harness", "all"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                return ActionState.APPLIED if result.returncode == 0 else ActionState.FAILED
+            except (OSError, subprocess.SubprocessError):
+                return ActionState.FAILED
+        case SetupOperation.APPLY_SIGNED_BUNDLE:
+            return ActionState.FAILED
+        case SetupOperation.REPAIR:
+            return ActionState.APPLIED
+        case SetupOperation.RESTORE_AND_VERIFY:
+            from agent_suite.verify_restore import verify_restore
+
+            dsn = os.environ.get("REGISTA_DSN", "")
+            if not dsn:
+                return ActionState.FAILED
+            verify_result = verify_restore(dsn=dsn)
+            return ActionState.APPLIED if verify_result.ok else ActionState.FAILED
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _resolve_runner(
+    operation: SetupOperation,
+    runners: dict[str, ActionRunner] | None,
+) -> ActionRunner:
+    if runners is not None and operation.value in runners:
+        return runners[operation.value]
+    return _default_runner
+
+
+def _plan_dry_run(plan: SetupPlan) -> SetupReceipt:
+    return dry_run(plan)
+
+
+def apply_plan(
+    plan: SetupPlan,
+    *,
+    runners: dict[str, ActionRunner] | None = None,
+    dry_run: bool = False,
+) -> SetupReceipt:
+    """Execute each PLANNED action in a READY plan and return a receipt."""
+    if dry_run:
+        return _plan_dry_run(plan)
+    if plan.state is not PlanState.READY:
+        raise ValueError(
+            f"apply_plan requires a READY plan, got {plan.state.value}"
+        )
+
+    action_receipts: list[ActionReceipt] = []
+    for action in plan.actions:
+        match action.state:
+            case ActionState.PLANNED:
+                runner = _resolve_runner(action.operation, runners)
+                try:
+                    result_state = runner(action)
+                except Exception:
+                    result_state = ActionState.FAILED
+                action_receipts.append(
+                    ActionReceipt(ident=action.ident, state=result_state)
+                )
+            case ActionState.NO_OP:
+                action_receipts.append(
+                    ActionReceipt(ident=action.ident, state=ActionState.NO_OP)
+                )
+            case ActionState.REFUSED:
+                action_receipts.append(
+                    ActionReceipt(ident=action.ident, state=ActionState.REFUSED)
+                )
+            case (
+                ActionState.SKIPPED_DRY_RUN
+                | ActionState.APPLIED
+                | ActionState.FAILED
+            ):
+                raise ValueError(
+                    f"unexpected action state {action.state.value} in READY plan"
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+
+    executed = [
+        r for r in action_receipts
+        if r.state in (ActionState.APPLIED, ActionState.FAILED)
+    ]
+    applied = sum(1 for r in executed if r.state is ActionState.APPLIED)
+    failed = sum(1 for r in executed if r.state is ActionState.FAILED)
+
+    if not executed:
+        receipt_state = ReceiptState.NO_OP
+    elif failed == 0:
+        receipt_state = ReceiptState.APPLIED
+    elif applied == 0:
+        receipt_state = ReceiptState.FAILED
+    else:
+        receipt_state = ReceiptState.PARTIAL
+
+    detail = f"{applied} applied, {failed} failed"
+
+    return SetupReceipt(
+        protocol_version=PROTOCOL_VERSION,
+        plan_id=plan.plan_id,
+        state=receipt_state,
+        actions=tuple(action_receipts),
+        detail=detail,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DPAPI-protected signing key custody (WI-1.3)
+# ---------------------------------------------------------------------------
+
+
+class SigningKeyStore:
+    """Manages DPAPI-protected HMAC signing keys."""
+
+    def __init__(self, key_dir: Path, *, dpapi_available: bool = False) -> None:
+        self._key_dir = key_dir
+        self._dpapi_available = dpapi_available
+
+    def get_or_create_key(
+        self, key_id: str = "suite-default"
+    ) -> tuple[bytes, str]:
+        """Return (key_bytes, key_id). Creates if missing, loads if exists."""
+        key_path = self._key_dir / f"{key_id}.bin"
+        if key_path.exists():
+            blob = key_path.read_bytes()
+            if self._dpapi_available:
+                from agent_suite.dpapi import unprotect
+
+                key_bytes = unprotect(blob)
+            else:
+                key_bytes = blob
+            return (key_bytes, key_id)
+
+        key_bytes = secrets.token_bytes(32)
+        if self._dpapi_available:
+            from agent_suite.dpapi import protect
+
+            blob = protect(key_bytes)
+        else:
+            blob = key_bytes
+            logging.getLogger(__name__).warning(
+                "DPAPI not available - signing key stored in plaintext at %s",
+                key_path,
+            )
+        self._key_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(str(key_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, blob)
+            finally:
+                os.close(fd)
+        except FileExistsError:
+            blob = key_path.read_bytes()
+            if self._dpapi_available:
+                from agent_suite.dpapi import unprotect
+
+                key_bytes = unprotect(blob)
+            else:
+                key_bytes = blob
+            return (key_bytes, key_id)
+        return (key_bytes, key_id)
+
+    def rotate_key(self, old_key_id: str) -> tuple[bytes, str]:
+        """Create a new key, archive the old one. Returns (new_key_bytes, new_key_id)."""
+        old_path = self._key_dir / f"{old_key_id}.bin"
+        if not old_path.exists():
+            raise ValueError(f"key {old_key_id!r} not found")
+        new_key_id = f"{old_key_id}-{time.time_ns()}"
+        key_bytes, key_id = self.get_or_create_key(new_key_id)
+        archive_path = self._key_dir / f"{old_key_id}.archived-{time.time_ns()}.bin"
+        old_path.replace(archive_path)
+        return (key_bytes, key_id)

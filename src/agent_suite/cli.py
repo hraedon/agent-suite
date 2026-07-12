@@ -23,6 +23,8 @@ class Command(Enum):
     SCHEDULE = "schedule"
     ALERT_CHECK = "alert-check"
     PREFLIGHT = "preflight"
+    SETUP_INSTALL = "setup-install"
+    DUAL_CONTROL = "dual-control"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -176,6 +178,70 @@ def _build_parser() -> argparse.ArgumentParser:
     preflight.add_argument(
         "--install-dir", help="path to check for existing installation"
     )
+    setup_install = sub.add_parser(
+        Command.SETUP_INSTALL.value,
+        help="execute a Windows setup plan (Plan 014 WI-1.2)",
+    )
+    setup_install.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
+    setup_install.add_argument(
+        "--apply", action="store_true", help="execute the plan (default: dry-run)"
+    )
+    setup_install.add_argument(
+        "--profile",
+        choices=["A", "B", "C"],
+        default="B",
+        help="deployment profile (default: B)",
+    )
+    setup_install.add_argument("--json", action="store_true", help="emit the receipt as JSON")
+    setup_install.add_argument(
+        "--postgres-host", default="localhost", help="Postgres host to probe"
+    )
+    setup_install.add_argument(
+        "--postgres-port", type=int, default=5432, help="Postgres port to probe"
+    )
+    setup_install.add_argument(
+        "--dns-hostname", default="suite-db.example", help="hostname for DNS probe"
+    )
+    setup_install.add_argument(
+        "--tls-host", default="suite-db.example", help="hostname for TLS probe"
+    )
+    setup_install.add_argument(
+        "--tls-port", type=int, default=443, help="port for TLS probe"
+    )
+    setup_install.add_argument(
+        "--release-file", help="path to release identity file"
+    )
+    setup_install.add_argument(
+        "--lock-file", help="path to SUITE.lock file for lock identity"
+    )
+    setup_install.add_argument(
+        "--install-dir", help="path to check for existing installation"
+    )
+    dual_control = sub.add_parser(
+        Command.DUAL_CONTROL.value,
+        help="dual control request/approve/execute (Plan 014 WI-2.3)",
+    )
+    dual_control.add_argument(
+        "action",
+        choices=["request", "approve", "list", "execute"],
+        help="create, approve, list, or execute a dual control request",
+    )
+    dual_control.add_argument("--operation", help="protected operation (for request)")
+    dual_control.add_argument("--token", help="authentication token")
+    dual_control.add_argument("--request-id", help="dual control request ID")
+    default_dc_store = (
+        os.path.join(
+            os.environ.get("ProgramData", r"C:\ProgramData"), "agent-suite", "dual-control.json"
+        )
+        if os.name == "nt"
+        else "/var/lib/agent-suite/dual-control.json"
+    )
+    dual_control.add_argument(
+        "--store-path",
+        default=default_dc_store,
+        help="path to the dual control state store file",
+    )
+    dual_control.add_argument("--json", action="store_true", help="emit the result as JSON")
     return parser
 
 
@@ -449,8 +515,8 @@ def main(argv: list[str] | None = None) -> int:
             from agent_suite.windows_observation import format_preflight_text, observe_host
             from agent_suite.windows_setup import (
                 PreflightState,
-                SetupOperation,
                 SetupRequest,
+                profile_operations,
                 run_preflight,
             )
 
@@ -473,7 +539,7 @@ def main(argv: list[str] | None = None) -> int:
                 profile=profile,
                 target_release_identity=observation.artifact_release_identity,
                 target_lock_identity=observation.artifact_lock_identity,
-                operations=frozenset(SetupOperation),
+                operations=profile_operations(profile),
             )
             preflight_report = run_preflight(observation, request)
             if getattr(args, "json", False):
@@ -483,6 +549,192 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(format_preflight_text(preflight_report))
             return 0 if preflight_report.state is PreflightState.READY else 1
+        case Command.SETUP_INSTALL:
+            from pathlib import Path
+
+            from agent_suite.profiles import Profile
+            from agent_suite.windows_observation import observe_host
+            from agent_suite.windows_setup import (
+                ReceiptState,
+                SetupRequest,
+                apply_plan,
+                build_plan,
+                profile_operations,
+            )
+
+            release_file = Path(args.release_file) if args.release_file else None
+            lock_file = Path(args.lock_file) if args.lock_file else None
+            install_dir = Path(args.install_dir) if args.install_dir else None
+
+            observation = observe_host(
+                postgres_host=args.postgres_host,
+                postgres_port=args.postgres_port,
+                dns_hostname=args.dns_hostname,
+                tls_host=args.tls_host,
+                tls_port=args.tls_port,
+                release_file=release_file,
+                lock_file=lock_file,
+                install_dir=install_dir,
+            )
+            profile = Profile(args.profile)
+            request = SetupRequest(
+                profile=profile,
+                target_release_identity=observation.artifact_release_identity,
+                target_lock_identity=observation.artifact_lock_identity,
+                operations=profile_operations(profile),
+            )
+            plan = build_plan(request, observation)
+            try:
+                receipt = apply_plan(plan, dry_run=not args.apply)
+            except ValueError as exc:
+                import sys
+
+                print(f"agent-suite setup-install: {exc}", file=sys.stderr)
+                return 1
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(receipt.to_dict(), indent=2, default=str))
+            else:
+                print(f"Setup receipt: {receipt.state.value}")
+                for action in receipt.actions:
+                    print(f"  {action.ident:<30} {action.state.value}")
+                print(f"  Detail: {receipt.detail}")
+            return 0 if receipt.state in (ReceiptState.APPLIED, ReceiptState.DRY_RUN, ReceiptState.NO_OP) else 1
+        case Command.DUAL_CONTROL:
+            from pathlib import Path
+
+            from agent_suite.dual_control import (
+                ProtectedOperation,
+                create_approval,
+                create_request,
+                evaluate_approval,
+            )
+            from agent_suite.dual_control_store import DualControlStore
+            from agent_suite.dual_control import ValidatedToken, StepUpLevel, _hash_token
+            import json as _json
+            import time as _time
+
+            store_path = Path(args.store_path)
+            store = DualControlStore(store_path)
+
+            if args.action == "list":
+                pending = store.list_pending()
+                if getattr(args, "json", False):
+                    records = [
+                        {
+                            "request_id": r.request.request_id,
+                            "operation": r.request.operation.value,
+                            "requester": r.request.requester_principal,
+                            "created_at": r.created_at,
+                            "expires_at": r.request.expires_at,
+                        }
+                        for r in pending
+                    ]
+                    print(_json.dumps(records, indent=2, default=str))
+                else:
+                    if not pending:
+                        print("No pending dual control requests.")
+                    for r in pending:
+                        print(
+                            f"  {r.request.request_id:<36} "
+                            f"{r.request.operation.value:<20} "
+                            f"by {r.request.requester_principal}"
+                        )
+                return 0
+
+            if args.action == "request":
+                if not args.operation or not args.token:
+                    import sys
+
+                    print(
+                        "dual-control request requires --operation and --token",
+                        file=sys.stderr,
+                    )
+                    return 1
+                operation = ProtectedOperation(args.operation)
+                token_hash = _hash_token(args.token)
+                token = ValidatedToken(
+                    principal_id="cli-requester",
+                    step_up_level=StepUpLevel.MULTI_FACTOR,
+                    validated_at=_time.time(),
+                    expires_at=_time.time() + 300,
+                    token_hash=token_hash,
+                )
+                dc_request = create_request(
+                    operation=operation,
+                    requester_token=token,
+                    operation_params={"source": "cli"},
+                )
+                store.create(dc_request)
+                if getattr(args, "json", False):
+                    print(
+                        _json.dumps(
+                            {
+                                "request_id": dc_request.request_id,
+                                "operation": dc_request.operation.value,
+                                "state": "pending",
+                            },
+                            indent=2,
+                        )
+                    )
+                else:
+                    print(f"Created request: {dc_request.request_id}")
+                    print(f"  Operation: {dc_request.operation.value}")
+                    print("  State: pending")
+                return 0
+
+            if args.action == "approve":
+                if not args.request_id or not args.token:
+                    import sys
+
+                    print(
+                        "dual-control approve requires --request-id and --token",
+                        file=sys.stderr,
+                    )
+                    return 1
+                record = store.get(args.request_id)
+                if record is None:
+                    print(f"Request not found: {args.request_id}")
+                    return 1
+                token_hash = _hash_token(args.token)
+                approver_token = ValidatedToken(
+                    principal_id="cli-approver",
+                    step_up_level=StepUpLevel.MULTI_FACTOR,
+                    validated_at=_time.time(),
+                    expires_at=_time.time() + 300,
+                    token_hash=token_hash,
+                )
+                approval = create_approval(record.request, approver_token)
+                decision = evaluate_approval(
+                    record.request,
+                    approval,
+                    approver_token,
+                    store=store,
+                )
+                if getattr(args, "json", False):
+                    print(_json.dumps(decision.to_dict(), indent=2, default=str))
+                else:
+                    print(f"Decision: {decision.state.value}")
+                    print(f"  Detail: {decision.detail}")
+                return 0 if decision.is_approved else 1
+
+            if args.action == "execute":
+                if not args.request_id:
+                    import sys
+
+                    print("dual-control execute requires --request-id", file=sys.stderr)
+                    return 1
+                from agent_suite.dual_control import mark_executed
+
+                decision = mark_executed(args.request_id, store)
+                if getattr(args, "json", False):
+                    print(_json.dumps(decision.to_dict(), indent=2, default=str))
+                else:
+                    print(f"Decision: {decision.state.value}")
+                    print(f"  Detail: {decision.detail}")
+                return 0 if decision.state.value == "executed" else 1
+            assert_never(args.action)
     assert_never(command)
 
 
