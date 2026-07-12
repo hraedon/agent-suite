@@ -35,7 +35,7 @@ def protect(data: bytes, *, description: str = "agent-suite", machine_scope: boo
 
     flags = 0x1 if machine_scope else 0x0  # CRYPTPROTECT_LOCAL_MACHINE = 0x1
     try:
-        blob = win32crypt.CryptProtectData(data, description, None, None, None, flags)
+        blob: bytes = win32crypt.CryptProtectData(data, description, None, None, None, flags)
     except Exception as exc:
         raise DPAPIError(f"CryptProtectData failed: {exc}") from exc
     if blob is None:
@@ -57,9 +57,10 @@ def unprotect(blob: bytes) -> bytes:
         raise DPAPIError("pywin32 not installed — run: pip install agent-suite[windows]")
 
     try:
-        _, plaintext = win32crypt.CryptUnprotectData(blob, None, None, None, 0)
+        result: tuple[str, bytes] = win32crypt.CryptUnprotectData(blob, None, None, None, 0)
     except Exception as exc:
         raise DPAPIError(f"CryptUnprotectData failed: {exc}") from exc
+    plaintext = result[1]
     if plaintext is None:
         raise DPAPIError("CryptUnprotectData returned None")
     return plaintext
