@@ -470,7 +470,7 @@ class SupportMatrix:
                     sorted(all_components - PROFILE_REQUIREMENTS[p])
                 ),
                 release_status=(
-                    "supported"
+                    "in_qualification"
                     if p in (Profile.A, Profile.B)
                     else "preview"
                 ),
@@ -478,7 +478,7 @@ class SupportMatrix:
             for p in (Profile.A, Profile.B, Profile.C)
         )
         return cls(
-            release="1.0.0",
+            release="1.0.0-dev",
             python_versions=("3.12", "3.13"),
             postgres_version="16+",
             reference_linux="Ubuntu 22.04+",
@@ -493,7 +493,7 @@ class SupportMatrix:
             identity_backends=(
                 IdentityBackend(
                     kind=IdentityBackendKind.ENTRA_OIDC,
-                    status="supported",
+                    status="not_qualified",
                 ),
                 IdentityBackend(
                     kind=IdentityBackendKind.LOCAL,
@@ -503,15 +503,15 @@ class SupportMatrix:
             secret_backends=(
                 SecretBackend(
                     kind=SecretBackendKind.VAULT,
-                    status="supported",
+                    status="not_qualified",
                 ),
                 SecretBackend(
                     kind=SecretBackendKind.AKV,
-                    status="supported",
+                    status="not_qualified",
                 ),
                 SecretBackend(
                     kind=SecretBackendKind.WINDOWS_NATIVE_FILE,
-                    status="supported",
+                    status="not_qualified",
                 ),
             ),
             profiles=profiles,
@@ -747,7 +747,7 @@ class ReleaseBoard:
     @classmethod
     def default(cls) -> ReleaseBoard:
         return cls(
-            release="1.0.0",
+            release="1.0.0-dev",
             feature_matrix_ref="data/v1-feature-matrix.json",
             claims_ledger_ref="data/claims-ledger.json",
             gates=(
@@ -764,11 +764,11 @@ class ReleaseBoard:
                                 "Replace hand assessment with executable "
                                 "baseline probes"
                             ),
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="Plan 009 WI-0.3",
                             status=WIStatus.IN_PROGRESS,
                             proof_command=(
-                                "python scripts/generate_feature_matrix.py"
+                                "python3 scripts/feature-probes.py --check"
                             ),
                             proof_artifact="data/v1-feature-matrix.json",
                         ),
@@ -778,9 +778,9 @@ class ReleaseBoard:
                                 "Reconcile plans, source state, and "
                                 "dogfood state"
                             ),
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="\u2014",
-                            status=WIStatus.IN_PROGRESS,
+                            status=WIStatus.NOT_STARTED,
                             proof_command="agent-suite inventory --json",
                             proof_artifact="data/candidate-inventory.json",
                         ),
@@ -790,9 +790,9 @@ class ReleaseBoard:
                                 "Ratify the 1.0 support matrix and "
                                 "objectives"
                             ),
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="WI-0.2",
-                            status=WIStatus.COMPLETE,
+                            status=WIStatus.IN_PROGRESS,
                             proof_command=(
                                 "python -c \"from agent_suite."
                                 "release_artifacts import SupportMatrix; "
@@ -804,9 +804,9 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-0.4",
                             title="Establish the release board",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="WI-0.3",
-                            status=WIStatus.COMPLETE,
+                            status=WIStatus.IN_PROGRESS,
                             proof_command=(
                                 "python -c \"from agent_suite."
                                 "release_artifacts import ReleaseBoard; "
@@ -826,7 +826,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-1.1",
                             title="Freeze versioned provider contracts",
-                            owner_repo="YOUR-ORG/dossier",
+                            owner_repo="hraedon/dossier",
                             blocking_dependency="Gate 0",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -837,7 +837,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-1.2",
                             title="Work and knowledge journeys",
-                            owner_repo="YOUR-ORG/dossier",
+                            owner_repo="hraedon/dossier",
                             blocking_dependency="WI-1.1",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -849,7 +849,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-1.3",
                             title="Activity and evidence journeys",
-                            owner_repo="YOUR-ORG/dossier",
+                            owner_repo="hraedon/dossier",
                             blocking_dependency="WI-1.1",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -864,7 +864,7 @@ class ReleaseBoard:
                                 "Identity, keys, and protected "
                                 "administration"
                             ),
-                            owner_repo="YOUR-ORG/dossier",
+                            owner_repo="hraedon/dossier",
                             blocking_dependency="WI-1.1",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -875,7 +875,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-1.5",
                             title="Daily operation and notifications",
-                            owner_repo="YOUR-ORG/dossier",
+                            owner_repo="hraedon/dossier",
                             blocking_dependency="WI-1.2, WI-1.4",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -888,7 +888,7 @@ class ReleaseBoard:
                             title=(
                                 "Console and accessibility qualification"
                             ),
-                            owner_repo="YOUR-ORG/dossier",
+                            owner_repo="hraedon/dossier",
                             blocking_dependency=(
                                 "WI-1.2, WI-1.3, WI-1.4, WI-1.5"
                             ),
@@ -910,7 +910,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-2.1",
                             title="Replace the current compatibility lock",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="Gate 1",
                             status=WIStatus.NOT_STARTED,
                             proof_command="agent-suite lock --certify",
@@ -919,7 +919,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-2.2",
                             title="Test the lock, not moving branches",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="WI-2.1",
                             status=WIStatus.NOT_STARTED,
                             proof_command="pytest tests/test_lock_ci.py",
@@ -928,7 +928,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-2.3",
                             title="Publish one release bundle",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="WI-2.2",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -939,7 +939,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-2.4",
                             title="Supply-chain and publication gates",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="WI-2.3",
                             status=WIStatus.NOT_STARTED,
                             proof_command="agent-suite bundle --audit",
@@ -957,7 +957,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-3.1",
                             title="Required supported claims",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="Gate 2",
                             status=WIStatus.NOT_STARTED,
                             proof_command="pytest tests/test_claims.py",
@@ -969,7 +969,7 @@ class ReleaseBoard:
                                 "Optional claims are qualified or "
                                 "excluded"
                             ),
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="WI-3.1",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -980,7 +980,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-3.3",
                             title="Security and privacy review",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="Gate 2",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -999,7 +999,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-4.1",
                             title="Hermetic clean-install convergence",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="Gate 2",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -1010,7 +1010,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-4.2",
                             title="Native Windows proof",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="Gate 2",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -1023,7 +1023,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-4.3",
                             title="Schema and release transition proof",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="WI-4.1",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -1037,7 +1037,7 @@ class ReleaseBoard:
                             title=(
                                 "Protection and disaster recovery proof"
                             ),
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="WI-4.1",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -1048,7 +1048,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-4.5",
                             title="Existing-estate convergence",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="WI-4.1, WI-4.3",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -1067,7 +1067,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-5.1",
                             title="Cut RC1 and freeze inputs",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="Gates 0-4",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -1078,7 +1078,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-5.2",
                             title="Operate the candidate",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="WI-5.1",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(
@@ -1089,7 +1089,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-5.3",
                             title="Documentation and support readiness",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="WI-5.1",
                             status=WIStatus.NOT_STARTED,
                             proof_command="agent-suite docs --check",
@@ -1098,7 +1098,7 @@ class ReleaseBoard:
                         WorkItem(
                             id="WI-5.4",
                             title="Final release review",
-                            owner_repo="YOUR-ORG/agent-suite",
+                            owner_repo="hraedon/agent-suite",
                             blocking_dependency="WI-5.2, WI-5.3",
                             status=WIStatus.NOT_STARTED,
                             proof_command=(

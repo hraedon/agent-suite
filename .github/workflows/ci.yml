@@ -27,7 +27,9 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Identifier gate
-        run: python3 scripts/identifier-gate.py
+        env:
+          AGENT_SUITE_FORBIDDEN_IDENTIFIERS: ${{ secrets.AGENT_SUITE_FORBIDDEN_IDENTIFIERS }}
+        run: python3 scripts/check_committed_identifiers.py
 
       - name: Plan index check
         run: python3 scripts/plan-index.py --check
@@ -42,7 +44,7 @@ jobs:
         run: pytest tests/test_architecture.py -q
 
       - name: Lint (ruff)
-        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py
+        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py
 
       - name: Type check (mypy)
         run: mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py
@@ -75,6 +77,13 @@ jobs:
       # install, the test errors (not skips), so a packaging regression is a red
       # run, not a silent skip (Plan 002 WI-2).
       INTEROP_REQUIRE_FACES: "1"
+      # Pinned revisions (Plan 015 WI-0.2 / WI-2.2): interop CI installs from
+      # immutable revisions, not moving @main branches. Update these SHAs when
+      # the candidate lock advances; do not revert to @main.
+      REGISTA_SHA: b19e6bde669826551e556258b71c53e58e579e83
+      AGENT_NOTES_SHA: 77395eb34b4ed59383664ed2d57239201dc27a33
+      DOSSIER_SHA: 351740400aee114987947e6e1616dce315ee5c59
+      CAIRN_SHA: f2b31515d9a0d0a141962b3da0f30f7be868b0e8
 
     steps:
       - uses: actions/checkout@v4
@@ -87,7 +96,7 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Install regista (spine)
-        run: pip install "git+https://github.com/hraedon/regista.git@main"
+        run: pip install "git+https://github.com/hraedon/regista.git@${REGISTA_SHA}"
 
       # Both face repos are public — install as a hard required step. If the
       # install fails, CI fails: combined with INTEROP_REQUIRE_FACES=1 above,
@@ -95,11 +104,11 @@ jobs:
       # (Plan 002 WI-1).
       - name: Install faces (agent-notes + dossier)
         run: |
-          pip install "git+https://github.com/hraedon/agent-notes.git@main" \
-                      "git+https://github.com/hraedon/dossier.git@main"
+          pip install "git+https://github.com/hraedon/agent-notes.git@${AGENT_NOTES_SHA}" \
+                      "git+https://github.com/hraedon/dossier.git@${DOSSIER_SHA}"
 
       - name: Install agent-provenance (cairn)
-        run: pip install "git+https://github.com/hraedon/agent-provenance.git@main"
+        run: pip install "git+https://github.com/hraedon/agent-provenance.git@${CAIRN_SHA}"
 
       - name: Run interop + tamper + restore-drill + adversarial-corpus tests
         run: pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py tests/test_adversarial_corpus.py -v --tb=short
@@ -130,7 +139,7 @@ jobs:
         run: python3 scripts/validate-contracts.py --check
 
       - name: Lint (ruff)
-        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py
+        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py
 
       - name: Type check (mypy)
         run: mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py

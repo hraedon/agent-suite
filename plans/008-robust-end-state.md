@@ -2,6 +2,9 @@
 
 **Status:** In Progress — **Phase 0 and Phase 1 COMPLETE (closed out 2026-07-11)**; Phases 2–6 not started (Phase 2+ scope coordinates with Plan 009).  
 **Author:** GPT-5.6 Sol, following the holistic suite review and first blocker-remediation pass.  
+**Release coordination:** Plan 015 sequences this plan's remaining robustness
+work into the Profile B production-grade 1.0 release gates. This plan remains
+authoritative for the robustness and assurance contract.
 **Strategic role:** Define the bounded end state at which the suite is a
 complete, operable, security-reviewable product rather than a collection of
 promising mechanisms. This is the integration roadmap above the constituent

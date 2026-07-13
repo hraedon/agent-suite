@@ -2,25 +2,43 @@
 # Do not edit by hand; regenerate with `agent-suite lock`.
 
 [suite]
-release = "0.0.1"
-regista_library_version = "0.4.0"
-regista_schema_version = 42
+release = "1.0.0-dev"
+regista_library_version = "0.5.0"
+regista_schema_version = 43
 regista_workflow_version = "2"
 regista_envelope_version = 5
 
+[components.regista]
+repo = "hraedon/regista"
+version = "0.5.0"
+revision = "b19e6bde669826551e556258b71c53e58e579e83"
+
 [components.agent-notes]
-repo = "YOUR-ORG/agent-notes"
+repo = "hraedon/agent-notes"
 version = "1.0.0"
+revision = "77395eb34b4ed59383664ed2d57239201dc27a33"
 
 [components.agent-provenance]
-repo = "YOUR-ORG/agent-provenance"
+repo = "hraedon/agent-provenance"
 version = "0.1.0"
+revision = "f2b31515d9a0d0a141962b3da0f30f7be868b0e8"
+
+[components.dossier]
+repo = "hraedon/dossier"
+version = "0.0.1"
+revision = "351740400aee114987947e6e1616dce315ee5c59"
+profile = "B"
+
+[components.agent-capability-broker]
+repo = "hraedon/agent-capability-broker"
+version = "0.1.0"
+revision = "7f3bbb9d45b409859eb49dda2abbdefd5acfd75b"
+profile = "C"
+status = "preview"
 
 [components.agent-wake]
-repo = "YOUR-ORG/agent-wake"
+repo = "hraedon/agent-wake"
 version = "0.1.0"
-
-[components.regista]
-repo = "YOUR-ORG/regista"
-version = "0.4.0"
-
+revision = "5b91899c86cdcb5156300c1f5f657e8cf1d1260a"
+profile = "C"
+status = "preview"

@@ -32,3 +32,6 @@ uv.lock
 .DS_Store
 *.swp
 .venv/
+
+# never commit the local denylist (identifier gate)
+.identifiers-denylist.local

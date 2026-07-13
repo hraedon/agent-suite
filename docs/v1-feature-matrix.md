@@ -1,7 +1,7 @@
 # v1 Feature Matrix (Plan 009 WI-0.1)
 
 **Version:** v1  
-**Generated:** 2026-07-12T23:55:27.247996Z  
+**Generated:** 2026-07-13T06:49:40.115288Z  
 **Status source:** mixed-probe-and-hand
 **Status values:** pass / partial / blocked / absent
 
@@ -35,7 +35,7 @@ Status values are hand-assessed from cross-project review. The WI-0.3 baseline r
 | GJ-2 | A | agent-notes | work-item skills / CLI | pass | — | src/agent_notes/cli/work_items.py | — | Full create / claim / transition / review CLI surface. |
 | GJ-2 | B | dossier | work queues, detail, transition, review forms | pass | — | src/dossier/app.py:779-1028 | Sprint planning, time tracking, billing | Web create/edit/transition/review flows are present. |
 | GJ-2 | A | regista | race-free claim / assignment | pass | — | src/regista/_api_claim.py; tests/test_claims.py | — | Lease-based claims with expiry and heartbeat. |
-| GJ-2 | B | dossier | separation-of-duties enforcement in review | blocked | dossier WI-014 | src/dossier/assurance.py:55-59 | — | compute_assurance_level fails open on undeclared reviewer lineage. |
+| GJ-2 | B | dossier | separation-of-duties enforcement in review | pass | — | src/dossier/assurance.py | — | Assurance fail-open fixed (dossier WI-014); separation-of-duties now enforced. |
 | GJ-3 | A | agent-notes | breadcrumb / memory / reflection skills and CLI | pass | — | skills/file-breadcrumb/SKILL.md, skills/add-memory/SKILL.md, skills/reflect/SKILL.md; src/agent_notes/cli/memory.py | General wiki / document authoring | Skills and CLI both present. |
 | GJ-3 | A | agent-notes | signed note write-through to regista | partial | agent-notes WI-013, dossier Plan 009 | src/agent_notes/core/note_model.py, src/agent_notes/core/memory_model.py | — | Write-through implemented but gated; dossier has no note read surface. |
 | GJ-3 | B | dossier | knowledge read / browse / search | absent | dossier Plan 009 | — | — | No routes or templates for note / knowledge entities. |
@@ -43,11 +43,11 @@ Status values are hand-assessed from cross-project review. The WI-0.3 baseline r
 | GJ-4 | A | agent-notes | review CLI (pass, accept, reject, request-changes) | pass | — | src/agent_notes/cli/work_items.py:1053-1131 | — | Adversarial-review skill consumes the same surface. |
 | GJ-4 | B | dossier | review queue and verdict forms | pass | — | src/dossier/app.py:629-665, :923-1028 | — | Accept/reject/request-changes supported in web UI. |
 | GJ-4 | A | regista | cross-lineage review validators | pass | — | regista canonical workflow; adversarial corpus unauthorized_project_access | — | Workflow enforces distinct actor roles. |
-| GJ-4 | B | dossier | honest assurance level / independent-review signal | blocked | dossier WI-014, WI-012 | src/dossier/assurance.py | — | Fails open and is home-grown instead of delegated to regista. |
+| GJ-4 | B | dossier | honest assurance level / independent-review signal | partial | dossier WI-012 | src/dossier/assurance.py | — | Assurance fail-open fixed (WI-014); computation remains home-grown rather than delegated to regista (WI-012). |
 | GJ-5 | A | agent-provenance | session and tool begin/end capture | pass | — | src/cairn/_claude_hook.py; live proof passed 2026-07-11 | Covert monitoring of unsanctioned harnesses, screen recording | Claude and OpenCode hooks are proven; Hermes is provisional. |
 | GJ-5 | A | agent-provenance | principal / delegation / work binding | pass | — | src/cairn/adapter.py:744-782; CairnClient.tool_call work_item_id | — | Subagent attribution and on_behalf_of are captured. |
 | GJ-5 | B | dossier | session / tool / file activity views | partial | dossier Plan 017/018 | src/dossier/app.py:563-625, src/dossier/provenance.py | — | Session list/detail and tool trail exist; verification UX is partial. |
-| GJ-5 | B | dossier | degraded / unsupported capture rendered honestly | partial | dossier WI-012 | src/dossier/assurance.py | — | Relies on assurance level, which currently fails open. |
+| GJ-5 | B | dossier | degraded / unsupported capture rendered honestly | partial | dossier WI-012 | src/dossier/assurance.py | — | Assurance level no longer fails open (WI-014 fixed); delegation to regista still pending (WI-012). |
 | GJ-6 | C | agent-capability-broker | manifest, reconcile, exec, install-harness | partial | acb Plan 006 WI-1.2 | src/agent_capability_broker/cli.py:448-505; tests/test_doctor_conformance.py | Credential marketplace, device management | Core verbs exist; e2e exec is NotImplementedError. |
 | GJ-6 | C | agent-capability-broker | credential provider with secret-safe injection | partial | acb Plan 006 WI-1.2 | src/agent_capability_broker/providers.py:352-494; tests/test_exec.py | — | Provider injection works and is unit-tested; full end-to-end `acb exec` invocation is NotImplementedError. |
 | GJ-6 | C | agent-capability-broker | browser / E2E provider and live proof | partial | acb Plan 006 WI-1.2, Plan 007 | src/agent_capability_broker/providers.py:118-258; tests/test_e2e.py | — | E2eProvider.inspect exists; exec is not implemented; Codex deferred. |
