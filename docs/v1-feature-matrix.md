@@ -1,8 +1,8 @@
 # v1 Feature Matrix (Plan 009 WI-0.1)
 
 **Version:** v1  
-**Generated:** 2026-07-11T06:31:28.054151Z  
-**Status source:** hand-assessed
+**Generated:** 2026-07-12T23:55:27.247996Z  
+**Status source:** mixed-probe-and-hand
 **Status values:** pass / partial / blocked / absent
 
 Status values are hand-assessed from cross-project review. The WI-0.3 baseline run will replace them with probe-emitted statuses.
@@ -23,14 +23,14 @@ Status values are hand-assessed from cross-project review. The WI-0.3 baseline r
 
 | Journey | Profile | Component | Surface | Status | Dependency | Proof | Excluded | Notes |
 |---|---|---|---|---|---|---|---|---|
-| GJ-1 | A | agent-suite | profile-aware bootstrap / deploy CLI | absent | Plan 008 WI-3.2, Plan 009 WI-4.1 | — | SaaS, Kubernetes operator, fleet remote management | No single deploy front door exists; bootstrap is per-component. |
-| GJ-1 | A | agent-suite | project onboarding and harness selection | absent | Plan 009 WI-1.3, Plan 009 WI-4.1 | — | — | Project provisioning is component-local today. |
+| GJ-1 | A | agent-suite | profile-aware bootstrap / deploy CLI | pass | Plan 008 WI-3.2, Plan 009 WI-4.1 | src/agent_suite/deploy.py; tests/test_deploy.py; probe: _probe_deploy_cli -> pass | SaaS, Kubernetes operator, fleet remote management | Deploy front door composes preflight → bootstrap → onboard → lock → doctor. |
+| GJ-1 | A | agent-suite | project onboarding and harness selection | pass | Plan 009 WI-1.3, Plan 009 WI-4.1 | src/agent_suite/onboard.py; tests/test_onboard.py; probe: _probe_onboard_harness -> pass | — | Suite-level onboard: spec → provision → sign event-zero → wire harness. |
 | GJ-1 | A | regista | project / schema provisioning | pass | — | Regista.create_project, regista provision; tests/test_provision.py | Multi-region active/active replication | PostgreSQL schema + roles created idempotently. |
 | GJ-1 | A | regista | workflow registration and discovery | pass | — | Regista.register_workflow, regista workflow validate | General saga / workflow execution engine | Canonical workflow is versioned and stored per project. |
 | GJ-1 | A | agent-notes | project discovery from cwd and per-user identity | partial | agent-notes WI-013 | src/agent_notes/core/face_factory.py | — | Per-project RegistaFace exists but write-through is gated. |
 | GJ-1 | B | dossier | authenticated project switcher | partial | dossier WI-017 | src/dossier/app.py:149-175, src/dossier/authz.py | — | Authz implementation exists but defaults to flat-open. |
 | GJ-1 | A | regista | principal enrollment, rotation, revocation, delegation | pass | — | src/regista/_principal_keys.py; regista principal revoke CLI | — | Asymmetric principal key registry with validity windows and revocation. |
-| GJ-1 | A | agent-suite | identity lifecycle / onboarding / offboarding | absent | Plan 009 WI-1.3, Plan 009 WI-2.2 | — | — | No suite-level onboarding/offboarding front door exists. |
+| GJ-1 | A | agent-suite | identity lifecycle / onboarding / offboarding | partial | Plan 009 WI-1.3, Plan 009 WI-2.2 | src/agent_suite/bootstrap.py (_step_user_onboarding); probe: _probe_identity_lifecycle -> partial | — | Per-user onboarding step exists but reports 'not yet implemented'; offboarding absent. |
 | GJ-2 | A | regista | work-item lifecycle (create, claim, transition) | pass | — | Regista.create_work_item / transition / replay; adversarial corpus | — | Canonical workflow covers start, submit, review, accept, done. |
 | GJ-2 | A | agent-notes | work-item skills / CLI | pass | — | src/agent_notes/cli/work_items.py | — | Full create / claim / transition / review CLI surface. |
 | GJ-2 | B | dossier | work queues, detail, transition, review forms | pass | — | src/dossier/app.py:779-1028 | Sprint planning, time tracking, billing | Web create/edit/transition/review flows are present. |
@@ -63,9 +63,9 @@ Status values are hand-assessed from cross-project review. The WI-0.3 baseline r
 | GJ-8 | A | regista | scoped evidence bundle export | pass | — | Regista.export_audit_bundle; src/regista/_bundle.py:71 | — | Self-contained JSON with events, receipts, segments, public keys. |
 | GJ-8 | A | regista | offline bundle verification | pass | — | Regista.verify_audit_bundle_offline; src/regista/_bundle.py:230 | — | v2 verifies ed25519 signatures; v1 reports skipped honestly. |
 | GJ-8 | A | agent-provenance | bundle export, diff/chain verify, human report | pass | — | src/cairn/_cli.py:318-750; src/cairn/proof.py | — | cairn verify, verify-chain, export, diff, portal all present. |
-| GJ-8 | A | agent-suite | suite-level evidence export orchestration | absent | Plan 009 WI-2.3 | — | — | Components export individually; no suite orchestration yet. |
+| GJ-8 | A | agent-suite | suite-level evidence export orchestration | pass | Plan 009 WI-2.3 | src/agent_suite/evidence.py; tests/test_evidence.py; probe: _probe_evidence_export -> pass | — | Composes regista bundle export + cairn export + verify into one suite-level manifest. |
 | GJ-9 | A | agent-suite | profile-aware doctor aggregation | pass | — | src/agent_suite/doctor.py; tests/test_doctor.py | — | Honest health reporting for required/optional components. |
 | GJ-9 | A | agent-suite | compatibility lock and drift check | pass | — | src/agent_suite/lock.py; tests/test_lock.py | — | SUITE.lock parsing and drift detection implemented. |
-| GJ-9 | A | agent-suite | backup / restore / disaster recovery orchestration | absent | Plan 008 WI-4.1, Plan 009 WI-4.2 | — | — | No scheduled protection or restore orchestration yet. |
-| GJ-9 | A | agent-suite | upgrade / rollback / forward-recovery gates | absent | Plan 008 WI-3.4, Plan 009 WI-4.2 | — | — | No staged upgrade flow exists. |
+| GJ-9 | A | agent-suite | backup / restore / disaster recovery orchestration | pass | Plan 008 WI-4.1, Plan 009 WI-4.2 | src/agent_suite/backup.py; tests/test_backup.py; probe: _probe_backup_restore -> pass | — | Suite-level backup: doctor → pg_dump → verify → evidence export → manifest. |
+| GJ-9 | A | agent-suite | upgrade / rollback / forward-recovery gates | pass | Plan 008 WI-3.4, Plan 009 WI-4.2 | src/agent_suite/upgrade.py (run_upgrade, run_rollback, run_forward_recovery); tests/test_upgrade.py; probe: _probe_upgrade_rollback_forward -> pass | — | Staged upgrade with interop gate, rollback across schema boundaries refused, forward-recovery completes partial upgrades. |
 | GJ-9 | A | regista | version / config / secret / doctor contracts | pass | — | regista doctor --json; src/regista/_cli.py doctor commands | — | Doctor, version, and config contracts are exposed. |

@@ -1,0 +1,277 @@
+{
+  "release": "1.0.0",
+  "feature_matrix_ref": "data/v1-feature-matrix.json",
+  "claims_ledger_ref": "data/claims-ledger.json",
+  "gates": [
+    {
+      "number": 0,
+      "name": "Reconcile truth and freeze the release candidate contract",
+      "work_items": [
+        {
+          "id": "WI-0.1",
+          "title": "Replace hand assessment with executable baseline probes",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "Plan 009 WI-0.3",
+          "status": "in_progress",
+          "proof_command": "python scripts/generate_feature_matrix.py",
+          "proof_artifact": "data/v1-feature-matrix.json"
+        },
+        {
+          "id": "WI-0.2",
+          "title": "Reconcile plans, source state, and dogfood state",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "\u2014",
+          "status": "in_progress",
+          "proof_command": "agent-suite inventory --json",
+          "proof_artifact": "data/candidate-inventory.json"
+        },
+        {
+          "id": "WI-0.3",
+          "title": "Ratify the 1.0 support matrix and objectives",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "WI-0.2",
+          "status": "complete",
+          "proof_command": "python -c \"from agent_suite.release_artifacts import SupportMatrix; assert SupportMatrix.default().validate()\"",
+          "proof_artifact": "data/support-matrix.json"
+        },
+        {
+          "id": "WI-0.4",
+          "title": "Establish the release board",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "WI-0.3",
+          "status": "complete",
+          "proof_command": "python -c \"from agent_suite.release_artifacts import ReleaseBoard; assert ReleaseBoard.default().validate()\"",
+          "proof_artifact": "data/release-board.json"
+        }
+      ]
+    },
+    {
+      "number": 1,
+      "name": "Complete the Profile B product through dossier",
+      "work_items": [
+        {
+          "id": "WI-1.1",
+          "title": "Freeze versioned provider contracts",
+          "owner_repo": "YOUR-ORG/dossier",
+          "blocking_dependency": "Gate 0",
+          "status": "not_started",
+          "proof_command": "pytest tests/test_provider_contracts.py",
+          "proof_artifact": "data/contracts/"
+        },
+        {
+          "id": "WI-1.2",
+          "title": "Work and knowledge journeys",
+          "owner_repo": "YOUR-ORG/dossier",
+          "blocking_dependency": "WI-1.1",
+          "status": "not_started",
+          "proof_command": "pytest tests/test_golden_journeys.py -k 'GJ-1 or GJ-2 or GJ-3 or GJ-4'",
+          "proof_artifact": "golden/gj-1-through-4.json"
+        },
+        {
+          "id": "WI-1.3",
+          "title": "Activity and evidence journeys",
+          "owner_repo": "YOUR-ORG/dossier",
+          "blocking_dependency": "WI-1.1",
+          "status": "not_started",
+          "proof_command": "pytest tests/test_golden_journeys.py -k 'GJ-5 or GJ-8'",
+          "proof_artifact": "golden/gj-5-gj-8.json"
+        },
+        {
+          "id": "WI-1.4",
+          "title": "Identity, keys, and protected administration",
+          "owner_repo": "YOUR-ORG/dossier",
+          "blocking_dependency": "WI-1.1",
+          "status": "not_started",
+          "proof_command": "pytest tests/test_identity_keys.py",
+          "proof_artifact": "golden/identity-keys.json"
+        },
+        {
+          "id": "WI-1.5",
+          "title": "Daily operation and notifications",
+          "owner_repo": "YOUR-ORG/dossier",
+          "blocking_dependency": "WI-1.2, WI-1.4",
+          "status": "not_started",
+          "proof_command": "pytest tests/test_notifications.py",
+          "proof_artifact": "golden/notifications.json"
+        },
+        {
+          "id": "WI-1.6",
+          "title": "Console and accessibility qualification",
+          "owner_repo": "YOUR-ORG/dossier",
+          "blocking_dependency": "WI-1.2, WI-1.3, WI-1.4, WI-1.5",
+          "status": "not_started",
+          "proof_command": "pytest tests/test_accessibility.py",
+          "proof_artifact": "golden/a11y-report.json"
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "name": "Make candidate artifacts immutable and reproducible",
+      "work_items": [
+        {
+          "id": "WI-2.1",
+          "title": "Replace the current compatibility lock",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "Gate 1",
+          "status": "not_started",
+          "proof_command": "agent-suite lock --certify",
+          "proof_artifact": "SUITE.lock"
+        },
+        {
+          "id": "WI-2.2",
+          "title": "Test the lock, not moving branches",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "WI-2.1",
+          "status": "not_started",
+          "proof_command": "pytest tests/test_lock_ci.py",
+          "proof_artifact": "ci/lock-build.yml"
+        },
+        {
+          "id": "WI-2.3",
+          "title": "Publish one release bundle",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "WI-2.2",
+          "status": "not_started",
+          "proof_command": "agent-suite bundle --publish",
+          "proof_artifact": "dist/agent-suite-1.0.0/"
+        },
+        {
+          "id": "WI-2.4",
+          "title": "Supply-chain and publication gates",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "WI-2.3",
+          "status": "not_started",
+          "proof_command": "agent-suite bundle --audit",
+          "proof_artifact": "dist/audit-report.json"
+        }
+      ]
+    },
+    {
+      "number": 3,
+      "name": "Close or narrow the production assurance claims",
+      "work_items": [
+        {
+          "id": "WI-3.1",
+          "title": "Required supported claims",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "Gate 2",
+          "status": "not_started",
+          "proof_command": "pytest tests/test_claims.py",
+          "proof_artifact": "data/claims-ledger.json"
+        },
+        {
+          "id": "WI-3.2",
+          "title": "Optional claims are qualified or excluded",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "WI-3.1",
+          "status": "not_started",
+          "proof_command": "pytest tests/test_claims_optional.py",
+          "proof_artifact": "data/claims-ledger.json"
+        },
+        {
+          "id": "WI-3.3",
+          "title": "Security and privacy review",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "Gate 2",
+          "status": "not_started",
+          "proof_command": "agent-suite security-review --json",
+          "proof_artifact": "data/security-review.json"
+        }
+      ]
+    },
+    {
+      "number": 4,
+      "name": "Qualify deployment, migration, and recovery",
+      "work_items": [
+        {
+          "id": "WI-4.1",
+          "title": "Hermetic clean-install convergence",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "Gate 2",
+          "status": "not_started",
+          "proof_command": "agent-suite doctor --clean-install --json",
+          "proof_artifact": "golden/clean-install.json"
+        },
+        {
+          "id": "WI-4.2",
+          "title": "Native Windows proof",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "Gate 2",
+          "status": "not_started",
+          "proof_command": "agent-suite doctor --windows --json",
+          "proof_artifact": "golden/windows-qualification.json"
+        },
+        {
+          "id": "WI-4.3",
+          "title": "Schema and release transition proof",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "WI-4.1",
+          "status": "not_started",
+          "proof_command": "agent-suite upgrade --dry-run --from N-1 --json",
+          "proof_artifact": "golden/upgrade-proof.json"
+        },
+        {
+          "id": "WI-4.4",
+          "title": "Protection and disaster recovery proof",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "WI-4.1",
+          "status": "not_started",
+          "proof_command": "agent-suite restore --verify --json",
+          "proof_artifact": "golden/restore-proof.json"
+        },
+        {
+          "id": "WI-4.5",
+          "title": "Existing-estate convergence",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "WI-4.1, WI-4.3",
+          "status": "not_started",
+          "proof_command": "agent-suite upgrade --estate --json",
+          "proof_artifact": "golden/estate-convergence.json"
+        }
+      ]
+    },
+    {
+      "number": 5,
+      "name": "Release candidate, soak, and publication",
+      "work_items": [
+        {
+          "id": "WI-5.1",
+          "title": "Cut RC1 and freeze inputs",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "Gates 0-4",
+          "status": "not_started",
+          "proof_command": "agent-suite release cut --rc 1",
+          "proof_artifact": "releases/1.0.0-rc1/"
+        },
+        {
+          "id": "WI-5.2",
+          "title": "Operate the candidate",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "WI-5.1",
+          "status": "not_started",
+          "proof_command": "agent-suite soak --report --json",
+          "proof_artifact": "golden/soak-report.json"
+        },
+        {
+          "id": "WI-5.3",
+          "title": "Documentation and support readiness",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "WI-5.1",
+          "status": "not_started",
+          "proof_command": "agent-suite docs --check",
+          "proof_artifact": "docs/"
+        },
+        {
+          "id": "WI-5.4",
+          "title": "Final release review",
+          "owner_repo": "YOUR-ORG/agent-suite",
+          "blocking_dependency": "WI-5.2, WI-5.3",
+          "status": "not_started",
+          "proof_command": "agent-suite release promote --final",
+          "proof_artifact": "releases/1.0.0/"
+        }
+      ]
+    }
+  ]
+}

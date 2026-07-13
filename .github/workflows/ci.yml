@@ -35,11 +35,14 @@ jobs:
       - name: Contract conformance check (WI-0.2)
         run: python3 scripts/validate-contracts.py --check
 
+      - name: Feature probes check (WI-0.1)
+        run: python3 scripts/feature-probes.py --check
+
       - name: Architecture test (import boundary)
         run: pytest tests/test_architecture.py -q
 
       - name: Lint (ruff)
-        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py
+        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py
 
       - name: Type check (mypy)
         run: mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py
@@ -127,7 +130,7 @@ jobs:
         run: python3 scripts/validate-contracts.py --check
 
       - name: Lint (ruff)
-        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py
+        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py
 
       - name: Type check (mypy)
         run: mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py

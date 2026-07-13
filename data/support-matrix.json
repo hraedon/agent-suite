@@ -1,0 +1,123 @@
+{
+  "release": "1.0.0",
+  "python_versions": [
+    "3.12",
+    "3.13"
+  ],
+  "postgres_version": "16+",
+  "reference_linux": "Ubuntu 22.04+",
+  "docker": "supported",
+  "windows_versions": [
+    "10",
+    "11",
+    "Server 2022"
+  ],
+  "browsers": [
+    {
+      "name": "Chrome",
+      "version": "latest-1"
+    },
+    {
+      "name": "Firefox",
+      "version": "latest-1"
+    },
+    {
+      "name": "Safari",
+      "version": "latest-1"
+    },
+    {
+      "name": "Edge",
+      "version": "latest-1"
+    }
+  ],
+  "identity_backends": [
+    {
+      "kind": "entra_oidc",
+      "name": "Entra ID / OIDC",
+      "status": "supported"
+    },
+    {
+      "kind": "local",
+      "name": "Local",
+      "status": "supported"
+    }
+  ],
+  "secret_backends": [
+    {
+      "kind": "vault",
+      "name": "HashiCorp Vault",
+      "status": "supported"
+    },
+    {
+      "kind": "akv",
+      "name": "Azure Key Vault",
+      "status": "supported"
+    },
+    {
+      "kind": "windows_native_file",
+      "name": "Windows-native / file",
+      "status": "supported"
+    }
+  ],
+  "profiles": [
+    {
+      "profile": "A",
+      "description": "Provenance core: signed durable work/knowledge state, the agent face, harness capture, offline verification, bootstrap, lock, doctor, backup, and upgrade operations.",
+      "required_components": [
+        "agent-notes",
+        "agent-provenance",
+        "regista"
+      ],
+      "optional_components": [
+        "agent-capability-broker",
+        "agent-wake",
+        "dossier"
+      ],
+      "release_status": "supported"
+    },
+    {
+      "profile": "B",
+      "description": "Team workflow: Profile A plus authenticated human work/review views, knowledge reading, session/tool trails, key operations, and human acceptance flows.",
+      "required_components": [
+        "agent-notes",
+        "agent-provenance",
+        "dossier",
+        "regista"
+      ],
+      "optional_components": [
+        "agent-capability-broker",
+        "agent-wake"
+      ],
+      "release_status": "supported"
+    },
+    {
+      "profile": "C",
+      "description": "Operated full suite: Profile B plus declared capability parity, credential injection, external signaling, human delivery, and health/assurance alerting.",
+      "required_components": [
+        "agent-capability-broker",
+        "agent-notes",
+        "agent-provenance",
+        "agent-wake",
+        "dossier",
+        "regista"
+      ],
+      "optional_components": [],
+      "release_status": "preview"
+    }
+  ],
+  "availability": {
+    "backup_cadence": "daily",
+    "max_rpo": "24h",
+    "rto": "4h",
+    "health_check_cadence": "15min",
+    "key_rotation": "90 days",
+    "rc_soak_days": 14
+  },
+  "compatibility_window": "N-1 upgrade supported",
+  "excluded_surfaces": [
+    "Kubernetes operator",
+    "SaaS",
+    "Multi-region active/active",
+    "Fleet management"
+  ]
+}

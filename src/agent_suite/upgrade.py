@@ -1003,7 +1003,7 @@ def run_rollback(
         and target_lock.regista_quad is not None
         and current_quad.canonical_workflow_version != target_lock.regista_quad.canonical_workflow_version
     ):
-        pass  # warning, not a refusal — regista's compatibility rules decide
+        pass
 
     rollback_steps = _rollback_all(target_lock, runner=runner, components=components)
     failed = [s for s in rollback_steps if s.status is ApplyStatus.FAILED]
@@ -1033,6 +1033,174 @@ def run_rollback(
         target_schema_version=target_schema,
         detail=f"rolled back to lock at '{to_ref}'; {len(rollback_steps)} component(s) restored",
     )
+
+
+class ForwardRecoveryStatus(Enum):
+    RECOVERED = "recovered"
+    PARTIALLY_RECOVERED = "partially_recovered"
+    FAILED = "failed"
+    NO_RECOVERY_NEEDED = "no_recovery_needed"
+
+
+@dataclass
+class ForwardRecoveryResult:
+    ok: bool
+    status: ForwardRecoveryStatus
+    applied_steps: list[ApplyStep] = field(default_factory=list)
+    interop_passed: bool = False
+    lock_written: bool = False
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.ok,
+            "status": self.status.value,
+            "applied_steps": [s.to_dict() for s in self.applied_steps],
+            "interop_passed": self.interop_passed,
+            "lock_written": self.lock_written,
+            "detail": self.detail,
+        }
+
+
+def run_forward_recovery(
+    *,
+    lock_path: Path = lock_mod.DEFAULT_LOCK_PATH,
+    runner: Runner = _default_runner,
+    installed: Installed = _default_installed,
+    components: tuple[Component, ...] = COMPONENTS,
+    interop_runner: Runner | None = None,
+    interop_installed: Installed | None = None,
+) -> ForwardRecoveryResult:
+    """Complete a partially-applied upgrade when rollback is not possible.
+
+    When ``upgrade --to`` refuses because a schema migration boundary was
+    crossed, the operator runs forward recovery to finish the remaining
+    component upgrades, run the interop gate, and write the lock if green.
+
+    Flow:
+    1. Check advancements for every component (discover what still needs upgrade).
+    2. Apply remaining upgrades.
+    3. Run the interop gate (doctor).
+    4. On green: regenerate and write the lock; report RECOVERED.
+    5. On red: report PARTIALLY_RECOVERED with the specific failures.
+    6. If no advancements needed: report NO_RECOVERY_NEEDED.
+    """
+    report = check_advancements(
+        runner=runner, installed=installed, components=components,
+    )
+    pending = [a for a in report.advancements if a.status is AdvancementStatus.ADVANCEMENT_AVAILABLE]
+    not_installed = [a for a in report.advancements if a.status is AdvancementStatus.NOT_INSTALLED]
+
+    if not_installed:
+        return ForwardRecoveryResult(
+            ok=False,
+            status=ForwardRecoveryStatus.FAILED,
+            detail=(
+                f"{len(not_installed)} component(s) not installed: "
+                f"{', '.join(a.component for a in not_installed)}. "
+                "Install missing components before recovering."
+            ),
+        )
+
+    if not pending:
+        ir = interop_runner or runner
+        ii = interop_installed or installed
+        doctor_report = doctor_mod.aggregate(runner=ir, installed=ii)
+        if doctor_report.suite_ok:
+            return ForwardRecoveryResult(
+                ok=True,
+                status=ForwardRecoveryStatus.NO_RECOVERY_NEEDED,
+                interop_passed=True,
+                detail="no advancements pending and suite is healthy",
+            )
+        return ForwardRecoveryResult(
+            ok=False,
+            status=ForwardRecoveryStatus.FAILED,
+            interop_passed=False,
+            detail="no advancements pending but suite is unhealthy — investigate manually",
+        )
+
+    apply_steps: list[ApplyStep] = []
+    for adv in pending:
+        comp = next((c for c in components if c.ident == adv.component), None)
+        if comp is None:
+            apply_steps.append(ApplyStep(
+                component=adv.component,
+                status=ApplyStatus.FAILED,
+                from_version=adv.current_version,
+                to_version=adv.target_version,
+                detail="component not found in COMPONENTS tuple",
+            ))
+            continue
+        steps = _apply_one(comp, runner=runner, dry_run=False)
+        apply_steps.extend(steps)
+    failed = [s for s in apply_steps if s.status is ApplyStatus.FAILED]
+
+    if failed:
+        return ForwardRecoveryResult(
+            ok=False,
+            status=ForwardRecoveryStatus.PARTIALLY_RECOVERED,
+            applied_steps=apply_steps,
+            detail=(
+                f"{len(failed)} component(s) failed to upgrade: "
+                f"{failed[0].component}: {failed[0].detail}"
+            ),
+        )
+
+    ir = interop_runner or runner
+    ii = interop_installed or installed
+    doctor_report = doctor_mod.aggregate(runner=ir, installed=ii)
+    interop_ok = doctor_report.suite_ok
+
+    lock_written = False
+    if interop_ok:
+        component_versions: dict[str, str | None] = {
+            r.component: r.version for r in doctor_report.components
+        }
+        from agent_suite.config import memory_provider_config
+
+        mp_engine = "native"
+        try:
+            mp_engine = str(memory_provider_config()["engine"])
+        except (KeyError, OSError):
+            pass
+        new_lock = lock_mod.generate_lock(
+            component_versions=component_versions,
+            memory_engine=mp_engine,
+            runner=ir,
+            installed=ii,
+        )
+        lock_mod.write_lock_file(new_lock, lock_path)
+        lock_written = True
+
+    return ForwardRecoveryResult(
+        ok=interop_ok,
+        status=ForwardRecoveryStatus.RECOVERED if interop_ok else ForwardRecoveryStatus.PARTIALLY_RECOVERED,
+        applied_steps=apply_steps,
+        interop_passed=interop_ok,
+        lock_written=lock_written,
+        detail=(
+            "forward recovery complete — suite healthy, lock written"
+            if interop_ok
+            else "components upgraded but interop gate failed — investigate doctor output"
+        ),
+    )
+
+
+def format_forward_recovery_text(result: ForwardRecoveryResult) -> str:
+    lines: list[str] = ["agent-suite upgrade --forward-recover"]
+    lines.append("")
+    for s in result.applied_steps:
+        lines.append(f"  {s.component:<22} {s.status.value:<14} {s.detail}")
+    lines.append("")
+    lines.append(f"  interop gate: {'PASSED' if result.interop_passed else 'FAILED'}")
+    lines.append(f"  lock written: {result.lock_written}")
+    lines.append(f"  status: {result.status.value}")
+    lines.append("")
+    lines.append(f"forward-recovery: {'OK' if result.ok else 'NOT OK'}")
+    if result.detail:
+        lines.append(f"  {result.detail}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
