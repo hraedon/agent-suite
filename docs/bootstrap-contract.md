@@ -97,12 +97,12 @@ regista_workflow_version = "canonical/1"
 regista_envelope_version = "v5"
 
 [components]
-regista        = { repo = "YOUR-ORG/regista",        rev = "<sha>" }
-dossier        = { repo = "YOUR-ORG/dossier",        rev = "<sha>" }
-agent-notes    = { repo = "YOUR-ORG/agent-notes",    rev = "<sha>" }
-agent-provenance = { repo = "YOUR-ORG/agent-provenance", rev = "<sha>" }
-agent-capability-broker = { repo = "YOUR-ORG/agent-capability-broker", rev = "<sha>" }
-agent-wake     = { repo = "YOUR-ORG/agent-wake",     rev = "<sha>" }
+regista        = { repo = "hraedon/regista",        rev = "<sha>" }
+dossier        = { repo = "hraedon/dossier",        rev = "<sha>" }
+agent-notes    = { repo = "hraedon/agent-notes",    rev = "<sha>" }
+agent-provenance = { repo = "hraedon/agent-provenance", rev = "<sha>" }
+agent-capability-broker = { repo = "hraedon/agent-capability-broker", rev = "<sha>" }
+agent-wake     = { repo = "hraedon/agent-wake",     rev = "<sha>" }
 ```
 
 `agent-suite lock` regenerates it from the currently-pinned set; `doctor` compares

@@ -1,6 +1,6 @@
 {
   "version": "v1",
-  "generated_at": "2026-07-12T23:55:27.247996Z",
+  "generated_at": "2026-07-13T06:49:40.115288Z",
   "status_source": "mixed-probe-and-hand",
   "profiles": [
     "A",
@@ -156,11 +156,11 @@
       "component": "dossier",
       "surface": "separation-of-duties enforcement in review",
       "profile": "B",
-      "status": "blocked",
-      "dependency": "dossier WI-014",
-      "proof": "src/dossier/assurance.py:55-59",
+      "status": "pass",
+      "dependency": "\u2014",
+      "proof": "src/dossier/assurance.py",
       "excluded": "\u2014",
-      "notes": "compute_assurance_level fails open on undeclared reviewer lineage."
+      "notes": "Assurance fail-open fixed (dossier WI-014); separation-of-duties now enforced."
     },
     {
       "journey": "GJ-3",
@@ -244,11 +244,11 @@
       "component": "dossier",
       "surface": "honest assurance level / independent-review signal",
       "profile": "B",
-      "status": "blocked",
-      "dependency": "dossier WI-014, WI-012",
+      "status": "partial",
+      "dependency": "dossier WI-012",
       "proof": "src/dossier/assurance.py",
       "excluded": "\u2014",
-      "notes": "Fails open and is home-grown instead of delegated to regista."
+      "notes": "Assurance fail-open fixed (WI-014); computation remains home-grown rather than delegated to regista (WI-012)."
     },
     {
       "journey": "GJ-5",
@@ -292,7 +292,7 @@
       "dependency": "dossier WI-012",
       "proof": "src/dossier/assurance.py",
       "excluded": "\u2014",
-      "notes": "Relies on assurance level, which currently fails open."
+      "notes": "Assurance level no longer fails open (WI-014 fixed); delegation to regista still pending (WI-012)."
     },
     {
       "journey": "GJ-6",

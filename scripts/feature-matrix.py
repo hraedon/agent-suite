@@ -224,11 +224,11 @@ def _matrix_rows() -> list[MatrixRow]:
             component="dossier",
             surface="separation-of-duties enforcement in review",
             profile="B",
-            status=_status_label(Status.BLOCKED),
-            dependency="dossier WI-014",
-            proof="src/dossier/assurance.py:55-59",
-            excluded="—",
-            notes="compute_assurance_level fails open on undeclared reviewer lineage.",
+            status=_status_label(Status.PASS),
+            dependency="\u2014",
+            proof="src/dossier/assurance.py",
+            excluded="\u2014",
+            notes="Assurance fail-open fixed (dossier WI-014); separation-of-duties now enforced.",
         ),
         # GJ-3 — Capture and reuse knowledge
         MatrixRow(
@@ -314,11 +314,11 @@ def _matrix_rows() -> list[MatrixRow]:
             component="dossier",
             surface="honest assurance level / independent-review signal",
             profile="B",
-            status=_status_label(Status.BLOCKED),
-            dependency="dossier WI-014, WI-012",
+            status=_status_label(Status.PARTIAL),
+            dependency="dossier WI-012",
             proof="src/dossier/assurance.py",
-            excluded="—",
-            notes="Fails open and is home-grown instead of delegated to regista.",
+            excluded="\u2014",
+            notes="Assurance fail-open fixed (WI-014); computation remains home-grown rather than delegated to regista (WI-012).",
         ),
         # GJ-5 — Understand agent activity
         MatrixRow(
@@ -363,7 +363,7 @@ def _matrix_rows() -> list[MatrixRow]:
             dependency="dossier WI-012",
             proof="src/dossier/assurance.py",
             excluded="—",
-            notes="Relies on assurance level, which currently fails open.",
+            notes="Assurance level no longer fails open (WI-014 fixed); delegation to regista still pending (WI-012).",
         ),
         # GJ-6 — Supply an approved capability
         MatrixRow(

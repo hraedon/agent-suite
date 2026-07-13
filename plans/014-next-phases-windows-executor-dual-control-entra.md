@@ -1,6 +1,8 @@
 # Plan 014 — Next phases: Windows executor, dual control state store, Entra JWKS, and packaging
 
-**Status:** Proposed — drafted 2026-07-12 after Plan 013 Areas 6–8 landed.  
+**Status:** In Progress — implementation foundations landed 2026-07-12
+(`8a62acd`); live native-Windows, installer, custody, identity, and recovery
+qualification remains and is gated by Plan 015 Gate 4.
 **Author:** umans-glm-5.2  
 **Depends:** Plan 013 (Windows setup protocol, observation adapters, signed receipts,
 WinSW, DPAPI, dual control, Entra step-up).  

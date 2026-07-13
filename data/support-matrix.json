@@ -1,5 +1,5 @@
 {
-  "release": "1.0.0",
+  "release": "1.0.0-dev",
   "python_versions": [
     "3.12",
     "3.13"
@@ -12,29 +12,36 @@
     "11",
     "Server 2022"
   ],
+  "windows_qualification": "unit_tests_only",
+  "windows_qualification_note": "agent-suite unit tests pass on windows-latest CI; native Windows qualification (Setup, DPAPI, WinSW, dual-control) is Gate 4 WI-4.2 and not yet started.",
   "browsers": [
     {
       "name": "Chrome",
-      "version": "latest-1"
+      "version": "latest-1",
+      "status": "not_qualified"
     },
     {
       "name": "Firefox",
-      "version": "latest-1"
+      "version": "latest-1",
+      "status": "not_qualified"
     },
     {
       "name": "Safari",
-      "version": "latest-1"
+      "version": "latest-1",
+      "status": "not_qualified"
     },
     {
       "name": "Edge",
-      "version": "latest-1"
+      "version": "latest-1",
+      "status": "not_qualified"
     }
   ],
+  "browsers_qualification_note": "No browser CI lane exists; dossier WCAG/accessibility qualification is Gate 1 WI-1.6 and not yet started.",
   "identity_backends": [
     {
       "kind": "entra_oidc",
       "name": "Entra ID / OIDC",
-      "status": "supported"
+      "status": "not_qualified"
     },
     {
       "kind": "local",
@@ -42,23 +49,25 @@
       "status": "supported"
     }
   ],
+  "identity_backends_note": "Local identity is CI-tested via interop. Entra/OIDC qualification is dossier Plan 020 and not yet started.",
   "secret_backends": [
     {
       "kind": "vault",
       "name": "HashiCorp Vault",
-      "status": "supported"
+      "status": "not_qualified"
     },
     {
       "kind": "akv",
       "name": "Azure Key Vault",
-      "status": "supported"
+      "status": "not_qualified"
     },
     {
       "kind": "windows_native_file",
       "name": "Windows-native / file",
-      "status": "supported"
+      "status": "not_qualified"
     }
   ],
+  "secret_backends_note": "Secret resolver design is documented; no backend is CI-qualified. Backend SDKs live behind extras and are imported only at the secret-resolution edge.",
   "profiles": [
     {
       "profile": "A",
@@ -73,7 +82,7 @@
         "agent-wake",
         "dossier"
       ],
-      "release_status": "supported"
+      "release_status": "in_qualification"
     },
     {
       "profile": "B",
@@ -88,7 +97,7 @@
         "agent-capability-broker",
         "agent-wake"
       ],
-      "release_status": "supported"
+      "release_status": "in_qualification"
     },
     {
       "profile": "C",
@@ -113,7 +122,9 @@
     "key_rotation": "90 days",
     "rc_soak_days": 14
   },
+  "availability_note": "Objectives are targets for Gate 0 WI-0.3 ratification, not yet proven by qualification.",
   "compatibility_window": "N-1 upgrade supported",
+  "compatibility_window_note": "Upgrade/rollback logic is unit-tested with stubbed runners; live N-1 upgrade proof is Gate 4 WI-4.3.",
   "excluded_surfaces": [
     "Kubernetes operator",
     "SaaS",

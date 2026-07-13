@@ -6,6 +6,9 @@ vocabulary, and deterministic non-acting Windows setup protocol. Production
 Windows probes/execution and dossier consumption remain.  
 **Owner:** agent-suite coordinates; dossier owns the shared web surface; each
 component owns its provider contract.  
+**Release coordination:** Plan 015 makes this two-surface decision part of the
+Profile B 1.0 critical path and maps dossier Plans 015 and 018–024 into its
+release gates.
 **Depends:** Plans 003, 008, and 009; dossier Plans 015 and 018–024; regista
 Plan 031.  
 **Strategic role:** Turn the suite from several capable components with CLIs

@@ -107,10 +107,12 @@ uv tool install --python python3 /path/to/agent-suite
 ### 3.2 From public git (once repos are public)
 
 ```bash
-uv tool install --python python3 "git+https://github.com/YOUR-ORG/regista.git@main"
-uv tool install --python python3 "git+https://github.com/YOUR-ORG/agent-notes.git@main"
-uv tool install --python python3 "git+https://github.com/YOUR-ORG/agent-provenance.git@main"
-uv tool install --python python3 "git+https://github.com/YOUR-ORG/agent-suite.git@main"
+# Install from the pinned revisions in SUITE.lock, not from @main.
+# Replace <rev> with the revision SHA from SUITE.lock for each component.
+uv tool install --python python3 "git+https://github.com/hraedon/regista.git@<rev>"
+uv tool install --python python3 "git+https://github.com/hraedon/agent-notes.git@<rev>"
+uv tool install --python python3 "git+https://github.com/hraedon/agent-provenance.git@<rev>"
+uv tool install --python python3 "git+https://github.com/hraedon/agent-suite.git@<rev>"
 ```
 
 ### 3.3 Verify the CLIs are on PATH

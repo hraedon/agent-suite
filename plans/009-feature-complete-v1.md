@@ -2,6 +2,9 @@
 
 **Status:** In Progress — Phase 0 started 2026-07-11.  
 **Author:** GPT-5.6 Sol.  
+**Release coordination:** Plan 015 makes Profile B the supported 1.0 SKU and
+sequences these golden journeys into executable release gates. This plan
+remains authoritative for feature scope and journey semantics.
 **Strategic role:** Define the bounded product surface that fulfills the suite's
 actual goals. Plan 008 defines how the product becomes robust, deployable, and
 defensible; this plan defines **what the product must do** before it may call

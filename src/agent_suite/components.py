@@ -97,31 +97,31 @@ def _component(
 
 
 COMPONENTS: tuple[Component, ...] = (
-    _component("regista", "YOUR-ORG/regista", Tier.SPINE, ("regista", "doctor", "--json")),
+    _component("regista", "hraedon/regista", Tier.SPINE, ("regista", "doctor", "--json")),
     _component(
-        "dossier", "YOUR-ORG/dossier", Tier.FACE, ("dossier", "doctor", "--json"),
+        "dossier", "hraedon/dossier", Tier.FACE, ("dossier", "doctor", "--json"),
         service_unit="dossier",
         locality=Locality.SHARED_SERVICE,
         endpoint_env_var="DOSSIER_URL",
     ),
     _component(
-        "agent-notes", "YOUR-ORG/agent-notes", Tier.FACE, ("agent-notes", "doctor", "--json"),
+        "agent-notes", "hraedon/agent-notes", Tier.FACE, ("agent-notes", "doctor", "--json"),
         service_unit="agent-notes",
     ),
     _component(
         "agent-provenance",
-        "YOUR-ORG/agent-provenance",
+        "hraedon/agent-provenance",
         Tier.FACE,
         ("cairn", "doctor", "--json"),
     ),
     _component(
         "agent-capability-broker",
-        "YOUR-ORG/agent-capability-broker",
+        "hraedon/agent-capability-broker",
         Tier.PLUMBING,
         ("acb", "doctor", "--json"),
     ),
     _component(
-        "agent-wake", "YOUR-ORG/agent-wake", Tier.PLUMBING, ("agent-wake", "doctor", "--json")
+        "agent-wake", "hraedon/agent-wake", Tier.PLUMBING, ("agent-wake", "doctor", "--json")
     ),
 )
 
