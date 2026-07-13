@@ -169,6 +169,41 @@ def _stub_backup_restore(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _stub_deploy(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_suite import deploy as deploy_mod
+
+    monkeypatch.setattr(
+        deploy_mod,
+        "run_bootstrap",
+        lambda **kw: bootstrap_mod.BootstrapResult(ok=True, dry_run=kw.get("dry_run", False), steps=[]),
+    )
+    monkeypatch.setattr(
+        deploy_mod,
+        "run_onboard",
+        lambda **kw: onboard_mod.OnboardResult(
+            ok=True, dry_run=kw.get("dry_run", False), project="test",
+            spec_anchored=False, spec_version=None,
+            spec_version_recognized=None, steps=[],
+        ),
+    )
+    monkeypatch.setattr(
+        deploy_mod,
+        "aggregate",
+        lambda **kw: doctor_mod.SuiteReport(suite_ok=True, components=[], post_restore=None),
+    )
+    monkeypatch.setattr(deploy_mod, "load_lock_file", lambda path=None: None)
+    monkeypatch.setattr(deploy_mod, "check_drift", lambda *a, **kw: type("DR", (), {"matches": True, "to_dict": lambda s: {}})())
+    monkeypatch.setattr(
+        deploy_mod,
+        "generate_lock",
+        lambda **kw: lock_mod.SuiteLock(
+            version=1, components={}, regista_quad=None,
+            memory_engine="native",
+        ),
+    )
+    monkeypatch.setattr(deploy_mod, "write_lock_file", lambda lock, path=None: None)
+
+
 def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_aggregate(monkeypatch, suite_ok=False)
     _stub_lock(monkeypatch)
@@ -180,6 +215,7 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_alert_check(monkeypatch)
     _stub_evidence_export(monkeypatch)
     _stub_backup_restore(monkeypatch)
+    _stub_deploy(monkeypatch)
     for command in Command:
         if command is Command.SCHEDULE:
             assert main([command.value, "list"]) == 0
