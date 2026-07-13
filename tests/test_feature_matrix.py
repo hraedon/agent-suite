@@ -162,6 +162,7 @@ def test_cli_check_mode_exits_zero() -> None:
         capture_output=True,
         text=True,
         check=True,
+        env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"},
     )
     assert result.returncode == 0
 
@@ -172,6 +173,7 @@ def test_cli_stdout_outputs_markdown() -> None:
         capture_output=True,
         text=True,
         check=True,
+        env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"},
     )
     assert result.returncode == 0
     assert "# v1 Feature Matrix" in result.stdout
