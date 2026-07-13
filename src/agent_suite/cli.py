@@ -25,6 +25,10 @@ class Command(Enum):
     PREFLIGHT = "preflight"
     SETUP_INSTALL = "setup-install"
     DUAL_CONTROL = "dual-control"
+    DEPLOY = "deploy"
+    EXPORT_EVIDENCE = "export-evidence"
+    BACKUP = "backup"
+    RESTORE = "restore"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -116,6 +120,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--to",
         dest="to_ref",
         help="roll back to a prior committed lock at this git ref (e.g. HEAD~1, a tag)",
+    )
+    upgrade.add_argument(
+        "--forward-recover",
+        action="store_true",
+        help="complete a partially-applied upgrade when rollback is refused (Plan 008 WI-3.4)",
     )
     upgrade.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
     upgrade.add_argument("--json", action="store_true", help="emit the result as JSON")
@@ -242,6 +251,59 @@ def _build_parser() -> argparse.ArgumentParser:
         help="path to the dual control state store file",
     )
     dual_control.add_argument("--json", action="store_true", help="emit the result as JSON")
+    deploy = sub.add_parser(
+        Command.DEPLOY.value,
+        help="one deployment front door: preflight -> bootstrap -> onboard -> lock -> doctor",
+    )
+    deploy.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
+    deploy.add_argument(
+        "--profile",
+        choices=["A", "B", "C"],
+        default="A",
+        help="deployment profile (default: A)",
+    )
+    deploy.add_argument("--project", help="project slug to onboard (profiles B+)")
+    deploy.add_argument("--spec", help="path to spec.yaml (founding spec to sign as event-zero)")
+    deploy.add_argument(
+        "--harness",
+        choices=["claude", "opencode", "all"],
+        default="all",
+        help="which harness to wire (default: all — dual-target)",
+    )
+    deploy.add_argument("--principal", help="principal ID for provisioning")
+    deploy.add_argument("--user", help="per-user overlay principal ID")
+    deploy.add_argument("--json", action="store_true", help="emit the result as JSON")
+
+    export_evidence = sub.add_parser(
+        Command.EXPORT_EVIDENCE.value,
+        help="export suite-level evidence bundles (regista + cairn) with manifest",
+    )
+    export_evidence.add_argument(
+        "--output", required=True, help="output directory for evidence bundles"
+    )
+    export_evidence.add_argument("--dsn", help="Postgres DSN (or REGISTA_DSN)")
+    export_evidence.add_argument(
+        "--projects", nargs="*", help="project slugs (default: discover from regista)"
+    )
+    export_evidence.add_argument("--json", action="store_true", help="emit the result as JSON")
+
+    backup = sub.add_parser(
+        Command.BACKUP.value,
+        help="suite-level backup: doctor -> pg_dump -> verify -> evidence -> manifest",
+    )
+    backup.add_argument("--dir", required=True, help="backup output directory")
+    backup.add_argument("--dsn", help="Postgres DSN (or REGISTA_DSN)")
+    backup.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
+    backup.add_argument("--json", action="store_true", help="emit the result as JSON")
+
+    restore = sub.add_parser(
+        Command.RESTORE.value,
+        help="restore from a backup directory: doctor -> pg_restore -> verify -> doctor",
+    )
+    restore.add_argument("--dir", required=True, help="backup directory to restore from")
+    restore.add_argument("--dsn", help="Postgres DSN (or REGISTA_DSN)")
+    restore.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
+    restore.add_argument("--json", action="store_true", help="emit the result as JSON")
     return parser
 
 
@@ -429,6 +491,30 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     print(format_rollback_text(rb_result))
                 return 0 if rb_result.ok else 1
+
+            if getattr(args, "forward_recover", False):
+                import sys
+
+                if args.dry_run:
+                    print(
+                        "agent-suite upgrade --forward-recover: --dry-run is not supported "
+                        "with --forward-recover (forward recovery completes a partial upgrade)",
+                        file=sys.stderr,
+                    )
+                    return 1
+                from agent_suite.upgrade import (
+                    format_forward_recovery_text,
+                    run_forward_recovery,
+                )
+
+                fr_result = run_forward_recovery()
+                if getattr(args, "json", False):
+                    import json as _json
+
+                    print(_json.dumps(fr_result.to_dict(), indent=2, default=str))
+                else:
+                    print(format_forward_recovery_text(fr_result))
+                return 0 if fr_result.ok else 1
 
             up_result = run_upgrade(
                 component=args.component,
@@ -735,6 +821,89 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"  Detail: {decision.detail}")
                 return 0 if decision.state.value == "executed" else 1
             assert_never(args.action)
+        case Command.DEPLOY:
+            from pathlib import Path
+
+            from agent_suite.deploy import format_text as _fmt_dep, run_deploy
+
+            spec_path = Path(args.spec) if args.spec else None
+            from agent_suite.config import memory_provider_config
+
+            mp_config = memory_provider_config()
+            dep_result = run_deploy(
+                dry_run=args.dry_run,
+                profile=args.profile,
+                project=args.project,
+                spec_path=spec_path,
+                harness=args.harness,
+                principal=args.principal,
+                user=args.user,
+                dsn=os.environ.get("REGISTA_DSN"),
+                memory_engine=str(mp_config["engine"]),
+                hindsight_url=(
+                    mp_config["hindsight_url"]
+                    if isinstance(mp_config["hindsight_url"], str)
+                    else None
+                ),
+            )
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(dep_result.to_dict(), indent=2, default=str))
+            else:
+                print(_fmt_dep(dep_result))
+            return 0 if dep_result.ok else 1
+        case Command.EXPORT_EVIDENCE:
+            from pathlib import Path
+
+            from agent_suite.evidence import format_text as _fmt_ev, run_evidence_export
+
+            ev_result = run_evidence_export(
+                output_dir=Path(args.output),
+                projects=args.projects,
+                dsn=args.dsn or os.environ.get("REGISTA_DSN"),
+            )
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(ev_result.to_dict(), indent=2, default=str))
+            else:
+                print(_fmt_ev(ev_result))
+            return 0 if ev_result.ok else 1
+        case Command.BACKUP:
+            from pathlib import Path
+
+            from agent_suite.backup import format_backup_text, run_backup
+
+            bk_result = run_backup(
+                backup_dir=Path(args.dir),
+                dsn=args.dsn or os.environ.get("REGISTA_DSN"),
+                dry_run=args.dry_run,
+            )
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(bk_result.to_dict(), indent=2, default=str))
+            else:
+                print(format_backup_text(bk_result))
+            return 0 if bk_result.ok else 1
+        case Command.RESTORE:
+            from pathlib import Path
+
+            from agent_suite.backup import format_restore_text, run_restore
+
+            rs_result = run_restore(
+                backup_dir=Path(args.dir),
+                dsn=args.dsn or os.environ.get("REGISTA_DSN"),
+                dry_run=args.dry_run,
+            )
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(rs_result.to_dict(), indent=2, default=str))
+            else:
+                print(format_restore_text(rs_result))
+            return 0 if rs_result.ok else 1
     assert_never(command)
 
 

@@ -133,6 +133,42 @@ def _stub_alert_check(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _stub_evidence_export(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_suite import evidence as evidence_mod
+
+    monkeypatch.setattr(
+        evidence_mod,
+        "run_evidence_export",
+        lambda **kw: evidence_mod.EvidenceExportResult(
+            ok=True, output_dir="/tmp/test-evidence", projects=[],
+            manifest_path=None, note="ok",
+        ),
+    )
+
+
+def _stub_backup_restore(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_suite import backup as backup_mod
+
+    monkeypatch.setattr(
+        backup_mod,
+        "run_backup",
+        lambda **kw: backup_mod.BackupResult(
+            ok=True, dry_run=kw.get("dry_run", False),
+            backup_dir=str(kw.get("backup_dir", "/tmp/test-backup")),
+            steps=[], manifest_path=None, note="ok",
+        ),
+    )
+    monkeypatch.setattr(
+        backup_mod,
+        "run_restore",
+        lambda **kw: backup_mod.RestoreResult(
+            ok=True, dry_run=kw.get("dry_run", False),
+            backup_dir=str(kw.get("backup_dir", "/tmp/test-backup")),
+            steps=[], note="ok",
+        ),
+    )
+
+
 def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_aggregate(monkeypatch, suite_ok=False)
     _stub_lock(monkeypatch)
@@ -142,6 +178,8 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_upgrade(monkeypatch)
     _stub_schedule(monkeypatch)
     _stub_alert_check(monkeypatch)
+    _stub_evidence_export(monkeypatch)
+    _stub_backup_restore(monkeypatch)
     for command in Command:
         if command is Command.SCHEDULE:
             assert main([command.value, "list"]) == 0
@@ -153,6 +191,14 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
             assert main([command.value, "--dry-run"]) == 1
         elif command is Command.DUAL_CONTROL:
             assert main([command.value, "list", "--store-path", "/tmp/test-dc-store.json"]) == 0
+        elif command is Command.DEPLOY:
+            assert main([command.value, "--dry-run"]) == 0
+        elif command is Command.EXPORT_EVIDENCE:
+            assert main([command.value, "--output", "/tmp/test-evidence"]) == 0
+        elif command is Command.BACKUP:
+            assert main([command.value, "--dir", "/tmp/test-backup", "--dry-run"]) == 0
+        elif command is Command.RESTORE:
+            assert main([command.value, "--dir", "/tmp/test-backup", "--dry-run"]) == 0
         else:
             assert main([command.value]) == 0
 
