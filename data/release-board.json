@@ -12,7 +12,7 @@
           "title": "Replace hand assessment with executable baseline probes",
           "owner_repo": "hraedon/agent-suite",
           "blocking_dependency": "Plan 009 WI-0.3",
-          "status": "in_progress",
+          "status": "complete",
           "proof_command": "python3 scripts/feature-probes.py --check",
           "proof_artifact": "data/v1-feature-matrix.json"
         },
@@ -21,7 +21,8 @@
           "title": "Reconcile plans, source state, and dogfood state",
           "owner_repo": "hraedon/agent-suite",
           "blocking_dependency": "\u2014",
-          "status": "not_started",
+          "status": "in_progress",
+          "status_note": "SUITE.lock updated with real SHAs; identifier gate replaced with canonical script; plan status lines reconciled. Inventory CLI (agent-suite inventory) not yet implemented.",
           "proof_command": "agent-suite inventory --json",
           "proof_artifact": "data/candidate-inventory.json"
         },

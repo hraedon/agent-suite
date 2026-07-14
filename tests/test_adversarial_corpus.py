@@ -46,6 +46,12 @@ _DEFERRED_MUTATIONS = [
     "live-session hook firing requires a running Claude Code session",
     "corrupted_backup — has standalone test test_corrupted_backup; not in "
     "MutationKind because it needs pg_dump/psql, not just Postgres",
+    "replayed_wake_event — has standalone test test_replayed_wake_event; "
+    "not in MutationKind because it exercises agent-wake's in-process dedup "
+    "logic, not a Postgres-backed event chain",
+    "capability_clobber — has standalone test test_capability_clobber; "
+    "not in MutationKind because it exercises ACB's inspect detection path "
+    "against a config file, not a Postgres-backed event chain",
 ]
 
 
@@ -1090,6 +1096,8 @@ def test_capability_clobber(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 _EXPECTED_DEFERRED = {
     "hook_omission",
     "corrupted_backup",
+    "replayed_wake_event",
+    "capability_clobber",
 }
 
 
@@ -1102,8 +1110,8 @@ def test_deferred_mutations_registry() -> None:
     is either implemented (and moved to MutationKind) or explicitly listed.
     """
     deferred_names = {entry.split(" — ")[0] for entry in _DEFERRED_MUTATIONS}
-    for name in _EXPECTED_DEFERRED:
-        assert name in deferred_names, (
-            f"{name!r} is missing from _DEFERRED_MUTATIONS — either "
-            f"implement the mutation or restore the entry"
-        )
+    assert deferred_names == _EXPECTED_DEFERRED, (
+        f"_DEFERRED_MUTATIONS and _EXPECTED_DEFERRED have diverged: "
+        f"extra in _DEFERRED_MUTATIONS: {deferred_names - _EXPECTED_DEFERRED}, "
+        f"extra in _EXPECTED_DEFERRED: {_EXPECTED_DEFERRED - deferred_names}"
+    )

@@ -2,11 +2,15 @@
   "release": "1.0.0-dev",
   "python_versions": [
     "3.12",
-    "3.13"
+    "3.13",
+    "3.14"
   ],
-  "postgres_version": "16+",
+  "python_versions_note": "Windows native support may require 3.14 for latest stdlib improvements; 3.12/3.13 are the baseline for Linux/Docker.",
+  "postgres_version": "18+",
   "reference_linux": "Ubuntu 22.04+",
   "docker": "supported",
+  "kubernetes": "optional",
+  "kubernetes_note": "An optional manifest may exist for shops that already run k8s; it is never the required path. No k8s operator is produced.",
   "windows_versions": [
     "10",
     "11",
@@ -126,7 +130,7 @@
   "compatibility_window": "N-1 upgrade supported",
   "compatibility_window_note": "Upgrade/rollback logic is unit-tested with stubbed runners; live N-1 upgrade proof is Gate 4 WI-4.3.",
   "excluded_surfaces": [
-    "Kubernetes operator",
+    "Kubernetes operator (k8s is an optional substrate, not a required dependency)",
     "SaaS",
     "Multi-region active/active",
     "Fleet management"

@@ -214,10 +214,10 @@ Each entry follows the structure required by Plan 008 §6.1:
 | **Trust boundary** | The key registry boundary — `regista verify` reads the registry at verify time, not a cached copy. |
 | **Enforcing component** | regista — key registry, `valid_from`/`valid_to` windows, `unregistered-signer` failure. |
 | **Positive proof** | `docs/key-custody-threat-model.md` T5 — "regista verify reads the registry at verify time, not a cached copy. A revoked key produces an `unregistered-signer` failure for post-revocation events." `valid_from`/`valid_to` windows are the design (regista Plan 026 WI-3.1). |
-| **Adversarial/failure proof** | No suite-level test exercises key revocation or `valid_to` windowing. The design is specified in regista Plan 026 but the implementation is not landed in agent-suite's test suite. |
-| **Residual risk** | This claim is based on regista's design (Plan 026), not on a test in agent-suite. The key-custody threat model (T5) identifies "a verifier uses a stale public-key registry snapshot" as a threat — the mitigation depends on regista always reading the live registry, which is not verified by an agent-suite test. Key rotation cadence is documented in `docs/key-operations.md` but not enforced automatically. |
+| **Adversarial/failure proof** | `tests/test_adversarial_corpus.py::test_adversarial_mutation` (mutation `REVOKED_KEY`) — generates an Ed25519 keypair, registers the public key, creates an Ed25519-signed event, verifies the principal binding passes, revokes the key, and verifies the binding now fails with `key-revoked`. Exercises the `verify_event_principal_binding` path (regista Plan 026), not `replay`. |
+| **Residual risk** | The test exercises Ed25519 key revocation via `verify_event_principal_binding`, not the full `replay` chain. The key-custody threat model (T5) identifies "a verifier uses a stale public-key registry snapshot" as a threat — the mitigation depends on regista always reading the live registry, which is not verified by an agent-suite test. Key rotation cadence is documented in `docs/key-operations.md` but not enforced automatically. |
 | **Supported profiles** | B and C (Profile A has no human principals requiring rotation) |
-| **Maturity** | experimental |
+| **Maturity** | experimental (positive proof via Ed25519 revocation test; full `replay`-level revocation detection not yet exercised) |
 | **Last verified release** | unverified |
 
 ---

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from agent_suite.release_artifacts import ReleaseBoard, SupportMatrix
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 # --- SupportMatrix tests -----------------------------------------------------
@@ -89,3 +92,70 @@ def test_release_board_wi_ids_unique() -> None:
         for wi in gate.work_items:
             all_ids.append(wi.id)
     assert len(all_ids) == len(set(all_ids))
+
+
+def test_support_matrix_json_no_fields_lost_on_roundtrip() -> None:
+    """Loading data/support-matrix.json and re-serializing must not drop fields.
+
+    The JSON file is the canonical artifact. If from_json + to_dict drops
+    fields, the dataclass is incomplete and the proof command doesn't
+    validate the actual file.
+    """
+    json_path = _REPO_ROOT / "data" / "support-matrix.json"
+    raw = json.loads(json_path.read_text())
+    matrix = SupportMatrix.from_json(json_path.read_text())
+    restored = matrix.to_dict()
+
+    raw_keys = set(raw.keys())
+    restored_keys = set(restored.keys())
+    missing = raw_keys - restored_keys
+    assert not missing, (
+        f"SupportMatrix.to_dict() drops keys from the JSON file: {missing}"
+    )
+
+    for key in ("browsers", "identity_backends", "secret_backends", "profiles"):
+        for raw_item, rest_item in zip(raw[key], restored[key]):
+            missing_nested = set(raw_item.keys()) - set(rest_item.keys())
+            assert not missing_nested, (
+                f"SupportMatrix roundtrip drops nested keys in {key}: "
+                f"{missing_nested}"
+            )
+
+    raw_avail = set(raw["availability"].keys())
+    rest_avail = set(restored["availability"].keys())
+    missing_avail = raw_avail - rest_avail
+    assert not missing_avail, (
+        f"SupportMatrix roundtrip drops availability keys: {missing_avail}"
+    )
+
+
+def test_release_board_json_no_fields_lost_on_roundtrip() -> None:
+    """Loading data/release-board.json and re-serializing must not drop fields."""
+    json_path = _REPO_ROOT / "data" / "release-board.json"
+    raw = json.loads(json_path.read_text())
+    board = ReleaseBoard.from_json(json_path.read_text())
+    restored = board.to_dict()
+
+    raw_top = set(raw.keys())
+    restored_top = set(restored.keys())
+    missing_top = raw_top - restored_top
+    assert not missing_top, (
+        f"ReleaseBoard.to_dict() drops top-level keys: {missing_top}"
+    )
+
+    for raw_gate, rest_gate in zip(raw["gates"], restored["gates"]):
+        raw_wi_keys_per_item = [
+            set(wi.keys()) for wi in raw_gate["work_items"]
+        ]
+        rest_wi_keys_per_item = [
+            set(wi.keys()) for wi in rest_gate["work_items"]
+        ]
+        for i, (raw_keys, rest_keys) in enumerate(
+            zip(raw_wi_keys_per_item, rest_wi_keys_per_item)
+        ):
+            missing = raw_keys - rest_keys
+            wi_id = raw_gate["work_items"][i].get("id", "?")
+            assert not missing, (
+                f"WorkItem {wi_id} in gate {raw_gate['number']} "
+                f"loses keys on roundtrip: {missing}"
+            )
