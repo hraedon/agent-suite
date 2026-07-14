@@ -92,6 +92,13 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Install PostgreSQL 18 client tools
+        run: |
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18
+
       - name: Install agent-suite
         run: pip install -e ".[dev]"
 
