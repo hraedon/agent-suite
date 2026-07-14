@@ -1,6 +1,10 @@
 # Plan 015 — Production-grade 1.0 release closure
 
-**Status:** Proposed 2026-07-12.
+**Status:** In Progress — Gate 0 execution started 2026-07-14. WI-0.1 (executable
+probes) complete; WI-0.2 (state reconciliation) in progress (SUITE.lock updated,
+identifier gate replaced, inventory CLI pending); WI-0.3 (support matrix) updated
+with ratified platforms (linux/k8s/Windows/docker, PostgreSQL 18+, Python
+3.12/3.13/3.14, Chrome/Edge/Safari/Firefox); WI-0.4 (release board) in progress.
 **Owner:** agent-suite coordinates the release; each constituent owns its
 domain; dossier owns the normal human interface.
 **Depends:** agent-suite Plans 008, 009, 013, and 014; dossier Plans 015 and

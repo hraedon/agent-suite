@@ -102,9 +102,10 @@ class BrowserTarget:
 
     name: str
     version: str
+    status: str = "not_qualified"
 
     def to_dict(self) -> dict[str, object]:
-        return {"name": self.name, "version": self.version}
+        return {"name": self.name, "version": self.version, "status": self.status}
 
 
 @dataclass(frozen=True)
@@ -188,9 +189,12 @@ class SupportMatrix:
 
     release: str
     python_versions: tuple[str, ...]
+    python_versions_note: str
     postgres_version: str
     reference_linux: str
     docker: str
+    kubernetes: str
+    kubernetes_note: str
     windows_versions: tuple[str, ...]
     browsers: tuple[BrowserTarget, ...]
     identity_backends: tuple[IdentityBackend, ...]
@@ -198,15 +202,25 @@ class SupportMatrix:
     profiles: tuple[ProfileSupport, ...]
     availability: AvailabilityObjectives
     compatibility_window: str
+    compatibility_window_note: str
     excluded_surfaces: tuple[str, ...]
+    windows_qualification: str
+    windows_qualification_note: str
+    browsers_qualification_note: str
+    identity_backends_note: str
+    secret_backends_note: str
+    availability_note: str
 
     def to_dict(self) -> dict[str, object]:
         return {
             "release": self.release,
             "python_versions": list(self.python_versions),
+            "python_versions_note": self.python_versions_note,
             "postgres_version": self.postgres_version,
             "reference_linux": self.reference_linux,
             "docker": self.docker,
+            "kubernetes": self.kubernetes,
+            "kubernetes_note": self.kubernetes_note,
             "windows_versions": list(self.windows_versions),
             "browsers": [b.to_dict() for b in self.browsers],
             "identity_backends": [
@@ -218,7 +232,14 @@ class SupportMatrix:
             "profiles": [p.to_dict() for p in self.profiles],
             "availability": self.availability.to_dict(),
             "compatibility_window": self.compatibility_window,
+            "compatibility_window_note": self.compatibility_window_note,
             "excluded_surfaces": list(self.excluded_surfaces),
+            "windows_qualification": self.windows_qualification,
+            "windows_qualification_note": self.windows_qualification_note,
+            "browsers_qualification_note": self.browsers_qualification_note,
+            "identity_backends_note": self.identity_backends_note,
+            "secret_backends_note": self.secret_backends_note,
+            "availability_note": self.availability_note,
         }
 
     @classmethod
@@ -256,6 +277,22 @@ class SupportMatrix:
         if not isinstance(docker, str):
             raise ValueError("support matrix: docker must be a string")
 
+        kubernetes = raw.get("kubernetes", "")
+        if not isinstance(kubernetes, str):
+            raise ValueError("support matrix: kubernetes must be a string")
+
+        kubernetes_note = raw.get("kubernetes_note", "")
+        if not isinstance(kubernetes_note, str):
+            raise ValueError(
+                "support matrix: kubernetes_note must be a string"
+            )
+
+        py_note = raw.get("python_versions_note", "")
+        if not isinstance(py_note, str):
+            raise ValueError(
+                "support matrix: python_versions_note must be a string"
+            )
+
         win_raw = raw.get("windows_versions")
         if not isinstance(win_raw, list):
             raise ValueError(
@@ -280,7 +317,14 @@ class SupportMatrix:
                 raise ValueError(
                     "support matrix: browser must have name and version"
                 )
-            browsers.append(BrowserTarget(name=bname, version=bversion))
+            bstatus = b.get("status", "not_qualified")
+            if not isinstance(bstatus, str):
+                raise ValueError(
+                    "support matrix: browser status must be a string"
+                )
+            browsers.append(
+                BrowserTarget(name=bname, version=bversion, status=bstatus)
+            )
 
         id_raw = raw.get("identity_backends")
         if not isinstance(id_raw, list):
@@ -432,6 +476,48 @@ class SupportMatrix:
                 "support matrix: compatibility_window must be a string"
             )
 
+        compatibility_window_note = raw.get("compatibility_window_note", "")
+        if not isinstance(compatibility_window_note, str):
+            raise ValueError(
+                "support matrix: compatibility_window_note must be a string"
+            )
+
+        windows_qualification = raw.get("windows_qualification", "")
+        if not isinstance(windows_qualification, str):
+            raise ValueError(
+                "support matrix: windows_qualification must be a string"
+            )
+
+        windows_qualification_note = raw.get("windows_qualification_note", "")
+        if not isinstance(windows_qualification_note, str):
+            raise ValueError(
+                "support matrix: windows_qualification_note must be a string"
+            )
+
+        browsers_qualification_note = raw.get("browsers_qualification_note", "")
+        if not isinstance(browsers_qualification_note, str):
+            raise ValueError(
+                "support matrix: browsers_qualification_note must be a string"
+            )
+
+        identity_backends_note = raw.get("identity_backends_note", "")
+        if not isinstance(identity_backends_note, str):
+            raise ValueError(
+                "support matrix: identity_backends_note must be a string"
+            )
+
+        secret_backends_note = raw.get("secret_backends_note", "")
+        if not isinstance(secret_backends_note, str):
+            raise ValueError(
+                "support matrix: secret_backends_note must be a string"
+            )
+
+        availability_note = raw.get("availability_note", "")
+        if not isinstance(availability_note, str):
+            raise ValueError(
+                "support matrix: availability_note must be a string"
+            )
+
         excl_raw = raw.get("excluded_surfaces")
         if not isinstance(excl_raw, list):
             raise ValueError(
@@ -444,9 +530,12 @@ class SupportMatrix:
         return cls(
             release=release,
             python_versions=python_versions,
+            python_versions_note=py_note,
             postgres_version=postgres_version,
             reference_linux=reference_linux,
             docker=docker,
+            kubernetes=kubernetes,
+            kubernetes_note=kubernetes_note,
             windows_versions=windows_versions,
             browsers=tuple(browsers),
             identity_backends=tuple(identity_backends),
@@ -454,7 +543,14 @@ class SupportMatrix:
             profiles=tuple(profiles),
             availability=availability,
             compatibility_window=compatibility_window,
+            compatibility_window_note=compatibility_window_note,
             excluded_surfaces=excluded_surfaces,
+            windows_qualification=windows_qualification,
+            windows_qualification_note=windows_qualification_note,
+            browsers_qualification_note=browsers_qualification_note,
+            identity_backends_note=identity_backends_note,
+            secret_backends_note=secret_backends_note,
+            availability_note=availability_note,
         )
 
     @classmethod
@@ -479,16 +575,19 @@ class SupportMatrix:
         )
         return cls(
             release="1.0.0-dev",
-            python_versions=("3.12", "3.13"),
-            postgres_version="16+",
+            python_versions=("3.12", "3.13", "3.14"),
+            python_versions_note="Windows native support may require 3.14 for latest stdlib improvements; 3.12/3.13 are the baseline for Linux/Docker.",
+            postgres_version="18+",
             reference_linux="Ubuntu 22.04+",
             docker="supported",
+            kubernetes="optional",
+            kubernetes_note="An optional manifest may exist for shops that already run k8s; it is never the required path. No k8s operator is produced.",
             windows_versions=("10", "11", "Server 2022"),
             browsers=(
-                BrowserTarget(name="Chrome", version="latest-1"),
-                BrowserTarget(name="Firefox", version="latest-1"),
-                BrowserTarget(name="Safari", version="latest-1"),
-                BrowserTarget(name="Edge", version="latest-1"),
+                BrowserTarget(name="Chrome", version="latest-1", status="not_qualified"),
+                BrowserTarget(name="Firefox", version="latest-1", status="not_qualified"),
+                BrowserTarget(name="Safari", version="latest-1", status="not_qualified"),
+                BrowserTarget(name="Edge", version="latest-1", status="not_qualified"),
             ),
             identity_backends=(
                 IdentityBackend(
@@ -524,12 +623,19 @@ class SupportMatrix:
                 rc_soak_days=14,
             ),
             compatibility_window="N-1 upgrade supported",
+            compatibility_window_note="Upgrade/rollback logic is unit-tested with stubbed runners; live N-1 upgrade proof is Gate 4 WI-4.3.",
             excluded_surfaces=(
-                "Kubernetes operator",
+                "Kubernetes operator (k8s is an optional substrate, not a required dependency)",
                 "SaaS",
                 "Multi-region active/active",
                 "Fleet management",
             ),
+            windows_qualification="unit_tests_only",
+            windows_qualification_note="agent-suite unit tests pass on windows-latest CI; native Windows qualification (Setup, DPAPI, WinSW, dual-control) is Gate 4 WI-4.2 and not yet started.",
+            browsers_qualification_note="No browser CI lane exists; dossier WCAG/accessibility qualification is Gate 1 WI-1.6 and not yet started.",
+            identity_backends_note="Local identity is CI-tested via interop. Entra/OIDC qualification is dossier Plan 020 and not yet started.",
+            secret_backends_note="Secret resolver design is documented; no backend is CI-qualified. Backend SDKs live behind extras and are imported only at the secret-resolution edge.",
+            availability_note="Objectives are targets for Gate 0 WI-0.3 ratification, not yet proven by qualification.",
         )
 
     def validate(self) -> bool:
@@ -574,9 +680,10 @@ class WorkItem:
     status: WIStatus
     proof_command: str
     proof_artifact: str
+    status_note: str = ""
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        d: dict[str, object] = {
             "id": self.id,
             "title": self.title,
             "owner_repo": self.owner_repo,
@@ -585,6 +692,9 @@ class WorkItem:
             "proof_command": self.proof_command,
             "proof_artifact": self.proof_artifact,
         }
+        if self.status_note:
+            d["status_note"] = self.status_note
+        return d
 
 
 @dataclass(frozen=True)
@@ -718,6 +828,11 @@ class ReleaseBoard:
                     raise ValueError(
                         "release board: proof_artifact must be a string"
                     )
+                status_note = wi.get("status_note", "")
+                if not isinstance(status_note, str):
+                    raise ValueError(
+                        "release board: status_note must be a string"
+                    )
                 work_items.append(
                     WorkItem(
                         id=wi_id,
@@ -727,6 +842,7 @@ class ReleaseBoard:
                         status=status,
                         proof_command=proof_command,
                         proof_artifact=proof_artifact,
+                        status_note=status_note,
                     )
                 )
             gates.append(
@@ -766,7 +882,7 @@ class ReleaseBoard:
                             ),
                             owner_repo="hraedon/agent-suite",
                             blocking_dependency="Plan 009 WI-0.3",
-                            status=WIStatus.IN_PROGRESS,
+                            status=WIStatus.COMPLETE,
                             proof_command=(
                                 "python3 scripts/feature-probes.py --check"
                             ),
@@ -780,7 +896,14 @@ class ReleaseBoard:
                             ),
                             owner_repo="hraedon/agent-suite",
                             blocking_dependency="\u2014",
-                            status=WIStatus.NOT_STARTED,
+                            status=WIStatus.IN_PROGRESS,
+                            status_note=(
+                                "SUITE.lock updated with real SHAs; "
+                                "identifier gate replaced with canonical "
+                                "script; plan status lines reconciled. "
+                                "Inventory CLI (agent-suite inventory) not "
+                                "yet implemented."
+                            ),
                             proof_command="agent-suite inventory --json",
                             proof_artifact="data/candidate-inventory.json",
                         ),
