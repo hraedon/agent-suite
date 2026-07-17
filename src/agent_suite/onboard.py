@@ -13,8 +13,8 @@ The flow:
    principal keys — idempotent).
 3. Sign the spec.yaml (+ spec.md hash) as event-zero via ``regista spec sign``
    (Plan 025 WI-4.3: "Regista does not parse the spec; it stores and signs it").
-4. Wire the project's harness (``install-harness`` for Claude + opencode —
-   dual-target, blueprint section 4 hard constraint).
+4. Wire the selected suite harness target (Claude, OpenCode, Codex, or the
+   deterministic stable ``all`` set).
 
 Idempotent: re-running onboards nothing new if the project + spec already
 exist.  ``--dry-run`` prints the plan without acting.  No-spec is allowed (a
@@ -39,6 +39,17 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Protocol, assert_never
+
+from agent_suite.harness import (
+    HarnessTarget,
+    expand_harness_target,
+    normalize_harness_target,
+)
+from agent_suite.harness_install import (
+    evaluate_install_harness_result,
+    install_harness_argv,
+    requires_structured_install_result,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -369,12 +380,14 @@ def _step_wire_harness(
     runner: Runner,
     installed: Installed,
     dry_run: bool,
-    harness: str,
+    harness: HarnessTarget,
 ) -> OnboardStepResult:
+    targets = expand_harness_target(harness)
     if dry_run:
         cmds = [
-            f"{cli} install-harness --harness {harness}"
+            f"{cli} install-harness {target.value}"
             for cli, _ in _FACE_COMPONENTS
+            for target in targets
         ]
         return OnboardStepResult(
             OnboardStep.WIRE_HARNESS,
@@ -390,26 +403,33 @@ def _step_wire_harness(
                 OnboardStatus.FAILED,
                 f"{cli_name} not installed — required for face wiring",
             )
-        install_cmd: tuple[str, ...] = (cli_name, "install-harness", "--harness", harness)
-        try:
-            result = runner(install_cmd)
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-            return OnboardStepResult(
-                OnboardStep.WIRE_HARNESS,
-                OnboardStatus.FAILED,
-                f"{cli_name} install-harness failed: {exc}",
+        for target in targets:
+            install_cmd = install_harness_argv(cli_name, target)
+            try:
+                result = runner(install_cmd)
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+                return OnboardStepResult(
+                    OnboardStep.WIRE_HARNESS,
+                    OnboardStatus.FAILED,
+                    f"{cli_name} install-harness failed: {exc}",
+                )
+            evaluation = evaluate_install_harness_result(
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                expected_tool=cli_name,
+                expected_harness=target,
+                require_structured=requires_structured_install_result(cli_name),
             )
-        if result.returncode != 0:
-            stderr = result.stderr.strip()
-            if "already" in stderr.lower() or "no-op" in stderr.lower():
-                details.append(f"{cli_name} already installed")
-                continue
-            return OnboardStepResult(
-                OnboardStep.WIRE_HARNESS,
-                OnboardStatus.FAILED,
-                f"{cli_name} install-harness failed: {stderr or 'no detail'}",
-            )
-        details.append(f"{cli_name} installed")
+            if not evaluation.ok:
+                return OnboardStepResult(
+                    OnboardStep.WIRE_HARNESS,
+                    OnboardStatus.FAILED,
+                    f"{cli_name} install-harness {target.value} "
+                    f"{evaluation.status.value}: {evaluation.detail}",
+                )
+            state = "already installed" if evaluation.no_op else "installed"
+            details.append(f"{cli_name} {target.value} {state}")
 
     all_already = bool(details) and all("already" in d for d in details)
     status = OnboardStatus.ALREADY_DONE if all_already else OnboardStatus.DONE
@@ -466,7 +486,7 @@ def run_onboard(
     project: str,
     spec_path: Path | None = None,
     dry_run: bool = False,
-    harness: str = "all",
+    harness: HarnessTarget = HarnessTarget.ALL,
     principal: str | None = None,
     runner: Runner = _default_runner,
     installed: Installed = _default_installed,
@@ -482,6 +502,7 @@ def run_onboard(
     harness-wired but no spec is signed — the project is "spec-unanchored"
     (valid, just without a founding spec in the audit chain).
     """
+    harness = normalize_harness_target(harness)
     steps: list[OnboardStepResult] = []
     spec_anchored = False
     spec_version: str | None = None
@@ -568,7 +589,7 @@ def run_onboard(
             "no spec to sign — project is spec-unanchored",
         ))
 
-    # --- Step 4: wire harness (dual-target) ---
+    # --- Step 4: wire the selected stable suite harness target ---
     harness_result = _step_wire_harness(
         runner=runner, installed=installed, dry_run=dry_run, harness=harness,
     )

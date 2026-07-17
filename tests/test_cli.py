@@ -15,6 +15,7 @@ from agent_suite import upgrade as upgrade_mod
 from agent_suite import verify_restore as verify_restore_mod
 from agent_suite.alerting import AlertResult, EmissionStatus
 from agent_suite.cli import Command, main
+from agent_suite.harness import HarnessTarget
 
 _DSN = "postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista"
 
@@ -237,6 +238,72 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
             assert main([command.value, "--dir", "/tmp/test-backup", "--dry-run"]) == 0
         else:
             assert main([command.value]) == 0
+
+
+@pytest.mark.parametrize("command", ["bootstrap", "onboard", "deploy"])
+def test_harness_selectors_accept_codex(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    seen: dict[str, object] = {}
+
+    if command == "bootstrap":
+        monkeypatch.setattr(
+            bootstrap_mod,
+            "run_bootstrap",
+            lambda **kw: (
+                seen.update(kw)
+                or bootstrap_mod.BootstrapResult(ok=True, dry_run=True, steps=[])
+            ),
+        )
+        argv = [command, "--harness", "codex", "--dry-run"]
+    elif command == "onboard":
+        monkeypatch.setattr(
+            onboard_mod,
+            "run_onboard",
+            lambda **kw: (
+                seen.update(kw)
+                or onboard_mod.OnboardResult(
+                    ok=True,
+                    dry_run=True,
+                    project="project-slug",
+                    spec_anchored=False,
+                    spec_version=None,
+                    spec_version_recognized=None,
+                    steps=[],
+                )
+            ),
+        )
+        argv = [command, "project-slug", "--harness", "codex", "--dry-run"]
+    else:
+        from agent_suite import deploy as deploy_mod
+
+        monkeypatch.setattr(
+            deploy_mod,
+            "run_deploy",
+            lambda **kw: (
+                seen.update(kw)
+                or deploy_mod.DeployResult(
+                    ok=True, dry_run=True, profile="A", steps=[]
+                )
+            ),
+        )
+        argv = [command, "--harness", "codex", "--dry-run"]
+
+    assert main(argv) == 0
+    assert seen["harness"] is HarnessTarget.CODEX
+
+
+@pytest.mark.parametrize("command", ["bootstrap", "onboard", "deploy"])
+def test_harness_selectors_reject_component_private_target(command: str) -> None:
+    argv = [command]
+    if command == "onboard":
+        argv.append("project-slug")
+    argv.extend(["--harness", "hermes", "--dry-run"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(argv)
+    assert exc_info.value.code == 2
 
 
 def test_lock_check_exits_nonzero_when_no_lock(monkeypatch: pytest.MonkeyPatch) -> None:
