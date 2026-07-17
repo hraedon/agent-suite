@@ -72,6 +72,15 @@ _DUMP_OK = _completed(stdout="", returncode=0)
 _RESTORE_OK = _completed(stdout="", returncode=0)
 
 
+@pytest.fixture(autouse=True)
+def _clear_regista_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep these tests hermetic: ``run_backup``/``run_restore`` fall back to
+    ``$REGISTA_DSN`` when ``dsn`` is None, so a host that exports a real DSN
+    (e.g. an operator box) would otherwise turn the ``dsn=None`` cases green.
+    """
+    monkeypatch.delenv("REGISTA_DSN", raising=False)
+
+
 def _stub_verify_restore_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "agent_suite.backup.verify_restore",

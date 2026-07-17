@@ -77,6 +77,13 @@ class StubRunner:
             if cmd[: len(prefix)] == prefix:
                 if isinstance(out, Exception):
                     raise out
+                if out.stdout == _INSTALL_OK:
+                    return _completed(
+                        stdout=(
+                            f'{{"tool":"{cmd[0]}","harness":"{cmd[2]}",'
+                            '"status":"installed","actions":[],"no_op":false}'
+                        )
+                    )
                 return out
         return _completed(stdout='{"reachable": true, "ok": true}')
 
@@ -307,6 +314,11 @@ def test_memory_provider_config_dataclass_defaults() -> None:
 # WI-1.2: Bootstrap MEMORY_PROVIDER step
 # ---------------------------------------------------------------------------
 
+_INSTALL_OK = (
+    '{"tool":"component","harness":"test","status":"installed",'
+    '"actions":[],"no_op":false}'
+)
+
 
 def test_bootstrap_native_engine_done() -> None:
     runner = StubRunner({
@@ -314,8 +326,8 @@ def test_bootstrap_native_engine_done() -> None:
         ("regista", "provision"): _completed(stdout='[{"project": "test", "schema_created": true}]'),
         ("regista", "provision-principal"): _completed(stdout='{"principal_id": "suite-service"}'),
         ("regista", "secrets"): _completed(stdout="ok"),
-        ("agent-notes", "install-harness"): _completed(stdout="installed"),
-        ("cairn",): _completed(stdout="installed"),
+        ("agent-notes", "install-harness"): _completed(stdout=_INSTALL_OK),
+        ("cairn",): _completed(stdout=_INSTALL_OK),
     })
     result = run_bootstrap(
         dry_run=False,
@@ -338,11 +350,11 @@ def test_bootstrap_hindsight_unreachable_failed() -> None:
         ("regista", "provision"): _completed(stdout='[{"project": "test", "schema_created": true}]'),
         ("regista", "provision-principal"): _completed(stdout='{"principal_id": "suite-service"}'),
         ("regista", "secrets"): _completed(stdout="ok"),
-        ("agent-notes", "install-harness"): _completed(stdout="installed"),
+        ("agent-notes", "install-harness"): _completed(stdout=_INSTALL_OK),
         ("agent-notes", "memory-provider"): _completed(
             returncode=1, stderr="connection refused"
         ),
-        ("cairn",): _completed(stdout="installed"),
+        ("cairn",): _completed(stdout=_INSTALL_OK),
     })
     result = run_bootstrap(
         dry_run=False,
@@ -366,8 +378,8 @@ def test_bootstrap_hindsight_no_url_failed() -> None:
         ("regista", "provision"): _completed(stdout='[{"project": "test", "schema_created": true}]'),
         ("regista", "provision-principal"): _completed(stdout='{"principal_id": "suite-service"}'),
         ("regista", "secrets"): _completed(stdout="ok"),
-        ("agent-notes", "install-harness"): _completed(stdout="installed"),
-        ("cairn",): _completed(stdout="installed"),
+        ("agent-notes", "install-harness"): _completed(stdout=_INSTALL_OK),
+        ("cairn",): _completed(stdout=_INSTALL_OK),
     })
     result = run_bootstrap(
         dry_run=False,
@@ -391,9 +403,9 @@ def test_bootstrap_hindsight_reachable_done() -> None:
         ("regista", "provision"): _completed(stdout='[{"project": "test", "schema_created": true}]'),
         ("regista", "provision-principal"): _completed(stdout='{"principal_id": "suite-service"}'),
         ("regista", "secrets"): _completed(stdout="ok"),
-        ("agent-notes", "install-harness"): _completed(stdout="installed"),
+        ("agent-notes", "install-harness"): _completed(stdout=_INSTALL_OK),
         ("agent-notes", "memory-provider"): _completed(stdout=_mp_describe_ok()),
-        ("cairn",): _completed(stdout="installed"),
+        ("cairn",): _completed(stdout=_INSTALL_OK),
     })
     result = run_bootstrap(
         dry_run=False,
