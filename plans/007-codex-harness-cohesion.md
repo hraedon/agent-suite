@@ -94,7 +94,7 @@ Authoritative surfaces at the 2026-07-17 refresh:
 | agent-suite | Contract/selector/result validation landed | aggregate Codex install/doctor after adapters | P0 |
 | agent-notes 019 | target accepted; honestly unsupported | skills + orientation/reconciliation hooks + doctor | P0 |
 | cairn 011 | false-success fixed; honestly unsupported | lifecycle/tool/subagent hooks + honest coverage and degradation | P0 |
-| acb 007 | target accepted; honestly unsupported; suite credential exec foundation landed | Codex skill/MCP reconciliation | P0 for credentialed lab use |
+| acb 007 | Codex cred-shim adapter landed (skills/<name>/SKILL.md, create-only, `.system` preserved; e2e/MCP write still honestly unsupported) — acb PR #13 | Codex MCP (e2e) reconciliation; live in-session proof (WI-3.1) | P0 for credentialed lab use |
 | wake 006 | plan only | next-session delivery; live wake honestly conditional | P1, not a core blocker |
 | suite proof/docs | Claude proof only | correlated local Codex proof and operator runbook | final gate |
 
