@@ -25,6 +25,7 @@ from agent_suite.onboard import (
     format_text,
     run_onboard,
 )
+from agent_suite.harness import HarnessTarget
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +77,14 @@ class MultiCmdRunner:
             if cmd[: len(prefix)] == prefix:
                 if isinstance(out, Exception):
                     raise out
+                if out is _OK_INSTALL or out is _ALREADY_INSTALL:
+                    no_op = "true" if out is _ALREADY_INSTALL else "false"
+                    return _completed(
+                        stdout=(
+                            f'{{"tool":"{cmd[0]}","harness":"{cmd[2]}",'
+                            f'"status":"installed","actions":[],"no_op":{no_op}}}'
+                        )
+                    )
                 return out
         return _completed(stdout='{"ok": true}', returncode=0)
 
@@ -98,13 +107,23 @@ def _installed_except(*missing: str):
 _OK_PROVISION = _completed(stdout='[{"project": "test-proj", "schema_created": true}]')
 _OK_PRINCIPAL = _completed(stdout='{"principal_id": "suite-service", "key_id": "k1"}')
 _OK_SIGN = _completed(stdout='{"event_id": "evt-0", "signed": true}')
-_OK_INSTALL = _completed(stdout="installed")
+_OK_INSTALL = _completed(
+    stdout=(
+        '{"tool":"component","harness":"test","status":"installed",'
+        '"actions":[],"no_op":false}'
+    )
+)
 _ALREADY_PROVISIONED = _completed(
     stdout='[{"project": "test-proj", "schema_created": false}]'
 )
 _ALREADY_PRINCIPAL = _completed(returncode=1, stderr="already exists")
 _ALREADY_SIGNED = _completed(returncode=1, stderr="spec already signed")
-_ALREADY_INSTALL = _completed(returncode=1, stderr="already installed")
+_ALREADY_INSTALL = _completed(
+    stdout=(
+        '{"tool":"component","harness":"test","status":"installed",'
+        '"actions":[],"no_op":true}'
+    )
+)
 _CLOBBER_PROVISION = _completed(returncode=1, stderr="refuse: would clobber existing key")
 _FAIL_PROVISION = _completed(returncode=1, stderr="connection timeout")
 _FAIL_SIGN = _completed(returncode=1, stderr="signing key not found")
@@ -476,7 +495,7 @@ def test_key_clobber_refused(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_harness_all_wires_both(tmp_path: Path) -> None:
+def test_harness_all_expands_stable_targets(tmp_path: Path) -> None:
     spec = _make_spec(tmp_path, _SPEC_V1)
     runner = MultiCmdRunner({
         ("regista", "provision"): _OK_PROVISION,
@@ -489,16 +508,18 @@ def test_harness_all_wires_both(tmp_path: Path) -> None:
         project="test-proj",
         spec_path=spec,
         dry_run=False,
-        harness="all",
+        harness=HarnessTarget.ALL,
         runner=runner,
         installed=_installed_all,
     )
     assert result.ok is True
     harness_cmds = [c for c in runner.calls if "install-harness" in c]
-    assert len(harness_cmds) == 2
-    for cmd in harness_cmds:
-        assert "--harness" in cmd
-        assert cmd[cmd.index("--harness") + 1] == "all"
+    assert harness_cmds == [
+        ("agent-notes", "install-harness", "claude", "--json"),
+        ("agent-notes", "install-harness", "opencode", "--json"),
+        ("cairn", "install-harness", "claude", "--json"),
+        ("cairn", "install-harness", "opencode", "--json"),
+    ]
 
 
 def test_harness_claude_only(tmp_path: Path) -> None:
@@ -514,14 +535,14 @@ def test_harness_claude_only(tmp_path: Path) -> None:
         project="test-proj",
         spec_path=spec,
         dry_run=False,
-        harness="claude",
+        harness=HarnessTarget.CLAUDE,
         runner=runner,
         installed=_installed_all,
     )
     assert result.ok is True
     for cmd in runner.calls:
         if "install-harness" in cmd:
-            assert cmd[cmd.index("--harness") + 1] == "claude"
+            assert cmd == (cmd[0], "install-harness", "claude", "--json")
 
 
 def test_harness_opencode_only(tmp_path: Path) -> None:
@@ -537,14 +558,40 @@ def test_harness_opencode_only(tmp_path: Path) -> None:
         project="test-proj",
         spec_path=spec,
         dry_run=False,
-        harness="opencode",
+        harness=HarnessTarget.OPENCODE,
         runner=runner,
         installed=_installed_all,
     )
     assert result.ok is True
     for cmd in runner.calls:
         if "install-harness" in cmd:
-            assert cmd[cmd.index("--harness") + 1] == "opencode"
+            assert cmd == (cmd[0], "install-harness", "opencode", "--json")
+
+
+def test_harness_codex_is_positional(tmp_path: Path) -> None:
+    spec = _make_spec(tmp_path, _SPEC_V1)
+    runner = MultiCmdRunner({
+        ("regista", "provision"): _OK_PROVISION,
+        ("regista", "provision-principal"): _OK_PRINCIPAL,
+        ("regista", "spec", "sign"): _OK_SIGN,
+        ("agent-notes",): _OK_INSTALL,
+        ("cairn",): _OK_INSTALL,
+    })
+
+    result = run_onboard(
+        project="test-proj",
+        spec_path=spec,
+        harness=HarnessTarget.CODEX,
+        runner=runner,
+        installed=_installed_all,
+    )
+
+    assert result.ok is True
+    harness_cmds = [cmd for cmd in runner.calls if "install-harness" in cmd]
+    assert harness_cmds == [
+        ("agent-notes", "install-harness", "codex", "--json"),
+        ("cairn", "install-harness", "codex", "--json"),
+    ]
 
 
 def test_missing_face_cli_fails(tmp_path: Path) -> None:

@@ -24,6 +24,17 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, assert_never
 
+from agent_suite.harness import (
+    HarnessTarget,
+    expand_harness_target,
+    normalize_harness_target,
+)
+from agent_suite.harness_install import (
+    evaluate_install_harness_result,
+    install_harness_argv,
+    requires_structured_install_result,
+)
+
 from agent_suite.components import COMPONENTS, Component, Tier
 
 
@@ -378,7 +389,7 @@ def _step_install_harness(
     runner: Runner,
     installed: Installed,
     dry_run: bool,
-    harness: str = "all",
+    harness: HarnessTarget = HarnessTarget.ALL,
 ) -> StepResult:
     cli_name = comp.doctor_cmd[0]
     if not installed(cli_name):
@@ -398,36 +409,51 @@ def _step_install_harness(
             case other:
                 assert_never(other)
 
-    install_cmd: tuple[str, ...] = (cli_name, "install-harness", harness)
+    install_cmds = tuple(
+        install_harness_argv(cli_name, target)
+        for target in expand_harness_target(harness)
+    )
     if dry_run:
         return StepResult(
             step,
             StepStatus.PENDING,
-            f"would run {' '.join(install_cmd)}",
+            f"would run {'; '.join(' '.join(cmd) for cmd in install_cmds)}",
         )
-    try:
-        result = runner(install_cmd)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        return StepResult(
-            step,
-            StepStatus.FAILED,
-            f"{cli_name} install-harness failed: {exc}",
-        )
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        if "already" in stderr.lower() or "no-op" in stderr.lower():
+    already_installed = 0
+    for install_cmd in install_cmds:
+        try:
+            result = runner(install_cmd)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
             return StepResult(
                 step,
-                StepStatus.ALREADY_DONE,
-                f"{cli_name} harness already installed",
+                StepStatus.FAILED,
+                f"{cli_name} install-harness failed: {exc}",
             )
+        evaluation = evaluate_install_harness_result(
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            expected_tool=cli_name,
+            expected_harness=HarnessTarget(install_cmd[2]),
+            require_structured=requires_structured_install_result(cli_name),
+        )
+        if not evaluation.ok:
+            return StepResult(
+                step,
+                StepStatus.FAILED,
+                f"{cli_name} install-harness {install_cmd[2]} "
+                f"{evaluation.status.value}: {evaluation.detail}",
+            )
+        if evaluation.no_op:
+            already_installed += 1
+    if already_installed == len(install_cmds):
         return StepResult(
             step,
-            StepStatus.FAILED,
-            f"{cli_name} install-harness failed: {stderr or 'no detail'}",
+            StepStatus.ALREADY_DONE,
+            f"{cli_name} harness targets already installed",
         )
     return StepResult(
-        step, StepStatus.DONE, f"{cli_name} harness installed"
+        step, StepStatus.DONE, f"{cli_name} harness targets installed"
     )
 
 
@@ -553,7 +579,7 @@ def _run_step(
     dsn: str | None,
     user: str | None,
     config_path: str | None,
-    harness: str,
+    harness: HarnessTarget,
     memory_engine: str = "native",
     hindsight_url: str | None = None,
 ) -> StepResult:
@@ -658,7 +684,7 @@ def run_bootstrap(
     user: str | None = None,
     project: str | None = None,
     dsn: str | None = None,
-    harness: str = "all",
+    harness: HarnessTarget = HarnessTarget.ALL,
     runner: Runner = _default_runner,
     installed: Installed = _default_installed,
     config_path: str | None = None,
@@ -673,6 +699,7 @@ def run_bootstrap(
     ``memory_engine`` and ``hindsight_url`` control the MEMORY_PROVIDER step
     (Plan 012 WI-1.2): native is a no-op; hindsight verifies reachability.
     """
+    harness = normalize_harness_target(harness)
     tier_enum = BootstrapTier(tier)
     steps_to_run = _steps_for_tier(tier_enum)
 

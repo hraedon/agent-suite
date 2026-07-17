@@ -284,8 +284,13 @@ faces/provenance (re-install is a no-op). `bootstrap: OK` both times.
 
 ## 7. Wire the harness
 
-The bootstrap installs harness wiring for all harnesses by default. If you
-need to install for a specific harness (e.g. Hermes):
+The bootstrap's default suite target is `all`: currently Claude and OpenCode in
+that stable order. Codex is available explicitly with `--harness codex` and
+fails non-zero at the first unsupported adapter. It joins `all` atomically only
+after every required component adapter and conformance proof is green.
+
+Component-private targets are not part of suite `all`. Install one explicitly
+from the components that support it (for example Hermes):
 
 ```bash
 # cairn — attests tool calls into regista
@@ -321,7 +326,11 @@ agent-notes install-harness claude
 cairn install-harness opencode
 agent-notes install-harness opencode
 
-# All at once
+# Codex (returns unsupported until each component's Plan 007/011/019 adapter lands)
+cairn install-harness codex
+agent-notes install-harness codex
+
+# Stable suite targets at once; fails honestly while an adapter is unsupported
 cairn install-harness all
 agent-notes install-harness all
 ```

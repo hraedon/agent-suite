@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Protocol, assert_never
 
 from agent_suite.bootstrap import run_bootstrap
+from agent_suite.harness import HarnessTarget, normalize_harness_target
 from agent_suite.components import COMPONENTS
 from agent_suite.doctor import aggregate
 from agent_suite.lock import (
@@ -173,7 +174,7 @@ def _step_bootstrap(
     project: str | None,
     dsn: str | None,
     user: str | None,
-    harness: str,
+    harness: HarnessTarget,
     memory_engine: str,
     hindsight_url: str | None,
     runner: Runner,
@@ -222,7 +223,7 @@ def _step_onboard(
     profile: str,
     project: str | None,
     spec_path: Path | None,
-    harness: str,
+    harness: HarnessTarget,
     principal: str | None,
     runner: Runner,
     installed: Installed,
@@ -384,7 +385,7 @@ def _run_step(
     profile: str,
     project: str | None,
     spec_path: Path | None,
-    harness: str,
+    harness: HarnessTarget,
     principal: str | None,
     user: str | None,
     dsn: str | None,
@@ -478,7 +479,7 @@ def run_deploy(
     profile: str = "A",
     project: str | None = None,
     spec_path: Path | None = None,
-    harness: str = "all",
+    harness: HarnessTarget = HarnessTarget.ALL,
     principal: str | None = None,
     user: str | None = None,
     dsn: str | None = None,
@@ -496,6 +497,7 @@ def run_deploy(
     and controls which steps run and what each step does. No secrets appear in
     any output.
     """
+    harness = normalize_harness_target(harness)
     results: list[DeployStepResult] = []
     for step in _DEPLOY_ORDER:
         result = _run_step(
