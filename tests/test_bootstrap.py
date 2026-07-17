@@ -24,6 +24,7 @@ from agent_suite.bootstrap import (
     format_text,
     run_bootstrap,
 )
+from agent_suite.harness import HarnessTarget
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +72,18 @@ def _installed_except(*missing: str):
 
 _OK_DOCTOR = _completed(stdout='{"reachable": true, "ok": true}')
 _OK_PROVISION = _completed(stdout='[{"project": "test", "schema_created": true}]')
-_OK_INSTALL = _completed(stdout="installed")
+_OK_INSTALL = _completed(
+    stdout=(
+        '{"tool":"component","harness":"test","status":"installed",'
+        '"actions":[],"no_op":false}'
+    )
+)
+_ALREADY_INSTALL = _completed(
+    stdout=(
+        '{"tool":"component","harness":"test","status":"installed",'
+        '"actions":[],"no_op":true}'
+    )
+)
 _OK_PRINCIPAL = _completed(stdout='{"principal_id": "suite-service", "key_id": "k1"}')
 _ALREADY_PRINCIPAL = _completed(returncode=1, stderr="already exists")
 _ALREADY_PROVISIONED = _completed(
@@ -165,6 +177,75 @@ def test_full_bootstrap_tier_01() -> None:
     assert StepKind.SIGNALING not in statuses
 
 
+def test_bootstrap_explicit_codex_failure_stops_pipeline_with_diagnostics() -> None:
+    unsupported = _completed(
+        returncode=1,
+        stdout=(
+            '{"tool":"agent-notes","harness":"codex",'
+            '"status":"unsupported","actions":[{"kind":"unsupported",'
+            '"path":"","detail":"Codex adapter pending Plan 019"}],'
+            '"no_op":false}'
+        ),
+    )
+    runner = _MultiCmdRunner({
+        ("regista", "doctor"): _OK_DOCTOR,
+        ("regista", "provision"): _OK_PROVISION,
+        ("regista", "provision-principal"): _OK_PRINCIPAL,
+        ("regista", "secrets"): _completed(stdout="ok"),
+        ("agent-notes",): unsupported,
+        ("cairn",): _OK_INSTALL,
+    })
+
+    result = run_bootstrap(
+        project="test-proj",
+        dsn="postgresql://test:test@localhost/test",
+        harness=HarnessTarget.CODEX,
+        runner=runner,
+        installed=_installed_all,
+    )
+
+    assert result.ok is False
+    assert ("agent-notes", "install-harness", "codex", "--json") in runner.calls
+    assert not any(call[0] == "cairn" for call in runner.calls)
+    faces = next(step for step in result.steps if step.step is StepKind.FACES)
+    provenance = next(step for step in result.steps if step.step is StepKind.PROVENANCE)
+    assert faces.status is StepStatus.FAILED
+    assert "unsupported" in faces.detail
+    assert "Codex adapter pending Plan 019" in faces.detail
+    assert provenance.status is StepStatus.SKIPPED
+
+
+def test_bootstrap_rejects_installed_json_for_wrong_harness() -> None:
+    wrong_harness = _completed(
+        stdout=(
+            '{"tool":"agent-notes","harness":"opencode",'
+            '"status":"installed","actions":[],"no_op":false}'
+        )
+    )
+    runner = _MultiCmdRunner({
+        ("regista", "doctor"): _OK_DOCTOR,
+        ("regista", "provision"): _OK_PROVISION,
+        ("regista", "provision-principal"): _OK_PRINCIPAL,
+        ("regista", "secrets"): _completed(stdout="ok"),
+        ("agent-notes",): wrong_harness,
+        ("cairn",): _OK_INSTALL,
+    })
+
+    result = run_bootstrap(
+        project="test-proj",
+        dsn="postgresql://test:test@localhost/test",
+        harness=HarnessTarget.CLAUDE,
+        runner=runner,
+        installed=_installed_all,
+    )
+
+    assert result.ok is False
+    faces = next(step for step in result.steps if step.step is StepKind.FACES)
+    assert faces.status is StepStatus.FAILED
+    assert "harness mismatch" in faces.detail
+    assert not any(call[0] == "cairn" for call in runner.calls)
+
+
 # ---------------------------------------------------------------------------
 # Idempotency — second run is a no-op
 # ---------------------------------------------------------------------------
@@ -176,8 +257,8 @@ def test_second_run_is_noop() -> None:
         ("regista", "provision"): _ALREADY_PROVISIONED,
         ("regista", "provision-principal"): _ALREADY_PRINCIPAL,
         ("regista", "secrets"): _completed(stdout="ok"),
-        ("agent-notes",): _completed(stdout="already installed", returncode=1, stderr="already installed"),
-        ("cairn",): _completed(stdout="already installed", returncode=1, stderr="already installed"),
+        ("agent-notes",): _ALREADY_INSTALL,
+        ("cairn",): _ALREADY_INSTALL,
     })
     result = run_bootstrap(
         dry_run=False,
@@ -435,5 +516,13 @@ class _MultiCmdRunner:
             if cmd[: len(prefix)] == prefix:
                 if isinstance(out, Exception):
                     raise out
+                if out is _OK_INSTALL or out is _ALREADY_INSTALL:
+                    no_op = "true" if out is _ALREADY_INSTALL else "false"
+                    return _completed(
+                        stdout=(
+                            f'{{"tool":"{cmd[0]}","harness":"{cmd[2]}",'
+                            f'"status":"installed","actions":[],"no_op":{no_op}}}'
+                        )
+                    )
                 return out
         return _completed(stdout='{"reachable": true, "ok": true}')

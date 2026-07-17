@@ -12,6 +12,8 @@ import os
 from enum import Enum
 from typing import assert_never
 
+from agent_suite.harness import HarnessTarget
+
 
 class Command(Enum):
     DOCTOR = "doctor"
@@ -73,6 +75,12 @@ def _build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument(
         "--tier", choices=["0-1", "all"], default="0-1", help="which tiers to install (default: 0-1)"
     )
+    bootstrap.add_argument(
+        "--harness",
+        choices=[target.value for target in HarnessTarget],
+        default=HarnessTarget.ALL.value,
+        help="which harness to wire (default: all — stable suite targets)",
+    )
     bootstrap.add_argument("--user", help="onboard a per-user overlay for this principal ID")
     bootstrap.add_argument("--json", action="store_true", help="emit the result as JSON")
     onboard = sub.add_parser(
@@ -86,9 +94,9 @@ def _build_parser() -> argparse.ArgumentParser:
     onboard.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
     onboard.add_argument(
         "--harness",
-        choices=["claude", "opencode", "all"],
-        default="all",
-        help="which harness to wire (default: all — dual-target)",
+        choices=[target.value for target in HarnessTarget],
+        default=HarnessTarget.ALL.value,
+        help="which harness to wire (default: all — stable suite targets)",
     )
     onboard.add_argument(
         "--principal", help="principal ID for provisioning (default: suite-service)"
@@ -266,9 +274,9 @@ def _build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--spec", help="path to spec.yaml (founding spec to sign as event-zero)")
     deploy.add_argument(
         "--harness",
-        choices=["claude", "opencode", "all"],
-        default="all",
-        help="which harness to wire (default: all — dual-target)",
+        choices=[target.value for target in HarnessTarget],
+        default=HarnessTarget.ALL.value,
+        help="which harness to wire (default: all — stable suite targets)",
     )
     deploy.add_argument("--principal", help="principal ID for provisioning")
     deploy.add_argument("--user", help="per-user overlay principal ID")
@@ -425,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
                 user=args.user,
                 project=os.environ.get("REGISTA_PROJECT"),
                 dsn=os.environ.get("REGISTA_DSN"),
+                harness=HarnessTarget(args.harness),
                 memory_engine=str(mp_config["engine"]),
                 hindsight_url=(
                     mp_config["hindsight_url"]
@@ -449,7 +458,7 @@ def main(argv: list[str] | None = None) -> int:
                 project=args.slug,
                 spec_path=spec_path,
                 dry_run=args.dry_run,
-                harness=args.harness,
+                harness=HarnessTarget(args.harness),
                 principal=args.principal,
             )
             if getattr(args, "json", False):
@@ -835,7 +844,7 @@ def main(argv: list[str] | None = None) -> int:
                 profile=args.profile,
                 project=args.project,
                 spec_path=spec_path,
-                harness=args.harness,
+                harness=HarnessTarget(args.harness),
                 principal=args.principal,
                 user=args.user,
                 dsn=os.environ.get("REGISTA_DSN"),

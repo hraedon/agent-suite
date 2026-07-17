@@ -26,15 +26,30 @@ signing key, a populated schema) **refuses and reports**, never overwrites.
 | 0 | Secret backend reachable + `suite.env` present | `regista.secrets` probe | read-only check | aborts if unreachable |
 | 1 | Postgres reachable | DSN probe | read-only check | aborts if unreachable |
 | 2 | Provision schemas + service roles + principal keys | `regista provision`, `regista provision-principal` | skips existing schema/role; refuses to clobber an existing key | gates all faces |
-| 3 | Faces up | `dossier` (container/Windows Service), `agent-notes install-harness` | re-run reinstalls to the same state | needs step 2 |
-| 4 | Provenance on | `cairn install-harness` | re-run is a no-op | needs step 2 |
-| 5 | Capabilities | `acb install-harness` | re-run is a no-op | optional (Tier 2) |
+| 3 | Faces up | `dossier` (container/Windows Service), `agent-notes install-harness <target>` | re-run reinstalls to the same state | needs step 2 |
+| 4 | Provenance on | `cairn install-harness <target>` | re-run is a no-op | needs step 2 |
+| 5 | Capabilities | `acb install-harness <target>` | re-run is a no-op | optional (Tier 2) |
 | 6 | Signaling | `agent-wake` adapter/daemon install | re-run is a no-op | optional (Tier 2) |
 | 7 | Per-user onboarding | writes a per-user `suite.env` overlay, runs `install-harness` for that user | re-run updates the overlay | per additional human |
 
 **Order rationale:** secrets and the store must exist before anything that signs
 or writes; the faces before provenance (provenance attests *their* actions); Tier 2
 last because the core is useful without it. The order matches blueprint §2.3.
+
+`bootstrap --harness` accepts the closed suite set `claude | opencode | codex |
+all`; the default is `all`. Its stable expansion is Claude, then OpenCode.
+Codex is an explicit candidate target until all required component adapters
+pass conformance; component-private targets are excluded. The suite expands `all` before
+invocation and calls every child positionally as
+`<cli> install-harness <concrete-target> [--json]`. JSON is requested from
+components that implement the shared result contract and is schema-validated;
+non-zero, malformed JSON, `degraded`, `unsupported`, and `failed` all stop the
+pipeline. There is currently no suite-tier exception for degraded installs.
+
+The default `all` remains deployable while Codex work is in progress. An
+explicit `--harness codex` fails closed at the first unsupported component.
+Codex joins `all` atomically only after the full component set passes the shared
+contract and integration proof.
 
 ## 2. Configuration resolution (multi-user layering)
 
