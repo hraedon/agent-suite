@@ -32,6 +32,7 @@ class Command(Enum):
     BACKUP = "backup"
     RESTORE = "restore"
     CODEX_PLUGINS = "codex-plugins"
+    INVENTORY = "inventory"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -330,7 +331,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="print the plan; act on nothing"
     )
     codex_plugins.add_argument("--json", action="store_true", help="emit the result as JSON")
+    inventory = sub.add_parser(
+        Command.INVENTORY.value,
+        help="emit the candidate inventory (locked vs installed reconciliation, WI-0.2)",
+    )
+    inventory.add_argument(
+        "--json", action="store_true", help="emit the inventory as JSON to stdout"
+    )
     return parser
+
+
+def _shared_endpoints_from_env() -> dict[str, str]:
+    """Build shared-service endpoint URLs from suite.env / process env.
+
+    Shared-service components (Plan 004 WI-1.6) declare their endpoint env var
+    in the Component descriptor; when set, the doctor/inventory probe the
+    endpoint instead of reporting absent. Used by both ``doctor`` and
+    ``inventory`` so the two commands agree on what's configured.
+    """
+    from agent_suite.components import shared_service_components
+
+    endpoints: dict[str, str] = {}
+    for comp in shared_service_components():
+        url = os.environ.get(comp.endpoint_env_var)
+        if url:
+            endpoints[comp.ident] = url
+    return endpoints
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -365,13 +391,7 @@ def main(argv: list[str] | None = None) -> int:
             # Build shared-service endpoints from suite.env / process env
             # (Plan 004 WI-1.6): each shared-service component declares its
             # endpoint env var in the Component descriptor.
-            from agent_suite.components import shared_service_components
-
-            shared_endpoints: dict[str, str] = {}
-            for comp in shared_service_components():
-                url = os.environ.get(comp.endpoint_env_var)
-                if url:
-                    shared_endpoints[comp.ident] = url
+            shared_endpoints = _shared_endpoints_from_env()
             from agent_suite.config import MemoryProviderConfig
 
             report = aggregate(
@@ -1048,6 +1068,27 @@ def main(argv: list[str] | None = None) -> int:
             if cp_result.dry_run:
                 return 2
             return 0 if cp_result.ok else 1
+        case Command.INVENTORY:
+            import json as _json
+
+            from agent_suite.inventory import (
+                collect_inventory,
+                format_text as _fmt_inv,
+                write_inventory_file,
+            )
+
+            # Shared-service endpoints from suite.env / process env, mirroring
+            # the doctor dispatch (Plan 004 WI-1.6): a shared-service component
+            # is probed by endpoint when not installed locally.
+            shared_endpoints = _shared_endpoints_from_env()
+            inv = collect_inventory(shared_endpoints=shared_endpoints or None)
+            # Both modes write the proof artifact (WI-0.2 proof_artifact).
+            write_inventory_file(inv)
+            if getattr(args, "json", False):
+                print(_json.dumps(inv.to_dict(), indent=2, default=str))
+            else:
+                print(_fmt_inv(inv))
+            return 0
     assert_never(command)
 
 

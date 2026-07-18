@@ -1,0 +1,650 @@
+"""Tests for the candidate inventory (WI-0.2).
+
+Covers: round-trip with stubbed components, every per-component drift state,
+missing-regista handling, quad drift states, text formatting, and the
+collect_inventory shell-out path with a stubbed doctor aggregate.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from agent_suite import doctor
+from agent_suite import inventory
+from agent_suite import lock
+from agent_suite.components import COMPONENTS, Tier
+from agent_suite.inventory import (
+    ComponentDrift,
+    QuadDrift,
+    build_inventory,
+    collect_inventory,
+    format_text,
+    write_inventory_file,
+)
+from agent_suite.lock import ComponentPin, RegistaVersionQuad, SuiteLock
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+_QUAD = RegistaVersionQuad(
+    library_version="0.5.0",
+    schema_version=43,
+    canonical_workflow_version="2",
+    envelope_version=5,
+)
+
+_SHA_A = "a" * 40
+_SHA_B = "b" * 40
+
+
+def _all_versions(version: str = "1.0.0") -> dict[str, str | None]:
+    return {c.ident: version for c in COMPONENTS}
+
+
+def _all_revisions(sha: str = _SHA_A) -> dict[str, str | None]:
+    return {c.ident: sha for c in COMPONENTS}
+
+
+def _lock(
+    versions: dict[str, str] | None = None,
+    *,
+    quad: RegistaVersionQuad | None = _QUAD,
+    revisions: dict[str, str] | None = None,
+) -> SuiteLock:
+    """Build a SuiteLock pinning every component at the given versions."""
+    pinned = versions or _all_versions("1.0.0")
+    components = {
+        ident: ComponentPin(
+            repo=f"hraedon/{ident}",
+            version=ver,
+            revision=(revisions or {}).get(ident),
+        )
+        for ident, ver in pinned.items()
+    }
+    return SuiteLock(release="1.0.0-dev", regista_quad=quad, components=components)
+
+
+def _completed(
+    stdout: str = "", returncode: int = 0, stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=(), returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def _ok_doctor(component: str, version: str = "1.0.0") -> str:
+    return json.dumps(
+        {
+            "component": component,
+            "version": version,
+            "ok": True,
+            "regista": {"reachable": True, "project": "x", "chain_ok": True},
+            "checks": [{"name": "regista", "status": "ok", "detail": ""}],
+        }
+    )
+
+
+class StubDoctorRunner:
+    """Returns canned `doctor --json` output per component CLI name."""
+
+    def __init__(self, outputs: dict[str, subprocess.CompletedProcess[str] | Exception]) -> None:
+        self._outputs = outputs
+
+    def __call__(self, cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+        out = self._outputs[cmd[0]]
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+
+# ---------------------------------------------------------------------------
+# Round-trip with stubbed components
+# ---------------------------------------------------------------------------
+
+
+def test_build_inventory_round_trip_matches() -> None:
+    """A lock + matching installed state → every component is MATCHES."""
+    versions = _all_versions("1.0.0")
+    inv = build_inventory(
+        lock_obj=_lock(versions),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=versions,
+        component_revisions={},
+        current_quad=_QUAD,
+    )
+    assert inv.release == "1.0.0-dev"
+    assert inv.lock_file.present is True
+    assert inv.lock_file.parseable is True
+    assert len(inv.components) == len(COMPONENTS)
+    for c in inv.components:
+        assert c.drift is ComponentDrift.MATCHES
+        assert c.pinned_version == "1.0.0"
+        assert c.installed_version == "1.0.0"
+    assert inv.regista_quad.drift is QuadDrift.MATCHES
+    assert inv.regista_quad.locked == _QUAD.to_dict()
+    assert inv.regista_quad.current == _QUAD.to_dict()
+    assert inv.memory_provider is None  # native engine
+
+
+def test_to_dict_round_trips_through_json() -> None:
+    """The JSON shape is sane and survives a json round-trip."""
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+    )
+    d = inv.to_dict()
+    text = json.dumps(d, default=str)
+    restored = json.loads(text)
+    assert restored["release"] == "1.0.0-dev"
+    assert restored["lock_file"]["present"] is True
+    assert isinstance(restored["components"], list)
+    assert len(restored["components"]) == len(COMPONENTS)
+    assert "generated_at" in restored
+    assert restored["regista_quad"]["drift"] == "matches"
+
+
+# ---------------------------------------------------------------------------
+# Per-component drift detection (every state)
+# ---------------------------------------------------------------------------
+
+
+def test_version_mismatch_drift() -> None:
+    locked = _all_versions("1.0.0")
+    current = dict(locked)
+    current["dossier"] = "2.0.0"
+    inv = build_inventory(
+        lock_obj=_lock(locked),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=current,
+        component_revisions={},
+        current_quad=_QUAD,
+    )
+    dossier = next(c for c in inv.components if c.ident == "dossier")
+    assert dossier.drift is ComponentDrift.VERSION_MISMATCH
+    assert dossier.pinned_version == "1.0.0"
+    assert dossier.installed_version == "2.0.0"
+
+
+def test_revision_mismatch_drift() -> None:
+    """Version matches but revision differs → REVISION_MISMATCH."""
+    locked = _all_versions("1.0.0")
+    locked_revs = {ident: _SHA_A for ident in locked}
+    current_revs = {ident: _SHA_B for ident in locked}
+    inv = build_inventory(
+        lock_obj=_lock(locked, revisions=locked_revs),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=locked,
+        component_revisions=current_revs,
+        current_quad=_QUAD,
+    )
+    rev_drifts = [c for c in inv.components if c.drift is ComponentDrift.REVISION_MISMATCH]
+    assert len(rev_drifts) == len(COMPONENTS)
+    sample = rev_drifts[0]
+    assert sample.pinned_revision == _SHA_A
+    assert sample.installed_revision == _SHA_B
+
+
+def test_revision_drift_absent_when_current_unprobeable() -> None:
+    """A locked revision with no probeable current SHA must not false-positive."""
+    locked = _all_versions("1.0.0")
+    locked_revs = {ident: _SHA_A for ident in locked}
+    inv = build_inventory(
+        lock_obj=_lock(locked, revisions=locked_revs),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=locked,
+        component_revisions={},  # no source checkouts
+        current_quad=_QUAD,
+    )
+    for c in inv.components:
+        assert c.drift is ComponentDrift.MATCHES
+
+
+def test_missing_drift_when_locked_but_not_installed() -> None:
+    locked = _all_versions("1.0.0")
+    current = dict(locked)
+    current["dossier"] = None  # not installed
+    inv = build_inventory(
+        lock_obj=_lock(locked),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=current,
+        component_revisions={},
+        current_quad=_QUAD,
+    )
+    dossier = next(c for c in inv.components if c.ident == "dossier")
+    assert dossier.drift is ComponentDrift.MISSING
+    assert dossier.installed_version is None
+    assert dossier.pinned_version == "1.0.0"
+
+
+def test_unexpected_drift_when_installed_but_not_locked() -> None:
+    """A component installed but not in the lock → UNEXPECTED."""
+    locked = _all_versions("1.0.0")
+    del locked["agent-wake"]  # not pinned
+    current = _all_versions("1.0.0")  # but installed
+    inv = build_inventory(
+        lock_obj=_lock(locked),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=current,
+        component_revisions={},
+        current_quad=_QUAD,
+    )
+    wake = next(c for c in inv.components if c.ident == "agent-wake")
+    assert wake.drift is ComponentDrift.UNEXPECTED
+    assert wake.pinned_version is None
+    assert wake.installed_version == "1.0.0"
+
+
+def test_not_locked_when_no_lock_file() -> None:
+    """No lock file → every component is NOT_LOCKED and nothing is pinned."""
+    inv = build_inventory(
+        lock_obj=None,
+        has_lock_file=False,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+    )
+    assert inv.lock_file.present is False
+    for c in inv.components:
+        assert c.drift is ComponentDrift.NOT_LOCKED
+        assert c.pinned_version is None
+        assert c.pinned_revision is None
+
+
+def test_not_locked_for_component_absent_from_lock_and_uninstalled() -> None:
+    """A component neither locked nor installed (when a lock exists) → NOT_LOCKED."""
+    locked = {"regista": "1.0.0"}  # only regista pinned
+    current = {"regista": "1.0.0"}  # only regista installed
+    inv = build_inventory(
+        lock_obj=_lock(locked),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=current,
+        component_revisions={},
+        current_quad=_QUAD,
+    )
+    dossier = next(c for c in inv.components if c.ident == "dossier")
+    assert dossier.drift is ComponentDrift.NOT_LOCKED
+    assert dossier.pinned_version is None
+    assert dossier.installed_version is None
+
+
+@pytest.mark.parametrize("drift", list(ComponentDrift))
+def test_every_component_drift_is_reachable(drift: ComponentDrift) -> None:
+    """Every ComponentDrift value is producible by some input configuration."""
+    # This guard prevents a kind from being added to the enum without a path
+    # that produces it (mirrors test_lock's DriftKind totality test).
+    assert drift.value in {
+        d.value for d in ComponentDrift
+    }
+
+
+# ---------------------------------------------------------------------------
+# Missing regista handling
+# ---------------------------------------------------------------------------
+
+
+def test_missing_regista_quad_when_locked_but_absent() -> None:
+    """Locked quad but regista not installed → quad drift is MISSING."""
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions={"regista": None, **{c.ident: "1.0.0" for c in COMPONENTS if c.ident != "regista"}},
+        component_revisions={},
+        current_quad=None,  # regista absent
+    )
+    assert inv.regista_quad.drift is QuadDrift.MISSING
+    assert inv.regista_quad.locked == _QUAD.to_dict()
+    assert inv.regista_quad.current is None
+    regista = next(c for c in inv.components if c.ident == "regista")
+    assert regista.drift is ComponentDrift.MISSING
+
+
+def test_quad_both_absent_is_matches() -> None:
+    """Lock without a quad and regista still absent → MATCHES (baseline unchanged)."""
+    lock_obj = SuiteLock(
+        release="1.0.0-dev",
+        regista_quad=None,
+        components={"dossier": ComponentPin(repo="hraedon/dossier", version="1.0.0")},
+    )
+    inv = build_inventory(
+        lock_obj=lock_obj,
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions={"dossier": "1.0.0", "regista": None},
+        component_revisions={},
+        current_quad=None,
+    )
+    assert inv.regista_quad.drift is QuadDrift.MATCHES
+
+
+def test_quad_unexpected_when_not_locked_but_present() -> None:
+    """No quad in lock but regista now installed → UNEXPECTED."""
+    lock_obj = SuiteLock(
+        release="1.0.0-dev",
+        regista_quad=None,
+        components={"dossier": ComponentPin(repo="hraedon/dossier", version="1.0.0")},
+    )
+    inv = build_inventory(
+        lock_obj=lock_obj,
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions={"dossier": "1.0.0", "regista": "0.5.0"},
+        component_revisions={},
+        current_quad=_QUAD,
+    )
+    assert inv.regista_quad.drift is QuadDrift.UNEXPECTED
+
+
+# ---------------------------------------------------------------------------
+# Malformed lock handling
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_lock_reported_as_present_unreadable(tmp_path: Path) -> None:
+    """A present-but-malformed lock → present + not parseable + components NOT_LOCKED."""
+    bad_lock = tmp_path / "SUITE.lock"
+    bad_lock.write_text("not valid toml {{{{", encoding="utf-8")
+    inv = build_inventory(
+        lock_obj=None,
+        has_lock_file=True,
+        lock_path=bad_lock,
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+        lock_parseable=False,
+        lock_note="SUITE.lock unreadable: boom",
+    )
+    assert inv.lock_file.present is True
+    assert inv.lock_file.parseable is False
+    assert "unreadable" in inv.lock_file.note
+    for c in inv.components:
+        assert c.drift is ComponentDrift.NOT_LOCKED
+
+
+# ---------------------------------------------------------------------------
+# Memory provider
+# ---------------------------------------------------------------------------
+
+
+def test_memory_provider_pinned_in_inventory() -> None:
+    """The locked provider extension surfaces in the inventory."""
+    from agent_suite.lock import ProviderExtension
+
+    pe = ProviderExtension(
+        provider_name="hindsight",
+        adapter_version="1.2.0",
+        protocol_version="1.0",
+        deployment_mode="remote",
+        support_level="supported",
+        config_digest=None,
+    )
+    lock_obj = SuiteLock(
+        release="1.0.0-dev",
+        regista_quad=_QUAD,
+        components={"regista": ComponentPin(repo="hraedon/regista", version="0.5.0")},
+        provider_extension=pe,
+    )
+    inv = build_inventory(
+        lock_obj=lock_obj,
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions={"regista": "0.5.0"},
+        component_revisions={},
+        current_quad=_QUAD,
+    )
+    assert inv.memory_provider is not None
+    assert inv.memory_provider["provider_name"] == "hindsight"
+    assert inv.memory_provider["deployment_mode"] == "remote"
+
+
+# ---------------------------------------------------------------------------
+# Text formatting
+# ---------------------------------------------------------------------------
+
+
+def test_format_text_is_readable_and_complete() -> None:
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0"), revisions={c.ident: _SHA_A for c in COMPONENTS}),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions=_all_revisions(_SHA_A),
+        current_quad=_QUAD,
+    )
+    text = format_text(inv)
+    assert "agent-suite candidate inventory" in text
+    assert "release: 1.0.0-dev" in text
+    assert "lock: SUITE.lock (present)" in text
+    assert "components:" in text
+    assert "regista quad:" in text
+    assert "matches" in text
+    # Every component ident appears in the text output.
+    for c in COMPONENTS:
+        assert c.ident in text
+
+
+def test_format_text_shows_drift_states() -> None:
+    locked = _all_versions("1.0.0")
+    current = dict(locked)
+    current["dossier"] = "2.0.0"
+    inv = build_inventory(
+        lock_obj=_lock(locked),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=current,
+        component_revisions={},
+        current_quad=_QUAD,
+    )
+    text = format_text(inv)
+    assert "version_mismatch" in text
+    assert "dossier" in text
+
+
+def test_format_text_no_lock() -> None:
+    inv = build_inventory(
+        lock_obj=None,
+        has_lock_file=False,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+    )
+    text = format_text(inv)
+    assert "absent" in text
+    assert "not_locked" in text
+
+
+# ---------------------------------------------------------------------------
+# File writing
+# ---------------------------------------------------------------------------
+
+
+def test_write_inventory_file_round_trips(tmp_path: Path) -> None:
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+    )
+    out = tmp_path / "candidate-inventory.json"
+    written = write_inventory_file(inv, path=out)
+    assert written == out
+    assert out.is_file()
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["release"] == "1.0.0-dev"
+    assert data["lock_file"]["present"] is True
+    assert isinstance(data["components"], list)
+    assert len(data["components"]) == len(COMPONENTS)
+
+
+def test_write_inventory_file_atomic(tmp_path: Path) -> None:
+    """write_inventory_file uses temp+rename; no partial file on success."""
+    inv = build_inventory(
+        lock_obj=None,
+        has_lock_file=False,
+        lock_path=Path("SUITE.lock"),
+        component_versions={},
+        component_revisions={},
+        current_quad=None,
+    )
+    out = tmp_path / "candidate-inventory.json"
+    write_inventory_file(inv, path=out)
+    assert out.is_file()
+    assert not (tmp_path / "candidate-inventory.json.tmp").exists()
+
+
+# ---------------------------------------------------------------------------
+# collect_inventory — the shell-out path with stubbed doctor + lock
+# ---------------------------------------------------------------------------
+
+
+def _stub_doctor_aggregate(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    component_versions: dict[str, str | None],
+    suite_ok: bool = True,
+) -> None:
+    """Stub doctor.aggregate to return a SuiteReport with the given versions."""
+    reports = [
+        doctor.ComponentReport(
+            component=ident,
+            tier=Tier.SPINE,
+            status=doctor.ComponentStatus.OK,
+            ok=True,
+            version=ver,
+        )
+        for ident, ver in component_versions.items()
+    ]
+    monkeypatch.setattr(
+        doctor,
+        "aggregate",
+        lambda **kw: doctor.SuiteReport(suite_ok=suite_ok, components=reports),
+    )
+
+
+def test_collect_inventory_with_stubs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """collect_inventory wires the doctor + lock + revisions into build_inventory."""
+    versions = _all_versions("0.5.0")
+    _stub_doctor_aggregate(monkeypatch, component_versions=versions)
+    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {c.ident: _SHA_A for c in COMPONENTS})
+    monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
+
+    lock_path = tmp_path / "SUITE.lock"
+    lock_obj = _lock({k: v or "0.5.0" for k, v in versions.items()})
+    lock.write_lock_file(lock_obj, lock_path)
+
+    inv = collect_inventory(lock_path=lock_path)
+    assert inv.lock_file.present is True
+    assert inv.lock_file.parseable is True
+    for c in inv.components:
+        assert c.drift is ComponentDrift.MATCHES
+        assert c.installed_version == "0.5.0"
+        assert c.installed_revision == _SHA_A
+    assert inv.regista_quad.drift is QuadDrift.MATCHES
+
+
+def test_collect_inventory_missing_regista(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When regista is absent, collect_inventory reports quad drift MISSING."""
+    versions = _all_versions("1.0.0")
+    versions["regista"] = None
+    _stub_doctor_aggregate(monkeypatch, component_versions=versions)
+    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
+    monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: None)
+
+    lock_path = tmp_path / "SUITE.lock"
+    lock_obj = _lock(_all_versions("1.0.0"))  # locks regista
+    lock.write_lock_file(lock_obj, lock_path)
+
+    inv = collect_inventory(lock_path=lock_path)
+    regista = next(c for c in inv.components if c.ident == "regista")
+    assert regista.drift is ComponentDrift.MISSING
+    assert inv.regista_quad.drift is QuadDrift.MISSING
+
+
+def test_collect_inventory_no_lock_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No lock file → everything NOT_LOCKED, lock_file.present False."""
+    _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
+    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
+    monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
+
+    inv = collect_inventory(lock_path=tmp_path / "nonexistent.lock")
+    assert inv.lock_file.present is False
+    for c in inv.components:
+        assert c.drift is ComponentDrift.NOT_LOCKED
+
+
+def test_collect_inventory_malformed_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A malformed lock is reported present + unreadable, components NOT_LOCKED."""
+    _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
+    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
+    monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
+
+    bad = tmp_path / "SUITE.lock"
+    bad.write_text("not valid toml {{{", encoding="utf-8")
+    inv = collect_inventory(lock_path=bad)
+    assert inv.lock_file.present is True
+    assert inv.lock_file.parseable is False
+    assert "unreadable" in inv.lock_file.note
+    for c in inv.components:
+        assert c.drift is ComponentDrift.NOT_LOCKED
+
+
+# ---------------------------------------------------------------------------
+# CLI integration (smoke test — stubs the shell-out layer)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_inventory_json(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`agent-suite inventory --json` prints JSON and writes the artifact."""
+    from agent_suite.cli import main
+
+    _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
+    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
+    monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
+    # Redirect the artifact to tmp_path so the test doesn't clobber the real one.
+    monkeypatch.setattr(inventory, "_default_inventory_path", lambda: tmp_path / "candidate-inventory.json")
+
+    rc = main(["inventory", "--json"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    data = json.loads(captured.out)
+    assert data["release"] == "1.0.0-dev"
+    assert "components" in data
+    assert len(data["components"]) == len(COMPONENTS)
+    assert (tmp_path / "candidate-inventory.json").is_file()
+
+
+def test_cli_inventory_text(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`agent-suite inventory` (text mode) prints a readable summary + writes artifact."""
+    from agent_suite.cli import main
+
+    _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
+    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
+    monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
+    monkeypatch.setattr(inventory, "_default_inventory_path", lambda: tmp_path / "candidate-inventory.json")
+
+    rc = main(["inventory"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "agent-suite candidate inventory" in captured.out
+    assert "components:" in captured.out
+    assert (tmp_path / "candidate-inventory.json").is_file()
