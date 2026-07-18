@@ -729,3 +729,43 @@ def test_drift_kind_format_is_total(kind: DriftKind) -> None:
     result = LockDriftResult(matches=False, note="test", drift=[entry])
     text = format_drift_text(result)
     assert isinstance(text, str)
+
+
+# ---------------------------------------------------------------------------
+# Release identity derivation
+# ---------------------------------------------------------------------------
+
+
+def test_suite_release_prefers_release_board(tmp_path: Path, monkeypatch) -> None:
+    """_suite_release reads data/release-board.json relative to the module file."""
+    import json as _json
+
+    from agent_suite.lock import _suite_release
+
+    import agent_suite.lock as lock_mod
+
+    # Fake module location: <tmp>/src/agent_suite/lock.py
+    # _suite_release walks parents[2] to find <tmp> and reads data/release-board.json.
+    fake_root = tmp_path
+    fake_src = fake_root / "src" / "agent_suite"
+    fake_src.mkdir(parents=True)
+    (fake_root / "data").mkdir()
+    (fake_root / "data" / "release-board.json").write_text(
+        _json.dumps({"release": "9.9.9-test"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(lock_mod, "__file__", str(fake_src / "lock.py"))
+    assert _suite_release() == "9.9.9-test"
+
+
+def test_suite_release_falls_back_when_no_board(tmp_path: Path, monkeypatch) -> None:
+    """Without release-board.json, _suite_release still returns a string."""
+    from agent_suite.lock import _suite_release
+
+    import agent_suite.lock as lock_mod
+
+    monkeypatch.setattr(
+        lock_mod, "__file__", str(tmp_path / "nowhere" / "lock.py")
+    )
+    result = _suite_release()
+    assert isinstance(result, str)
+    assert result  # non-empty
