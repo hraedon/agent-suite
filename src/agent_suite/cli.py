@@ -31,6 +31,7 @@ class Command(Enum):
     EXPORT_EVIDENCE = "export-evidence"
     BACKUP = "backup"
     RESTORE = "restore"
+    CODEX_PLUGINS = "codex-plugins"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -67,13 +68,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="compare installed versions against the existing lock; exit non-zero on drift",
     )
-    lock.add_argument(
-        "--json", action="store_true", help="emit the lock or drift report as JSON"
-    )
+    lock.add_argument("--json", action="store_true", help="emit the lock or drift report as JSON")
     bootstrap = sub.add_parser(Command.BOOTSTRAP.value, help="run the ordered idempotent install")
     bootstrap.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
     bootstrap.add_argument(
-        "--tier", choices=["0-1", "all"], default="0-1", help="which tiers to install (default: 0-1)"
+        "--tier",
+        choices=["0-1", "all"],
+        default="0-1",
+        help="which tiers to install (default: 0-1)",
     )
     bootstrap.add_argument(
         "--harness",
@@ -88,9 +90,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="onboard a project: spec -> provision -> sign event-zero -> wire harness",
     )
     onboard.add_argument("slug", help="project slug to onboard")
-    onboard.add_argument(
-        "--spec", help="path to spec.yaml (founding spec to sign as event-zero)"
-    )
+    onboard.add_argument("--spec", help="path to spec.yaml (founding spec to sign as event-zero)")
     onboard.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
     onboard.add_argument(
         "--harness",
@@ -171,35 +171,23 @@ def _build_parser() -> argparse.ArgumentParser:
         default="B",
         help="deployment profile to evaluate against (default: B)",
     )
-    preflight.add_argument(
-        "--postgres-host", default="localhost", help="Postgres host to probe"
-    )
-    preflight.add_argument(
-        "--postgres-port", type=int, default=5432, help="Postgres port to probe"
-    )
+    preflight.add_argument("--postgres-host", default="localhost", help="Postgres host to probe")
+    preflight.add_argument("--postgres-port", type=int, default=5432, help="Postgres port to probe")
     preflight.add_argument(
         "--dns-hostname", default="suite-db.example", help="hostname for DNS probe"
     )
-    preflight.add_argument(
-        "--tls-host", default="suite-db.example", help="hostname for TLS probe"
-    )
-    preflight.add_argument(
-        "--tls-port", type=int, default=443, help="port for TLS probe"
-    )
-    preflight.add_argument(
-        "--release-file", help="path to release identity file"
-    )
-    preflight.add_argument(
-        "--lock-file", help="path to SUITE.lock file for lock identity"
-    )
-    preflight.add_argument(
-        "--install-dir", help="path to check for existing installation"
-    )
+    preflight.add_argument("--tls-host", default="suite-db.example", help="hostname for TLS probe")
+    preflight.add_argument("--tls-port", type=int, default=443, help="port for TLS probe")
+    preflight.add_argument("--release-file", help="path to release identity file")
+    preflight.add_argument("--lock-file", help="path to SUITE.lock file for lock identity")
+    preflight.add_argument("--install-dir", help="path to check for existing installation")
     setup_install = sub.add_parser(
         Command.SETUP_INSTALL.value,
         help="execute a Windows setup plan (Plan 014 WI-1.2)",
     )
-    setup_install.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
+    setup_install.add_argument(
+        "--dry-run", action="store_true", help="print the plan; act on nothing"
+    )
     setup_install.add_argument(
         "--apply", action="store_true", help="execute the plan (default: dry-run)"
     )
@@ -222,18 +210,10 @@ def _build_parser() -> argparse.ArgumentParser:
     setup_install.add_argument(
         "--tls-host", default="suite-db.example", help="hostname for TLS probe"
     )
-    setup_install.add_argument(
-        "--tls-port", type=int, default=443, help="port for TLS probe"
-    )
-    setup_install.add_argument(
-        "--release-file", help="path to release identity file"
-    )
-    setup_install.add_argument(
-        "--lock-file", help="path to SUITE.lock file for lock identity"
-    )
-    setup_install.add_argument(
-        "--install-dir", help="path to check for existing installation"
-    )
+    setup_install.add_argument("--tls-port", type=int, default=443, help="port for TLS probe")
+    setup_install.add_argument("--release-file", help="path to release identity file")
+    setup_install.add_argument("--lock-file", help="path to SUITE.lock file for lock identity")
+    setup_install.add_argument("--install-dir", help="path to check for existing installation")
     dual_control = sub.add_parser(
         Command.DUAL_CONTROL.value,
         help="dual control request/approve/execute (Plan 014 WI-2.3)",
@@ -312,6 +292,44 @@ def _build_parser() -> argparse.ArgumentParser:
     restore.add_argument("--dsn", help="Postgres DSN (or REGISTA_DSN)")
     restore.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
     restore.add_argument("--json", action="store_true", help="emit the result as JSON")
+
+    codex_plugins = sub.add_parser(
+        Command.CODEX_PLUGINS.value,
+        help="install/remove/report the suite's pinned Codex component plugins",
+    )
+    codex_plugins.add_argument(
+        "action",
+        choices=["build-marketplace", "install", "uninstall", "health", "verify"],
+        help="compose, install, remove, report, or verify the pinned plugin set",
+    )
+    codex_plugins.add_argument(
+        "--marketplace",
+        help="marketplace that publishes the plugins (default: the release marketplace); "
+        "override to install from a local fixture marketplace",
+    )
+    codex_plugins.add_argument(
+        "--output",
+        help="explicit output directory for build-marketplace (never defaults into user config)",
+    )
+    codex_plugins.add_argument(
+        "--workspace-root",
+        help="constellation root containing component checkouts (build-marketplace only)",
+    )
+    codex_plugins.add_argument(
+        "--hooks-reviewed",
+        action="store_true",
+        help="assert /hooks review for this verify invocation; the assertion is not persisted",
+    )
+    codex_plugins.add_argument(
+        "--profile",
+        choices=["core", "credentialed", "full"],
+        default="core",
+        help="plugin slice: core (notes + provenance), credentialed (+ acb), or full (+ wake)",
+    )
+    codex_plugins.add_argument(
+        "--dry-run", action="store_true", help="print the plan; act on nothing"
+    )
+    codex_plugins.add_argument("--json", action="store_true", help="emit the result as JSON")
     return parser
 
 
@@ -695,7 +713,11 @@ def main(argv: list[str] | None = None) -> int:
                 for action in receipt.actions:
                     print(f"  {action.ident:<30} {action.state.value}")
                 print(f"  Detail: {receipt.detail}")
-            return 0 if receipt.state in (ReceiptState.APPLIED, ReceiptState.DRY_RUN, ReceiptState.NO_OP) else 1
+            return (
+                0
+                if receipt.state in (ReceiptState.APPLIED, ReceiptState.DRY_RUN, ReceiptState.NO_OP)
+                else 1
+            )
         case Command.DUAL_CONTROL:
             from pathlib import Path
 
@@ -913,6 +935,115 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(format_restore_text(rs_result))
             return 0 if rs_result.ok else 1
+        case Command.CODEX_PLUGINS:
+            import json as _json
+
+            from agent_suite.codex_catalog import (
+                SUITE_MARKETPLACE,
+                CodexPluginProfile,
+                catalog_for_profile,
+                format_install_text,
+                install_codex_plugins,
+                uninstall_codex_plugins,
+                with_marketplace,
+            )
+            from agent_suite.codex_health import (
+                check_codex_health,
+                format_codex_health_text,
+            )
+
+            plugin_profile = CodexPluginProfile(args.profile)
+            plugin_catalog = catalog_for_profile(plugin_profile)
+
+            if args.action == "build-marketplace":
+                from pathlib import Path
+
+                from agent_suite.codex_marketplace import (
+                    build_local_marketplace,
+                    default_workspace_root,
+                    format_marketplace_build_text,
+                )
+
+                if not args.output:
+                    import sys as _sys
+
+                    print(
+                        "codex-plugins build-marketplace requires --output",
+                        file=_sys.stderr,
+                    )
+                    return 2
+                marketplace_name = args.marketplace or "agent-suite-local"
+                build_result = build_local_marketplace(
+                    output=Path(args.output),
+                    workspace_root=(
+                        Path(args.workspace_root)
+                        if args.workspace_root
+                        else default_workspace_root()
+                    ),
+                    marketplace=marketplace_name,
+                    profile=plugin_profile,
+                    catalog=with_marketplace(plugin_catalog, marketplace_name),
+                    dry_run=args.dry_run,
+                )
+                if getattr(args, "json", False):
+                    print(_json.dumps(build_result.to_dict(), indent=2, default=str))
+                else:
+                    print(format_marketplace_build_text(build_result))
+                if build_result.dry_run and build_result.ok:
+                    return 2
+                return 0 if build_result.ok else 1
+
+            if args.action == "verify":
+                from agent_suite.codex_verify import (
+                    format_codex_verify_text,
+                    verify_codex_profile,
+                )
+
+                marketplace_name = args.marketplace or SUITE_MARKETPLACE
+                verify_result = verify_codex_profile(
+                    profile=plugin_profile,
+                    marketplace=marketplace_name,
+                    catalog=with_marketplace(plugin_catalog, marketplace_name),
+                    hooks_reviewed=args.hooks_reviewed,
+                )
+                if getattr(args, "json", False):
+                    print(_json.dumps(verify_result.to_dict(), indent=2, default=str))
+                else:
+                    print(format_codex_verify_text(verify_result))
+                return 0 if verify_result.ready else 1
+
+            if args.action == "health":
+                health_catalog = (
+                    with_marketplace(plugin_catalog, args.marketplace)
+                    if args.marketplace
+                    else plugin_catalog
+                )
+                health = check_codex_health(catalog=health_catalog)
+                if getattr(args, "json", False):
+                    print(_json.dumps(health.to_dict(), indent=2, default=str))
+                else:
+                    print(format_codex_health_text(health))
+                return 0 if health.ok and health.ready else 1
+
+            if args.action == "install":
+                cp_result = install_codex_plugins(
+                    marketplace=args.marketplace,
+                    dry_run=args.dry_run,
+                    catalog=plugin_catalog,
+                )
+            else:
+                cp_result = uninstall_codex_plugins(
+                    marketplace=args.marketplace,
+                    dry_run=args.dry_run,
+                    catalog=plugin_catalog,
+                )
+            if getattr(args, "json", False):
+                print(_json.dumps(cp_result.to_dict(), indent=2, default=str))
+            else:
+                print(format_install_text(cp_result))
+            if cp_result.dry_run:
+                return 2
+            return 0 if cp_result.ok else 1
     assert_never(command)
 
 

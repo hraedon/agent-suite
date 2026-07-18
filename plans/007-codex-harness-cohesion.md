@@ -103,6 +103,20 @@ Credentialed administrator work also requires acb. Wake is not on that critical
 path and may remain explicitly `next-session-only` or `unsupported` for live
 wake.
 
+The suite CLI represents those boundaries as `core`, `credentialed`, and
+`full` Codex plugin profiles. The default `core` profile prevents optional wake
+from blocking the initial interop proof while still requiring both agent-notes
+and Cairn. Codex health keeps successful inspection (`ok`) distinct from the
+selected plugin set being usable (`ready`).
+
+The development/release-preparation composition path now builds a validated
+local marketplace from sibling component-owned bundles into an explicit output
+directory. The read-only `codex-plugins verify` gate separately checks Codex
+authentication, marketplace publication, enabled version pins, observable
+direct/plugin overlap, and the manual `/hooks` trust handoff. This closes the
+local-development portion of WI-0.1; durable publication remains a release
+gate, and wake remains honestly unsupported in `full`.
+
 ## Phase 0 — Packaging and false-success correction
 
 ### WI-0.1 — Freeze the Codex distribution contract
@@ -180,8 +194,11 @@ target is configured.
 - Optional wake live-turn injection may be `unsupported` without making Tier 0
   unhealthy; the limitation is visible.
 - Human and JSON output agree.
-- Doctor distinguishes plugin absent, installed-disabled, hooks awaiting trust,
-  hooks blocked by managed policy, wired-but-silent, and active.
+- Doctor distinguishes the CLI-observable plugin states — absent,
+  installed-disabled, installed-enabled — from `codex plugin list --json`. Hook
+  trust/activity has no CLI surface in Codex 0.144.5 (it is granted via the
+  interactive `/hooks` review), so doctor defers it to the operator rather than
+  fabricating trust states; see `docs/install-harness-contract.md` §2.
 
 ### WI-2.2 — Cross-component conformance fixtures
 
