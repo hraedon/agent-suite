@@ -12,9 +12,9 @@
       "repo": "hraedon/regista",
       "pinned_revision": "ea434ace9a65bdcadf6161056433b57d7afeca01",
       "pinned_version": "0.5.0",
-      "installed_version": "0.5.0",
+      "installed_version": "0.5.1",
       "installed_revision": "ea434ace9a65bdcadf6161056433b57d7afeca01",
-      "drift": "matches"
+      "drift": "version_mismatch"
     },
     {
       "ident": "dossier",
@@ -70,12 +70,12 @@
       "envelope_version": 5
     },
     "current": {
-      "library_version": "0.5.0",
+      "library_version": "0.5.1",
       "schema_version": 43,
       "canonical_workflow_version": "2",
       "envelope_version": 5
     },
-    "drift": "matches"
+    "drift": "mismatch"
   },
   "memory_provider": {
     "provider_name": "hindsight",
@@ -85,5 +85,5 @@
     "support_level": "supported",
     "config_digest": null
   },
-  "generated_at": "2026-07-18T22:21:17.616172+00:00"
+  "generated_at": "2026-07-18T22:25:54.657152+00:00"
 }
