@@ -393,6 +393,7 @@ def main(argv: list[str] | None = None) -> int:
                 check_drift,
                 generate_lock,
                 load_lock_file,
+                read_component_revisions,
                 read_regista_quad,
                 serialize_lock,
                 write_lock_file,
@@ -402,6 +403,7 @@ def main(argv: list[str] | None = None) -> int:
             component_versions: dict[str, str | None] = {
                 r.component: r.version for r in report.components
             }
+            component_revisions = read_component_revisions()
             current_quad = read_regista_quad()
 
             if args.check:
@@ -414,6 +416,7 @@ def main(argv: list[str] | None = None) -> int:
                     existing,
                     current_quad=current_quad,
                     component_versions=component_versions,
+                    component_revisions=component_revisions,
                 )
                 if getattr(args, "json", False):
                     import json as _json
@@ -430,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
                 mp_engine = str(memory_provider_config()["engine"])
                 lock = generate_lock(
                     component_versions=component_versions,
+                    component_revisions=component_revisions,
                     memory_engine=mp_engine,
                 )
                 if getattr(args, "json", False):
