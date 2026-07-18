@@ -13,6 +13,7 @@
           "owner_repo": "hraedon/agent-suite",
           "blocking_dependency": "Plan 009 WI-0.3",
           "status": "complete",
+          "status_note": "Baseline probe framework complete; 8/46 rows are probe-emitted, 38 are hand-assessed (require live integration evidence). The matrix status_source=mixed-probe-and-hand reflects this and is the authoritative current state.",
           "proof_command": "python3 scripts/feature-probes.py --check",
           "proof_artifact": "data/v1-feature-matrix.json"
         },
@@ -21,8 +22,8 @@
           "title": "Reconcile plans, source state, and dogfood state",
           "owner_repo": "hraedon/agent-suite",
           "blocking_dependency": "\u2014",
-          "status": "in_progress",
-          "status_note": "SUITE.lock updated with real SHAs; identifier gate replaced with canonical script; plan status lines reconciled. Inventory CLI (agent-suite inventory) not yet implemented.",
+          "status": "complete",
+          "status_note": "Inventory CLI implemented; matrix and release board reconciled; SUITE.lock regenerated against the converged estate with revision SHAs.",
           "proof_command": "agent-suite inventory --json",
           "proof_artifact": "data/candidate-inventory.json"
         },
