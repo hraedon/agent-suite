@@ -30,7 +30,7 @@
   "key_age_status_values": ["ok", "approaching", "expired", "unsupported", "unreachable", "error"],
   "store_growth_status_values": ["ok", "unsupported", "unreachable", "error"],
   "codex_plugin_health_status_values": ["plugin_absent", "installed_disabled", "installed_enabled", "version_mismatch", "invalid_metadata"],
-  "drift_kind_values": ["version_mismatch", "quad_mismatch", "component_missing", "unexpected_component", "provider_drift"],
+  "drift_kind_values": ["version_mismatch", "revision_mismatch", "quad_mismatch", "component_missing", "unexpected_component", "provider_drift"],
   "invariants": [
     "A component that is not installed is 'absent' (named state, not failure for optional tier)",
     "A component that is installed but unreachable or reports ok:false is 'failed'",
