@@ -33,13 +33,34 @@ _REGISTA_VERSION_CMD: tuple[str, ...] = ("regista", "version", "--json")
 
 
 def _suite_release() -> str:
-    """Derive the suite release from installed package metadata."""
+    """Derive the suite release identity.
+
+    The agent-suite package is at 0.0.1 in pyproject (pre-1.0 development),
+    but the suite's actual release identity is declared in
+    ``data/release-board.json`` (currently ``"1.0.0-dev"``). The lock's
+    ``release`` field is a release identity, not a package version: it must
+    agree with the release board so the two artifacts don't drift. Prefer
+    the declared release; fall back to the package version; finally fall
+    back to ``"0.0.1"`` when neither is available.
+    """
+    try:
+        release_path = Path(__file__).resolve().parents[2] / "data" / "release-board.json"
+        if release_path.is_file():
+            data = json.loads(release_path.read_text(encoding="utf-8"))
+            declared = data.get("release")
+            if isinstance(declared, str) and declared:
+                return declared
+    except (OSError, json.JSONDecodeError):
+        pass
     try:
         from importlib.metadata import version
 
-        return version("agent-suite")
+        pkg_version = version("agent-suite")
+        if pkg_version and pkg_version != "0.0.1":
+            return pkg_version
     except Exception:
-        return "0.0.1"
+        pass
+    return "0.0.1"
 
 
 class VersionRunner(Protocol):
