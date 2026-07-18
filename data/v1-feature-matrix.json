@@ -1,6 +1,6 @@
 {
   "version": "v1",
-  "generated_at": "2026-07-13T06:49:40.115288Z",
+  "generated_at": "2026-07-18T22:03:50.436543Z",
   "status_source": "mixed-probe-and-hand",
   "profiles": [
     "A",
@@ -26,7 +26,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "Plan 008 WI-3.2, Plan 009 WI-4.1",
-      "proof": "src/agent_suite/deploy.py; tests/test_deploy.py; probe: _probe_deploy_cli -> pass",
+      "proof": "probe: _probe_deploy_cli -> pass",
       "excluded": "SaaS, Kubernetes operator, fleet remote management",
       "notes": "Deploy front door composes preflight \u2192 bootstrap \u2192 onboard \u2192 lock \u2192 doctor."
     },
@@ -37,7 +37,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "Plan 009 WI-1.3, Plan 009 WI-4.1",
-      "proof": "src/agent_suite/onboard.py; tests/test_onboard.py; probe: _probe_onboard_harness -> pass",
+      "proof": "probe: _probe_onboard_harness -> pass",
       "excluded": "\u2014",
       "notes": "Suite-level onboard: spec \u2192 provision \u2192 sign event-zero \u2192 wire harness."
     },
@@ -103,7 +103,7 @@
       "profile": "A",
       "status": "partial",
       "dependency": "Plan 009 WI-1.3, Plan 009 WI-2.2",
-      "proof": "src/agent_suite/bootstrap.py (_step_user_onboarding); probe: _probe_identity_lifecycle -> partial",
+      "proof": "probe: _probe_identity_lifecycle -> partial",
       "excluded": "\u2014",
       "notes": "Per-user onboarding step exists but reports 'not yet implemented'; offboarding absent."
     },
@@ -466,7 +466,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "Plan 009 WI-2.3",
-      "proof": "src/agent_suite/evidence.py; tests/test_evidence.py; probe: _probe_evidence_export -> pass",
+      "proof": "probe: _probe_evidence_export -> pass",
       "excluded": "\u2014",
       "notes": "Composes regista bundle export + cairn export + verify into one suite-level manifest."
     },
@@ -477,7 +477,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/agent_suite/doctor.py; tests/test_doctor.py",
+      "proof": "probe: _probe_doctor -> pass",
       "excluded": "\u2014",
       "notes": "Honest health reporting for required/optional components."
     },
@@ -488,7 +488,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/agent_suite/lock.py; tests/test_lock.py",
+      "proof": "probe: _probe_lock -> pass",
       "excluded": "\u2014",
       "notes": "SUITE.lock parsing and drift detection implemented."
     },
@@ -499,7 +499,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "Plan 008 WI-4.1, Plan 009 WI-4.2",
-      "proof": "src/agent_suite/backup.py; tests/test_backup.py; probe: _probe_backup_restore -> pass",
+      "proof": "probe: _probe_backup_restore -> pass",
       "excluded": "\u2014",
       "notes": "Suite-level backup: doctor \u2192 pg_dump \u2192 verify \u2192 evidence export \u2192 manifest."
     },
@@ -510,7 +510,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "Plan 008 WI-3.4, Plan 009 WI-4.2",
-      "proof": "src/agent_suite/upgrade.py (run_upgrade, run_rollback, run_forward_recovery); tests/test_upgrade.py; probe: _probe_upgrade_rollback_forward -> pass",
+      "proof": "probe: _probe_upgrade_rollback_forward -> pass",
       "excluded": "\u2014",
       "notes": "Staged upgrade with interop gate, rollback across schema boundaries refused, forward-recovery completes partial upgrades."
     },
