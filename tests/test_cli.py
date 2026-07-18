@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import contextlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -269,6 +270,17 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
         elif command is Command.CODEX_PLUGINS:
             # dry-run install is hermetic (never shells codex) and exits 2
             assert main([command.value, "install", "--dry-run"]) == 2
+        elif command is Command.INVENTORY:
+            # Redirect the artifact write so the test doesn't clobber the
+            # committed data/candidate-inventory.json with stub output.
+            from agent_suite import inventory as inventory_mod
+
+            monkeypatch.setattr(
+                inventory_mod,
+                "_default_inventory_path",
+                lambda: Path("/tmp/test-candidate-inventory.json"),
+            )
+            assert main([command.value]) == 0
         else:
             assert main([command.value]) == 0
 
