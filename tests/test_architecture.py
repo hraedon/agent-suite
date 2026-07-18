@@ -33,6 +33,7 @@ _CORE_MODULES = (
     "codex_health",
     "harness_install",
     "release_artifacts",
+    "inventory",
 )
 _FORBIDDEN_PREFIXES = (
     "hvac",  # Vault
