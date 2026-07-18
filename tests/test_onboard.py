@@ -188,6 +188,9 @@ def test_dry_run_acts_on_nothing(tmp_path: Path) -> None:
     assert len(runner.calls) == 0
     for step in result.steps:
         assert step.status is OnboardStatus.PENDING
+    harness_step = next(s for s in result.steps if s.step is OnboardStep.WIRE_HARNESS)
+    assert "--json" in harness_step.detail
+    assert "install-harness" in harness_step.detail
 
 
 def test_dry_run_without_spec(tmp_path: Path) -> None:

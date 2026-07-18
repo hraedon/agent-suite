@@ -43,6 +43,7 @@ def _aggregate_safe(
         shared_endpoints=shared_endpoints,
         remote_checker=remote_checker,
         memory_provider_checks=False,
+        codex_health_checks=False,
     )
 
 
@@ -59,7 +60,11 @@ def _ok_json(component: str, version: str = "1.0.0") -> str:
 
 
 class StubRunner:
-    """Returns canned `doctor --json` output (or raises) per component CLI name."""
+    """Returns canned `doctor --json` output (or raises) per component CLI name.
+
+    Unknown commands return a non-zero exit — this lets the doctor's
+    error-handling paths work without every test stubbing every CLI.
+    """
 
     def __init__(self, outputs: Mapping[str, subprocess.CompletedProcess[str] | Exception]) -> None:
         self._outputs = outputs
@@ -67,7 +72,9 @@ class StubRunner:
 
     def __call__(self, cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
         self.calls.append(cmd)
-        out = self._outputs[cmd[0]]
+        out = self._outputs.get(cmd[0])
+        if out is None:
+            return _completed(stdout="", returncode=1, stderr=f"{cmd[0]}: not stubbed")
         if isinstance(out, Exception):
             raise out
         return out
@@ -823,3 +830,103 @@ def test_status_enum_dispatch_is_total_with_new_statuses() -> None:
     for status in (ComponentStatus.REMOTE, ComponentStatus.NOT_CONFIGURED):
         report = ComponentReport(component="x", tier=Tier.FACE, status=status)
         assert isinstance(_compute_suite_ok([report]), bool)
+
+
+def test_codex_health_section_in_doctor_output() -> None:
+    """aggregate() with codex_health_checks=True includes codex health."""
+    from agent_suite.codex_health import CodexPluginHealthStatus
+
+    spine = _component_by_cli("regista")
+    plugin_list_stdout = json.dumps({
+        "installed": [
+            {
+                "pluginId": "agent-notes@agent-suite",
+                "name": "agent-notes",
+                "marketplaceName": "agent-suite",
+                "version": "1.0.0",
+                "enabled": True,
+            },
+        ],
+        "available": [],
+    })
+
+    class CodexRunner:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        def __call__(self, cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+            self.calls.append(cmd)
+            if cmd[:3] == ("codex", "plugin", "list"):
+                return _completed(stdout=plugin_list_stdout)
+            return _completed(stdout='{"ok": true}')
+
+    codex_runner = CodexRunner()
+    report = aggregate(
+        installed=lambda name: name == "codex" or name == "regista",
+        runner=codex_runner,
+        components=(spine,),
+        lock_path=Path(tempfile.mktemp()),
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+        memory_provider_checks=False,
+        codex_health_checks=True,
+    )
+    assert report.codex_health is not None
+    assert report.codex_health.codex_installed is True
+    assert report.codex_health.ok is True
+    assert len(report.codex_health.plugins) == 4
+    notes_plugin = next(
+        p for p in report.codex_health.plugins
+        if p.plugin_id.value == "agent-notes"
+    )
+    assert notes_plugin.status is CodexPluginHealthStatus.INSTALLED_ENABLED
+    # doctor must never shell a nonexistent `codex hooks status`
+    assert not any(c[:2] == ("codex", "hooks") for c in codex_runner.calls)
+    text = format_text(report)
+    assert "codex health:" in text
+    assert "agent-notes" in text
+
+
+def test_codex_health_absent_when_checks_disabled() -> None:
+    """aggregate() with codex_health_checks=False omits codex health."""
+    spine = _component_by_cli("regista")
+    report = aggregate(
+        installed=_installed_all(),
+        runner=_runner_for({spine.doctor_cmd[0]: _ok_json(spine.ident)}),
+        components=(spine,),
+        lock_path=Path(tempfile.mktemp()),
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+        memory_provider_checks=False,
+        codex_health_checks=False,
+    )
+    assert report.codex_health is None
+    text = format_text(report)
+    assert "codex health:" not in text
+
+
+def test_codex_health_failure_does_not_affect_suite_ok() -> None:
+    """codex_health.ok=False must not make suite_ok False (informational only)."""
+    spine = _component_by_cli("regista")
+
+    class CodexFailRunner:
+        def __call__(self, cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+            if cmd[0] == "codex":
+                return _completed(stdout="", returncode=1, stderr="plugin db down")
+            if cmd[0] == "regista":
+                return _completed(stdout=_ok_json("regista"))
+            return _completed(stdout='{"ok": true}')
+
+    report = aggregate(
+        installed=lambda name: name == "codex" or name == "regista",
+        runner=CodexFailRunner(),
+        components=(spine,),
+        lock_path=Path(tempfile.mktemp()),
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+        memory_provider_checks=False,
+        codex_health_checks=True,
+    )
+    assert report.codex_health is not None
+    assert report.codex_health.ok is False
+    assert report.suite_ok is True

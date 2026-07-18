@@ -58,9 +58,13 @@ def _stub_onboard(monkeypatch: pytest.MonkeyPatch) -> None:
         onboard_mod,
         "run_onboard",
         lambda **kw: onboard_mod.OnboardResult(
-            ok=True, dry_run=False, project="project-slug",
-            spec_anchored=False, spec_version=None,
-            spec_version_recognized=None, steps=[],
+            ok=True,
+            dry_run=False,
+            project="project-slug",
+            spec_anchored=False,
+            spec_version=None,
+            spec_version_recognized=None,
+            steps=[],
         ),
     )
 
@@ -77,7 +81,9 @@ def _stub_upgrade(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         upgrade_mod,
         "run_upgrade",
-        lambda **kw: upgrade_mod.UpgradeResult(ok=True, dry_run=False, check_only=False, component_filter=None),
+        lambda **kw: upgrade_mod.UpgradeResult(
+            ok=True, dry_run=False, check_only=False, component_filter=None
+        ),
     )
     monkeypatch.setattr(
         upgrade_mod,
@@ -88,7 +94,9 @@ def _stub_upgrade(monkeypatch: pytest.MonkeyPatch) -> None:
         upgrade_mod,
         "run_rollback",
         lambda **kw: upgrade_mod.RollbackResult(
-            ok=True, status=upgrade_mod.RollbackStatus.APPLIED, target_ref="",
+            ok=True,
+            status=upgrade_mod.RollbackStatus.APPLIED,
+            target_ref="",
         ),
     )
 
@@ -129,7 +137,9 @@ def _stub_alert_check(monkeypatch: pytest.MonkeyPatch) -> None:
         alerting_mod,
         "run_alert_check",
         lambda **kw: AlertResult(
-            suite_ok=True, alert_kind=None, emission=EmissionStatus.SKIPPED_NO_STATE_CHANGE,
+            suite_ok=True,
+            alert_kind=None,
+            emission=EmissionStatus.SKIPPED_NO_STATE_CHANGE,
         ),
     )
 
@@ -141,8 +151,11 @@ def _stub_evidence_export(monkeypatch: pytest.MonkeyPatch) -> None:
         evidence_mod,
         "run_evidence_export",
         lambda **kw: evidence_mod.EvidenceExportResult(
-            ok=True, output_dir="/tmp/test-evidence", projects=[],
-            manifest_path=None, note="ok",
+            ok=True,
+            output_dir="/tmp/test-evidence",
+            projects=[],
+            manifest_path=None,
+            note="ok",
         ),
     )
 
@@ -154,18 +167,23 @@ def _stub_backup_restore(monkeypatch: pytest.MonkeyPatch) -> None:
         backup_mod,
         "run_backup",
         lambda **kw: backup_mod.BackupResult(
-            ok=True, dry_run=kw.get("dry_run", False),
+            ok=True,
+            dry_run=kw.get("dry_run", False),
             backup_dir=str(kw.get("backup_dir", "/tmp/test-backup")),
-            steps=[], manifest_path=None, note="ok",
+            steps=[],
+            manifest_path=None,
+            note="ok",
         ),
     )
     monkeypatch.setattr(
         backup_mod,
         "run_restore",
         lambda **kw: backup_mod.RestoreResult(
-            ok=True, dry_run=kw.get("dry_run", False),
+            ok=True,
+            dry_run=kw.get("dry_run", False),
             backup_dir=str(kw.get("backup_dir", "/tmp/test-backup")),
-            steps=[], note="ok",
+            steps=[],
+            note="ok",
         ),
     )
 
@@ -176,15 +194,21 @@ def _stub_deploy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         deploy_mod,
         "run_bootstrap",
-        lambda **kw: bootstrap_mod.BootstrapResult(ok=True, dry_run=kw.get("dry_run", False), steps=[]),
+        lambda **kw: bootstrap_mod.BootstrapResult(
+            ok=True, dry_run=kw.get("dry_run", False), steps=[]
+        ),
     )
     monkeypatch.setattr(
         deploy_mod,
         "run_onboard",
         lambda **kw: onboard_mod.OnboardResult(
-            ok=True, dry_run=kw.get("dry_run", False), project="test",
-            spec_anchored=False, spec_version=None,
-            spec_version_recognized=None, steps=[],
+            ok=True,
+            dry_run=kw.get("dry_run", False),
+            project="test",
+            spec_anchored=False,
+            spec_version=None,
+            spec_version_recognized=None,
+            steps=[],
         ),
     )
     monkeypatch.setattr(
@@ -193,12 +217,18 @@ def _stub_deploy(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda **kw: doctor_mod.SuiteReport(suite_ok=True, components=[], post_restore=None),
     )
     monkeypatch.setattr(deploy_mod, "load_lock_file", lambda path=None: None)
-    monkeypatch.setattr(deploy_mod, "check_drift", lambda *a, **kw: type("DR", (), {"matches": True, "to_dict": lambda s: {}})())
+    monkeypatch.setattr(
+        deploy_mod,
+        "check_drift",
+        lambda *a, **kw: type("DR", (), {"matches": True, "to_dict": lambda s: {}})(),
+    )
     monkeypatch.setattr(
         deploy_mod,
         "generate_lock",
         lambda **kw: lock_mod.SuiteLock(
-            version=1, components={}, regista_quad=None,
+            version=1,
+            components={},
+            regista_quad=None,
             memory_engine="native",
         ),
     )
@@ -236,8 +266,42 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
             assert main([command.value, "--dir", "/tmp/test-backup", "--dry-run"]) == 0
         elif command is Command.RESTORE:
             assert main([command.value, "--dir", "/tmp/test-backup", "--dry-run"]) == 0
+        elif command is Command.CODEX_PLUGINS:
+            # dry-run install is hermetic (never shells codex) and exits 2
+            assert main([command.value, "install", "--dry-run"]) == 2
         else:
             assert main([command.value]) == 0
+
+
+def test_codex_plugin_profiles_are_accepted() -> None:
+    for profile in ("core", "credentialed", "full"):
+        assert main(["codex-plugins", "install", "--profile", profile, "--dry-run"]) == 2
+
+
+def test_codex_health_applies_marketplace_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_suite import codex_health as codex_health_mod
+
+    seen: dict[str, object] = {}
+
+    def fake_health(**kwargs: object) -> codex_health_mod.CodexHealthReport:
+        seen.update(kwargs)
+        return codex_health_mod.CodexHealthReport(
+            ok=True,
+            ready=True,
+            codex_installed=True,
+        )
+
+    monkeypatch.setattr(codex_health_mod, "check_codex_health", fake_health)
+    assert main(["codex-plugins", "health", "--marketplace", "local-proof"]) == 0
+    catalog = seen["catalog"]
+    assert isinstance(catalog, tuple)
+    assert all(entry.marketplace == "local-proof" for entry in catalog)
+
+
+def test_codex_marketplace_build_requires_explicit_output() -> None:
+    assert main(["codex-plugins", "build-marketplace"]) == 2
 
 
 @pytest.mark.parametrize("command", ["bootstrap", "onboard", "deploy"])
@@ -252,8 +316,7 @@ def test_harness_selectors_accept_codex(
             bootstrap_mod,
             "run_bootstrap",
             lambda **kw: (
-                seen.update(kw)
-                or bootstrap_mod.BootstrapResult(ok=True, dry_run=True, steps=[])
+                seen.update(kw) or bootstrap_mod.BootstrapResult(ok=True, dry_run=True, steps=[])
             ),
         )
         argv = [command, "--harness", "codex", "--dry-run"]
@@ -283,9 +346,7 @@ def test_harness_selectors_accept_codex(
             "run_deploy",
             lambda **kw: (
                 seen.update(kw)
-                or deploy_mod.DeployResult(
-                    ok=True, dry_run=True, profile="A", steps=[]
-                )
+                or deploy_mod.DeployResult(ok=True, dry_run=True, profile="A", steps=[])
             ),
         )
         argv = [command, "--harness", "codex", "--dry-run"]

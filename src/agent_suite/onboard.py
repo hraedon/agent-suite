@@ -385,7 +385,7 @@ def _step_wire_harness(
     targets = expand_harness_target(harness)
     if dry_run:
         cmds = [
-            f"{cli} install-harness {target.value}"
+            " ".join(install_harness_argv(cli, target))
             for cli, _ in _FACE_COMPONENTS
             for target in targets
         ]

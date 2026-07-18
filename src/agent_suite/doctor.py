@@ -30,6 +30,8 @@ from typing import Protocol, assert_never
 from agent_suite import key_watch
 from agent_suite import lock
 from agent_suite import verify_restore
+from agent_suite.codex_catalog import CodexPluginId
+from agent_suite.codex_health import CodexHealthReport, check_codex_health, format_codex_health_text
 from agent_suite.components import COMPONENTS, Component, Locality, Tier
 from agent_suite.config import MemoryProviderConfig
 from agent_suite.profiles import (
@@ -51,7 +53,9 @@ class ComponentStatus(Enum):
     DEGRADED = "degraded"  # installed; ok but in a non-fatal degrade mode (e.g. coordinator-absent)
     REMOTE = "remote"  # shared service not installed locally; endpoint reachable and healthy (Plan 004 WI-1.6)
     ABSENT = "absent"  # not installed on this box
-    NOT_CONFIGURED = "not_configured"  # shared service with no endpoint configured (Plan 004 WI-1.6)
+    NOT_CONFIGURED = (
+        "not_configured"  # shared service with no endpoint configured (Plan 004 WI-1.6)
+    )
     UNREACHABLE = "unreachable"  # installed, but the doctor command could not be run/caught
     FAILED = "failed"  # installed; doctor exited non-zero, emitted no JSON, or reported ok:false
 
@@ -223,6 +227,7 @@ class SuiteReport:
     store_growth: key_watch.StoreGrowthResult | None = None
     profile_classification: ProfileClassification | None = None
     memory_provider: dict[str, object] | None = None
+    codex_health: CodexHealthReport | None = None
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -240,6 +245,8 @@ class SuiteReport:
             d["profile_classification"] = self.profile_classification.to_dict()
         if self.memory_provider is not None:
             d["memory_provider"] = self.memory_provider
+        if self.codex_health is not None:
+            d["codex_health"] = self.codex_health.to_dict()
         return d
 
 
@@ -437,17 +444,17 @@ def _compute_suite_ok(reports: list[ComponentReport]) -> bool:
     # Nothing deployed at all => not ok (don't smooth an empty box into "healthy").
     # A suite where every component is absent or not-configured has no functioning
     # piece — REMOTE counts as functioning (a shared service is reachable).
-    if all(
-        r.status in (ComponentStatus.ABSENT, ComponentStatus.NOT_CONFIGURED)
-        for r in reports
-    ):
+    if all(r.status in (ComponentStatus.ABSENT, ComponentStatus.NOT_CONFIGURED) for r in reports):
         return False
 
     return True
 
 
 _MEMORY_PROVIDER_DOCTOR_CMD: tuple[str, ...] = (
-    "agent-notes", "memory-provider", "doctor", "--json",
+    "agent-notes",
+    "memory-provider",
+    "doctor",
+    "--json",
 )
 
 
@@ -516,6 +523,7 @@ def aggregate(
     remote_checker: RemoteHealthChecker | None = None,
     memory_provider_config: MemoryProviderConfig | None = None,
     memory_provider_checks: bool = True,
+    codex_health_checks: bool = True,
 ) -> SuiteReport:
     """Run each component's doctor and fold into one umbrella report.
 
@@ -553,7 +561,9 @@ def aggregate(
     an endpoint is treated the same as native. ``memory_provider_config`` is
     injectable for testing.
     """
-    rc: RemoteHealthChecker = remote_checker if remote_checker is not None else _default_remote_check
+    rc: RemoteHealthChecker = (
+        remote_checker if remote_checker is not None else _default_remote_check
+    )
     reports = [
         _check_one(
             c,
@@ -608,9 +618,7 @@ def aggregate(
     profile_classification: ProfileClassification | None = None
     if profile is not None:
         component_statuses = {r.component: r.status.value for r in reports}
-        profile_classification = classify_doctor(
-            component_statuses, reference_profile=profile
-        )
+        profile_classification = classify_doctor(component_statuses, reference_profile=profile)
 
     suite_ok = _compute_suite_ok(reports)
     if post_restore is not None and not post_restore.ok:
@@ -623,6 +631,14 @@ def aggregate(
         if mp_config.engine == "hindsight" and mp_config.endpoint and not mp_ok:
             suite_ok = False
 
+    codex_health: CodexHealthReport | None = None
+    if codex_health_checks:
+        codex_health = check_codex_health(
+            runner=runner,
+            installed=installed,
+            required_plugin_ids=frozenset({CodexPluginId.AGENT_NOTES, CodexPluginId.CAIRN}),
+        )
+
     return SuiteReport(
         suite_ok=suite_ok,
         components=reports,
@@ -632,6 +648,7 @@ def aggregate(
         store_growth=store_growth,
         profile_classification=profile_classification,
         memory_provider=memory_provider,
+        codex_health=codex_health,
     )
 
 
@@ -678,5 +695,8 @@ def format_text(report: SuiteReport) -> str:
         lines.append("")
         lines.append("memory provider:")
         lines.append(f"  engine: {engine}  {status}{ver}  {detail}".rstrip())
+    if report.codex_health is not None:
+        lines.append("")
+        lines.append(format_codex_health_text(report.codex_health))
     lines.append(f"suite: {'OK' if report.suite_ok else 'NOT OK'}")
     return "\n".join(lines)

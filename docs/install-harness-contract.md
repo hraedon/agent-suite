@@ -53,6 +53,17 @@ plugin manifest, skills, hooks, MCP declarations, fallback installer, and
 uninstall manifest. Agent-suite pins and composes the compatible plugin set but
 does not copy component assets into this repository.
 
+The suite exposes progressive Codex plugin slices so an unfinished optional
+adapter cannot block testing of the minimum useful path:
+
+- `core`: agent-notes + Cairn (notes/memory face and provenance).
+- `credentialed`: core + ACB.
+- `full`: credentialed + agent-wake.
+
+`agent-suite codex-plugins ...` defaults to `core`; select a stronger slice
+with `--profile credentialed` or `--profile full`. Health reports probe success
+(`ok`) separately from required-plugin readiness (`ready`).
+
 - User configuration and installed-plugin state live under `$CODEX_HOME`
   (normally `~/.codex`). User-scoped shared skills live separately under
   `$HOME/.agents/skills`; repo-scoped skills live under `.agents/skills`.
@@ -70,10 +81,15 @@ does not copy component assets into this repository.
 - Codex login state is operator-owned. Installers do not read, copy, write, or
   provision Codex authentication material.
 
-Plugin installation, hook trust, and observed activity are separate health
-states. Doctor must distinguish plugin absent, installed-disabled, hooks
-awaiting trust, hooks blocked by managed policy, wired-but-silent, and active.
-An installer never bypasses or persists trust for the operator.
+Plugin installation and hook trust are separate concerns, but only the former
+is observable through the Codex CLI. `codex plugin list --json` reports whether
+each plugin is absent, installed-and-disabled, or installed-and-enabled; there
+is **no** CLI that reports hook-trust or hook-activity state (hook trust is
+granted through Codex's interactive `/hooks` review, verified as 0.144.5).
+Doctor therefore reports the three CLI-observable plugin states and defers
+hook-trust confirmation to the operator's `/hooks` review rather than claiming
+trust/activity states it cannot verify. An installer never bypasses or persists
+trust for the operator.
 
 ## 3. Safety and idempotency
 
@@ -175,6 +191,12 @@ the file.
 For Codex, direct component installers remain development and fallback
 surfaces. The operator-facing suite release installs its release-pinned,
 compatible component-plugin set through Codex's supported plugin mechanism.
+
+The suite's reproducible development path is documented in
+`docs/codex-plugin-operations.md`. `codex-plugins build-marketplace` writes only
+to an explicit output and links validated component-owned bundles;
+`codex-plugins verify` keeps observable machine readiness separate from the
+operator's interactive `/hooks` trust handoff.
 
 ## 7. Implementing components
 

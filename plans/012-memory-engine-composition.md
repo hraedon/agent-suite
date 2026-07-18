@@ -7,6 +7,10 @@ v1 contracts and deployment boundary.
 **Strategic role:** Let an operator deploy and verify a qualified learned-memory
 engine while keeping agent-suite a thin orchestrator and regista the exact
 signed knowledge authority.
+**Identity and credential extension:** agent-notes Plan 022 owns shared and
+personal bank semantics. Agent-suite Plan 017 requires personal-bank access to
+derive from a unique per-agent runtime credential (or an authenticated mediated
+service), never a caller-supplied agent tag used with one team credential.
 
 ## Decision
 

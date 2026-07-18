@@ -168,6 +168,18 @@ def test_health_store_growth_status_matches_code() -> None:
     )
 
 
+def test_health_codex_plugin_health_status_matches_code() -> None:
+    from agent_suite.codex_health import CodexPluginHealthStatus
+
+    fixture = _load_fixture("health")
+    contract_statuses = set(fixture["codex_plugin_health_status_values"])  # type: ignore[arg-type]
+    code_statuses = _enum_values(CodexPluginHealthStatus)
+    assert contract_statuses == code_statuses, (
+        f"codex_plugin_health_status_values mismatch — "
+        f"contract={sorted(contract_statuses)}, code={sorted(code_statuses)}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Snapshot assertions — lifecycle, identity, install-harness, notification
 # (owning components not installed in lint-and-test CI job)
