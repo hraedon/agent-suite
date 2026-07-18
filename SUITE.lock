@@ -3,7 +3,7 @@
 
 [suite]
 release = "1.0.0-dev"
-regista_library_version = "0.5.0"
+regista_library_version = "0.5.1"
 regista_schema_version = 43
 regista_workflow_version = "2"
 regista_envelope_version = 5
@@ -35,7 +35,7 @@ revision = "db834d834a7f3291acbe9206fcc6226f0b5f96c6"
 
 [components.regista]
 repo = "hraedon/regista"
-version = "0.5.0"
+version = "0.5.1"
 revision = "ea434ace9a65bdcadf6161056433b57d7afeca01"
 
 [memory_provider]
