@@ -118,11 +118,12 @@ def test_structured_clis_keep_selector_positional() -> None:
     )
 
 
-def test_legacy_private_cli_keeps_positional_shape() -> None:
+def test_agent_wake_now_uses_structured_positional_shape() -> None:
     assert install_harness_argv("agent-wake", HarnessTarget.CLAUDE) == (
         "agent-wake",
         "install-harness",
         "claude",
+        "--json",
     )
 
 
