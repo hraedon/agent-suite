@@ -33,6 +33,7 @@ from agent_suite.lock import (
     check_drift,
     generate_lock,
     load_lock_file,
+    read_component_revisions,
     read_regista_quad,
     write_lock_file,
 )
@@ -286,6 +287,7 @@ def _step_lock(
     component_versions: dict[str, str | None] = {
         r.component: r.version for r in report.components
     }
+    component_revisions = read_component_revisions()
     try:
         existing = load_lock_file()
     except ValueError as exc:
@@ -300,6 +302,7 @@ def _step_lock(
             existing,
             current_quad=current_quad,
             component_versions=component_versions,
+            component_revisions=component_revisions,
         )
         if drift_result.matches is True:
             return DeployStepResult(
@@ -316,6 +319,7 @@ def _step_lock(
         )
     lock = generate_lock(
         component_versions=component_versions,
+        component_revisions=component_revisions,
         runner=runner,
         installed=installed,
         memory_engine=memory_engine,

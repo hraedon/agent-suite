@@ -91,13 +91,26 @@ class RegistaVersionQuad:
 
 @dataclass(frozen=True)
 class ComponentPin:
-    """One component's pinned state in the lock."""
+    """One component's pinned state in the lock.
+
+    ``revision`` is the optional full git SHA the lock was generated against.
+    It is what makes the lock a *reproducible candidate definition* rather
+    than a version hint: a version can be republished, but a SHA cannot. The
+    field is optional so older locks (and locks generated in environments
+    where the source checkout is absent) round-trip cleanly; when present,
+    ``check_drift`` reports a named ``REVISION_MISMATCH`` for any component
+    whose current HEAD SHA differs.
+    """
 
     repo: str
     version: str
+    revision: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {"repo": self.repo, "version": self.version}
+        d: dict[str, object] = {"repo": self.repo, "version": self.version}
+        if self.revision is not None:
+            d["revision"] = self.revision
+        return d
 
 
 @dataclass(frozen=True)
@@ -164,6 +177,7 @@ class DriftKind(Enum):
     """
 
     VERSION_MISMATCH = "version_mismatch"
+    REVISION_MISMATCH = "revision_mismatch"
     QUAD_MISMATCH = "quad_mismatch"
     COMPONENT_MISSING = "component_missing"
     UNEXPECTED_COMPONENT = "unexpected_component"
@@ -267,6 +281,65 @@ _PROVIDER_DESCRIBE_CMD: tuple[str, ...] = (
 )
 
 
+def read_component_revisions(
+    components: tuple[Component, ...] = COMPONENTS,
+    *,
+    search_roots: tuple[Path, ...] = (Path("/projects"), Path("../projects")),
+) -> dict[str, str | None]:
+    """Probe each component's local source checkout for its current git SHA.
+
+    The compatibility lock is only a *reproducible candidate definition* when
+    it pins the exact git revision each component was built from. The version
+    field alone is a hint (a version can be republished); the SHA cannot.
+
+    The lookup is deliberately conservative: it returns ``None`` for any
+    component whose source checkout is absent or not a git repo, so a
+    lock generated in an environment without checkouts (CI from wheels,
+    production installs) still round-trips. The candidate checkout path is
+    ``<search_root>/<repo-basename>`` (e.g. ``/projects/regista`` for
+    ``hraedon/regista``); the first matching directory wins.
+
+    The function never raises — git failures, missing directories, and
+    non-checkout directories all return ``None`` for that component.
+    """
+    revisions: dict[str, str | None] = {}
+    for comp in components:
+        revisions[comp.ident] = _probe_revision(comp.repo, search_roots)
+    return revisions
+
+
+def _probe_revision(
+    repo: str,
+    search_roots: tuple[Path, ...],
+) -> str | None:
+    """Find a local checkout for ``owner/repo`` and return its HEAD SHA."""
+    basename = repo.split("/", 1)[-1] if "/" in repo else repo
+    for root in search_roots:
+        candidate = root / basename
+        if not candidate.is_dir():
+            continue
+        git_dir = candidate / ".git"
+        if not git_dir.exists():
+            continue
+        try:
+            result = subprocess.run(
+                ("git", "-C", str(candidate), "rev-parse", "HEAD"),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        sha = result.stdout.strip()
+        # A full git SHA is 40 hex chars (sha-1) or 64 (sha-256); accept either.
+        if not sha or not all(c in "0123456789abcdef" for c in sha.lower()):
+            return None
+        return sha
+    return None
+
+
 def read_provider_extension(
     *,
     engine: str = "native",
@@ -314,6 +387,7 @@ def read_provider_extension(
 def generate_lock(
     *,
     component_versions: dict[str, str | None],
+    component_revisions: dict[str, str | None] | None = None,
     runner: VersionRunner = _default_runner,
     installed: Installed = _default_installed,
     components: tuple[Component, ...] = COMPONENTS,
@@ -323,9 +397,12 @@ def generate_lock(
     """Build a :class:`SuiteLock` from the current installed state.
 
     ``component_versions`` maps component ident → version (or ``None`` if
-    absent). The regista quad is read from ``regista version --json``, not
-    hardcoded. Only installed components are pinned in the lock. ``release``
-    defaults to the installed package version. When ``memory_engine`` is not
+    absent). ``component_revisions`` (optional) maps component ident → the
+    full git SHA the candidate was generated against; absent entries leave
+    the pin version-only, preserving round-trip with older locks. The
+    regista quad is read from ``regista version --json``, not hardcoded.
+    Only installed components are pinned in the lock. ``release`` defaults
+    to the installed package version. When ``memory_engine`` is not
     ``"native"``, the provider extension is read from ``agent-notes
     memory-provider describe --json`` and pinned in the lock (Plan 012 WI-3.1).
     """
@@ -334,11 +411,15 @@ def generate_lock(
         engine=memory_engine, runner=runner, installed=installed
     )
 
+    revisions = component_revisions or {}
     pins: dict[str, ComponentPin] = {}
     for comp in components:
         version = component_versions.get(comp.ident)
         if version is not None:
-            pins[comp.ident] = ComponentPin(repo=comp.repo, version=version)
+            rev = revisions.get(comp.ident)
+            pins[comp.ident] = ComponentPin(
+                repo=comp.repo, version=version, revision=rev
+            )
 
     return SuiteLock(
         release=release if release is not None else _suite_release(),
@@ -392,6 +473,8 @@ def serialize_lock(lock: SuiteLock) -> str:
         lines.append(f"[components.{ident}]")
         lines.append(f"repo = {_toml_escape(pin.repo)}")
         lines.append(f"version = {_toml_escape(pin.version)}")
+        if pin.revision is not None:
+            lines.append(f"revision = {_toml_escape(pin.revision)}")
         lines.append("")
 
     if lock.provider_extension is not None:
@@ -453,7 +536,12 @@ def deserialize_lock(text: str) -> SuiteLock:
             raise ValueError(
                 f"SUITE.lock: components.{ident} must have string repo and version"
             )
-        pins[ident] = ComponentPin(repo=repo, version=version)
+        # revision is optional (older locks omit it; locks generated in
+        # environments without source checkouts omit it). When present it
+        # must be a string and is what makes the pin a reproducible candidate.
+        raw_revision = raw.get("revision")
+        revision: str | None = raw_revision if isinstance(raw_revision, str) else None
+        pins[ident] = ComponentPin(repo=repo, version=version, revision=revision)
 
     provider_extension: ProviderExtension | None = None
     raw_mp = data.get("memory_provider")
@@ -530,12 +618,20 @@ def check_drift(
     *,
     current_quad: RegistaVersionQuad | None,
     component_versions: dict[str, str | None],
+    component_revisions: dict[str, str | None] | None = None,
     current_provider_extension: ProviderExtension | None = None,
 ) -> LockDriftResult:
     """Compare current state against a lock, reporting named drift.
 
     If ``lock`` is ``None`` (no lock file), returns ``matches=None`` — the
     distinction from ``False`` (drift) matters for honest health reporting.
+
+    Revision drift is reported only when *both* the locked pin and the
+    current state carry a revision for the component. A lock without
+    revision pins cannot detect revision drift (the version-only baseline is
+    preserved); a current state where the revision is unprobeable (e.g. a
+    wheel install with no source checkout) does not false-positive against a
+    locked revision.
     """
     if lock is None:
         return LockDriftResult(
@@ -590,6 +686,7 @@ def check_drift(
     installed_components = {
         ident for ident, ver in component_versions.items() if ver is not None
     }
+    current_revisions = component_revisions or {}
 
     for ident in sorted(locked_components | installed_components):
         in_lock = ident in lock.components
@@ -607,6 +704,25 @@ def check_drift(
                         field="version",
                         locked=locked_ver,
                         current=current_ver,
+                    )
+                )
+            # Revision drift: only when both sides carry a SHA. A version-only
+            # lock cannot detect revision drift by design; a current state
+            # without a probeable revision must not false-positive.
+            locked_rev = lock.components[ident].revision
+            current_rev = current_revisions.get(ident)
+            if (
+                locked_rev is not None
+                and current_rev is not None
+                and locked_rev != current_rev
+            ):
+                drift.append(
+                    DriftEntry(
+                        kind=DriftKind.REVISION_MISMATCH,
+                        component=ident,
+                        field="revision",
+                        locked=locked_rev,
+                        current=current_rev,
                     )
                 )
         elif in_lock and not installed_now:
@@ -695,6 +811,10 @@ def format_drift_text(result: LockDriftResult) -> str:
             case DriftKind.VERSION_MISMATCH:
                 lines.append(
                     f"  {d.component:<22} version: {d.locked} → {d.current}"
+                )
+            case DriftKind.REVISION_MISMATCH:
+                lines.append(
+                    f"  {d.component:<22} revision: {d.locked} → {d.current}"
                 )
             case DriftKind.QUAD_MISMATCH:
                 lines.append(

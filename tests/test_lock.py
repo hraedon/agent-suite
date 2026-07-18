@@ -460,6 +460,196 @@ def test_lock_without_quad_but_regista_now_installed_is_drift() -> None:
     assert any(d.component == "regista" and d.field == "version_quad" for d in unexpected)
 
 
+# ---------------------------------------------------------------------------
+# Revision pinning (Plan 001 WI-2.1 — reproducible candidate definitions)
+# ---------------------------------------------------------------------------
+
+
+_SHA_A = "a" * 40
+_SHA_B = "b" * 40
+
+
+def test_revision_round_trips_through_serialize() -> None:
+    """A pinned revision survives serialize -> deserialize unchanged."""
+    lock = SuiteLock(
+        release="1.0.0",
+        regista_quad=_QUAD,
+        components={
+            "regista": ComponentPin(
+                repo="YOUR-ORG/regista", version="0.5.1", revision=_SHA_A
+            ),
+        },
+    )
+    restored = deserialize_lock(serialize_lock(lock))
+    assert restored.components["regista"].revision == _SHA_A
+
+
+def test_revision_is_optional_in_round_trip() -> None:
+    """Older locks without revisions round-trip with revision=None."""
+    lock = SuiteLock(
+        release="1.0.0",
+        regista_quad=_QUAD,
+        components={
+            "regista": ComponentPin(repo="YOUR-ORG/regista", version="0.5.1"),
+        },
+    )
+    text = serialize_lock(lock)
+    assert "revision" not in text
+    restored = deserialize_lock(text)
+    assert restored.components["regista"].revision is None
+
+
+def test_revision_drift_is_named_when_both_sides_have_sha() -> None:
+    """A locked revision vs a different current revision → REVISION_MISMATCH."""
+    locked_versions = _all_versions("1.0.0")
+    lock = SuiteLock(
+        release="1.0.0",
+        regista_quad=_QUAD,
+        components={
+            ident: ComponentPin(
+                repo=f"YOUR-ORG/{ident}", version=ver, revision=_SHA_A
+            )
+            for ident, ver in locked_versions.items()
+        },
+    )
+    current_revisions = {ident: _SHA_B for ident in locked_versions}
+    result = check_drift(
+        lock,
+        current_quad=_QUAD,
+        component_versions=locked_versions,
+        component_revisions=current_revisions,
+    )
+    assert result.matches is False
+    rev_drifts = [d for d in result.drift if d.kind is DriftKind.REVISION_MISMATCH]
+    assert len(rev_drifts) == len(locked_versions)
+    sample = rev_drifts[0]
+    assert sample.locked == _SHA_A
+    assert sample.current == _SHA_B
+    assert sample.field == "revision"
+
+
+def test_revision_drift_absent_when_current_has_no_sha() -> None:
+    """A locked revision with no current probeable SHA must NOT false-positive."""
+    locked_versions = _all_versions("1.0.0")
+    lock = SuiteLock(
+        release="1.0.0",
+        regista_quad=_QUAD,
+        components={
+            ident: ComponentPin(
+                repo=f"YOUR-ORG/{ident}", version=ver, revision=_SHA_A
+            )
+            for ident, ver in locked_versions.items()
+        },
+    )
+    # current_revisions omitted entirely (no source checkouts available)
+    result = check_drift(
+        lock,
+        current_quad=_QUAD,
+        component_versions=locked_versions,
+    )
+    assert result.matches is True
+    rev_drifts = [d for d in result.drift if d.kind is DriftKind.REVISION_MISMATCH]
+    assert rev_drifts == []
+
+
+def test_revision_drift_absent_when_lock_has_no_sha() -> None:
+    """A version-only lock cannot detect revision drift by design."""
+    locked_versions = _all_versions("1.0.0")
+    lock = _lock_with(locked_versions)  # revisions all None
+    current_revisions = {ident: _SHA_A for ident in locked_versions}
+    result = check_drift(
+        lock,
+        current_quad=_QUAD,
+        component_versions=locked_versions,
+        component_revisions=current_revisions,
+    )
+    assert result.matches is True
+
+
+def test_revision_drift_format_is_named() -> None:
+    result = LockDriftResult(
+        matches=False,
+        note="1 drift(s)",
+        drift=[
+            DriftEntry(
+                kind=DriftKind.REVISION_MISMATCH,
+                component="dossier",
+                field="revision",
+                locked=_SHA_A,
+                current=_SHA_B,
+            ),
+        ],
+    )
+    text = format_drift_text(result)
+    assert "revision" in text
+    assert _SHA_A in text
+    assert _SHA_B in text
+
+
+def test_generate_lock_threads_revisions_into_pins() -> None:
+    """generate_lock(component_revisions=...) records the SHA on each pin."""
+    versions = _all_versions("1.0.0")
+    revisions = {ident: _SHA_A for ident in versions}
+    lock = generate_lock_locked_only(versions, revisions)
+    for pin in lock.components.values():
+        assert pin.revision == _SHA_A
+
+
+def generate_lock_locked_only(
+    versions: dict[str, str | None], revisions: dict[str, str | None]
+) -> SuiteLock:
+    """generate_lock with regista/runner stubbed out, for unit tests."""
+    return generate_lock(
+        component_versions=versions,
+        component_revisions=revisions,
+        runner=lambda cmd: subprocess.CompletedProcess(cmd, 1, "", ""),
+        installed=lambda _: False,
+    )
+
+
+def test_read_component_revisions_returns_none_for_missing_checkout(
+    tmp_path: Path,
+) -> None:
+    """When no source checkout exists, every revision is None (no false pin)."""
+    from agent_suite.components import COMPONENTS
+    from agent_suite.lock import read_component_revisions
+
+    revisions = read_component_revisions(
+        components=COMPONENTS, search_roots=(tmp_path / "nonexistent",)
+    )
+    assert set(revisions) == {c.ident for c in COMPONENTS}
+    assert all(v is None for v in revisions.values())
+
+
+def test_read_component_revisions_reads_local_checkout_sha(
+    tmp_path: Path,
+) -> None:
+    """When a real git checkout exists, the HEAD SHA is captured."""
+    import os
+    import subprocess as sp
+
+    from agent_suite.components import _component, Tier
+    from agent_suite.lock import read_component_revisions
+
+    basename = "fake-suite-comp"
+    checkout = tmp_path / basename
+    checkout.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    sp.run(["git", "init", "-q", str(checkout)], check=True)
+    (checkout / "README").write_text("hi\n")
+    sp.run(["git", "-C", str(checkout), "add", "."], check=True)
+    sp.run(["git", "-C", str(checkout), "commit", "-q", "-m", "init"], check=True, env=env)
+    head = sp.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    comp = _component("fake", "owner/fake-suite-comp", Tier.SPINE, ("fake", "doctor"))
+    revisions = read_component_revisions(components=(comp,), search_roots=(tmp_path,))
+    assert revisions["fake"] == head
+
+
 def test_serialize_sorts_component_keys() -> None:
     lock = SuiteLock(
         release="1.0.0",
