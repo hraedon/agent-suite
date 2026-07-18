@@ -22,7 +22,7 @@ class HarnessInstallStatus(StrEnum):
     FAILED = "failed"
 
 
-_JSON_INSTALL_CLIS = frozenset({"agent-notes", "cairn", "acb"})
+_JSON_INSTALL_CLIS = frozenset({"agent-notes", "cairn", "acb", "agent-wake"})
 
 
 @dataclass(frozen=True)

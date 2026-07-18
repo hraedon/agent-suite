@@ -29,6 +29,10 @@ _CORE_MODULES = (
     "windows_observation",
     "winsw",
     "dual_control",
+    "codex_catalog",
+    "codex_health",
+    "harness_install",
+    "release_artifacts",
 )
 _FORBIDDEN_PREFIXES = (
     "hvac",  # Vault
