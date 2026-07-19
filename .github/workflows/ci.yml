@@ -80,10 +80,10 @@ jobs:
       # Pinned revisions (Plan 015 WI-0.2 / WI-2.2): interop CI installs from
       # immutable revisions, not moving @main branches. Update these SHAs when
       # the candidate lock advances; do not revert to @main.
-      REGISTA_SHA: b19e6bde669826551e556258b71c53e58e579e83
-      AGENT_NOTES_SHA: 77395eb34b4ed59383664ed2d57239201dc27a33
-      DOSSIER_SHA: 351740400aee114987947e6e1616dce315ee5c59
-      CAIRN_SHA: f2b31515d9a0d0a141962b3da0f30f7be868b0e8
+      REGISTA_SHA: fecee028c80131977393f680e2d901fe9297b61b
+      AGENT_NOTES_SHA: 496914709de3bac1b0a039919b6777d38111a230
+      DOSSIER_SHA: a4a60567abb69c5081b638ad82bfbd26df824b62
+      CAIRN_SHA: e29236c971b54f8d60824bef498cc71211f1ee7d
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # actions/checkout@v4
@@ -106,7 +106,10 @@ jobs:
         # regista-hraedon is the published PyPI distribution of hraedon/regista.
         # The import name remains 'regista'. SUITE.lock still pins the source
         # SHA for reproducibility checks; the install pulls from PyPI for speed.
-        run: pip install "regista-hraedon==0.5.1"
+        # Interim git+SHA pin: PyPI regista-hraedon==0.5.1 ships broken
+        # post-rename version introspection (fixed in regista PR #7). Return
+        # to PyPI with --hash pinning once 0.5.2 is published.
+        run: pip install "git+https://github.com/hraedon/regista.git@${REGISTA_SHA}"
 
       # Both face repos are public — install as a hard required step. If the
       # install fails, CI fails: combined with INTEROP_REQUIRE_FACES=1 above,
