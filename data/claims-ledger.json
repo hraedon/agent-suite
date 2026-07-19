@@ -1,0 +1,129 @@
+{
+  "version": "v1",
+  "generated_at": "2026-07-19",
+  "source": "docs/claims-ledger.md",
+  "maturity_legend": {
+    "supported": "CI-qualified positive and adversarial/failure proofs are landed; residual risk is documented and bounded.",
+    "provisional": "Implementation landed with positive and/or live proof; one or more CI-qualification, adversarial, or scale gaps remain (named per-claim).",
+    "experimental": "Implementation may be partial; no CI-qualified adversarial proof; claim is recorded as a target, not a guarantee."
+  },
+  "claims": [
+    {
+      "id": "CL-001",
+      "title": "Event integrity",
+      "maturity": "supported",
+      "enforcing_components": ["regista"],
+      "holistic_review_findings": []
+    },
+    {
+      "id": "CL-002",
+      "title": "Per-principal attribution",
+      "maturity": "experimental",
+      "enforcing_components": ["regista"],
+      "holistic_review_findings": [],
+      "maturity_note": "Tamper tests use HMAC keys, not Ed25519 per-principal signing; the envelope/signature path is exercised but full per-principal asymmetric signing chain (regista Plan 026) is not yet exercised in suite-level interop."
+    },
+    {
+      "id": "CL-003",
+      "title": "Tamper detection",
+      "maturity": "supported",
+      "enforcing_components": ["agent-suite", "regista"],
+      "holistic_review_findings": [],
+      "maturity_note": "Multi-field/cross-event tamper patterns not in scope of the current test; deletion detection requires CL-012 (external anchoring, experimental)."
+    },
+    {
+      "id": "CL-004",
+      "title": "Cross-face interop",
+      "maturity": "supported",
+      "enforcing_components": ["agent-suite"]
+    },
+    {
+      "id": "CL-005",
+      "title": "Post-restore integrity",
+      "maturity": "supported",
+      "enforcing_components": ["agent-suite"]
+    },
+    {
+      "id": "CL-006",
+      "title": "Idempotent bootstrap",
+      "maturity": "supported",
+      "enforcing_components": ["agent-suite"]
+    },
+    {
+      "id": "CL-007",
+      "title": "Honest health",
+      "maturity": "supported",
+      "enforcing_components": ["agent-suite"],
+      "holistic_review_findings": [{"finding": "F-6", "status": "fixed", "note": "Doctor requires top-level ok boolean; legacy compatibility path removed (doctor.py:235-242)."}]
+    },
+    {
+      "id": "CL-008",
+      "title": "Secret safety",
+      "maturity": "provisional",
+      "enforcing_components": ["agent-suite", "regista"],
+      "holistic_review_findings": [
+        {"finding": "F-4", "status": "fixed", "note": "Canonical identifier gate installed; deployment docs use placeholders."},
+        {"finding": "F-5", "status": "closed", "note": "Closed in agent-notes: REGISTA_DSN no longer satisfies the native agent-notes DSN."}
+      ],
+      "maturity_note": "No secret backend CI-qualified; no dedicated secret-leak negative test."
+    },
+    {
+      "id": "CL-009",
+      "title": "Lock integrity",
+      "maturity": "supported",
+      "enforcing_components": ["agent-suite"]
+    },
+    {
+      "id": "CL-010",
+      "title": "Key rotation safety",
+      "maturity": "experimental",
+      "enforcing_components": ["regista"],
+      "maturity_note": "Positive proof via Ed25519 revocation test; full replay-level revocation detection not yet exercised."
+    },
+    {
+      "id": "CL-011",
+      "title": "Delegation chain",
+      "maturity": "experimental",
+      "enforcing_components": ["regista"]
+    },
+    {
+      "id": "CL-012",
+      "title": "External anchoring",
+      "maturity": "experimental",
+      "enforcing_components": ["regista"],
+      "holistic_review_findings": [
+        {"finding": "F-1", "status": "experimental", "note": "Anchor commits to content; bundle v2 export + offline verification incl. event signatures."},
+        {"finding": "F-3", "status": "experimental", "note": "Receipt concurrency safe; cross-segment chain verification implemented."}
+      ]
+    },
+    {
+      "id": "CL-013",
+      "title": "Offline verification",
+      "maturity": "provisional",
+      "enforcing_components": ["agent-provenance"],
+      "holistic_review_findings": [
+        {"finding": "F-2", "status": "provisional", "note": "Live proof PASSED against a real Claude Code session 2026-07-11."}
+      ],
+      "maturity_note": "Manual operator runbook, not yet a CI job (needs live harness + store). Bundled key registry comes from the same store as the events; auditor must cross-check fingerprints out-of-band (tracked as regista WI-209, bundle v3)."
+    },
+    {
+      "id": "CL-014",
+      "title": "Upgrade safety",
+      "maturity": "supported",
+      "enforcing_components": ["agent-suite"]
+    }
+  ],
+  "maturity_counts": {
+    "supported": 8,
+    "provisional": 2,
+    "experimental": 4
+  },
+  "holistic_review_findings_summary": [
+    {"finding": "F-1", "severity": "critical", "claim": "CL-012", "status": "experimental"},
+    {"finding": "F-2", "severity": "critical", "claim": "CL-013", "status": "provisional"},
+    {"finding": "F-3", "severity": "high",     "claim": "CL-012", "status": "experimental"},
+    {"finding": "F-4", "severity": "high",     "claim": "CL-008", "status": "fixed"},
+    {"finding": "F-5", "severity": "high",     "claim": null,     "status": "closed",   "note": "Closed in agent-notes (REGISTA_DSN no longer satisfies the native agent-notes DSN)."},
+    {"finding": "F-6", "severity": "high",     "claim": "CL-007", "status": "fixed"}
+  ]
+}
