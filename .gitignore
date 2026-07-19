@@ -12,6 +12,14 @@ samples/
 *.sqlite3-wal
 *.sqlite3-shm
 
+# Operator-specific convergence/proof evidence — never committed. The
+# canonical release-evidence artifacts live under golden/ at the root
+# (scrubbed, publication-clean). golden/local/ holds operator-specific
+# proof logs that name real hostnames, user accounts, and infrastructure
+# endpoints; per docs/publication-review.md these are publication-sensitive
+# even when the canonical identifier denylist does not forbid them.
+golden/local/
+
 # The generated lock is committed (it IS the release artifact); a local scratch is not
 SUITE.local.lock
 
