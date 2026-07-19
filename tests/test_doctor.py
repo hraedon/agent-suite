@@ -373,6 +373,7 @@ def test_doctor_lock_section_reports_drift(tmp_path: Path) -> None:
         runner=_runner_for(outputs),
         lock_path=lock_path,
         version_installed=lambda _: False,
+        revision_probe=lambda: {},
     )
     assert report.lock.matches is False
     assert any(
@@ -398,6 +399,7 @@ def test_doctor_lock_section_reports_match(tmp_path: Path) -> None:
         runner=_runner_for(outputs),
         lock_path=lock_path,
         version_installed=lambda _: False,
+        revision_probe=lambda: {},
     )
     assert report.lock.matches is True
 
@@ -701,6 +703,7 @@ def test_remote_version_feeds_lock_drift() -> None:
         runner=_runner_for(outputs),
         lock_path=lock_path,
         version_installed=lambda _: False,
+        revision_probe=lambda: {},
         key_watch_checks=False,
         shared_endpoints={"dossier": "https://dossier.example.com"},
         remote_checker=StubRemoteChecker({"dossier": _remote_ok("2.0.0")}),
