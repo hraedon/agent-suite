@@ -717,16 +717,20 @@ def test_cli_inventory_text(capsys: pytest.CaptureFixture[str], monkeypatch: pyt
 
 
 def _make_origin_probe(
-    overrides: dict[str, tuple[str | None, int, bool]] | None = None,
-) -> Callable[[str], tuple[str | None, int, bool]]:
+    overrides: dict[str, tuple[str | None, int, int, bool, bool]] | None = None,
+) -> Callable[[str], tuple[str | None, int, int, bool, bool]]:
     """Return a stub origin probe with per-ident overrides.
 
-    The default clean state is ``(None, 0, False)``.
+    Default per-ident value is ``(origin_rev, ahead, behind, dirty, provenance_known)``.
+    For tests, the clean/converged default is a known origin SHA with no ahead/behind/dirty.
+    Set ``provenance_known=False`` to simulate a probe failure (the fail-closed path).
     """
+    # The "all clean" default: a known SHA, zero ahead/behind, not dirty, proven.
+    default_clean = ("a" * 40, 0, 0, False, True)
     mapping = overrides or {}
 
-    def probe(ident: str) -> tuple[str | None, int, bool]:
-        return mapping.get(ident, (None, 0, False))
+    def probe(ident: str) -> tuple[str | None, int, int, bool, bool]:
+        return mapping.get(ident, default_clean)
 
     return probe
 
@@ -749,7 +753,7 @@ def test_inventory_includes_umbrella_entry() -> None:
 
 
 def test_inventory_reports_dirty_working_tree() -> None:
-    """A dirty working tree on any constituent blocks publishability."""
+    """A dirty working tree on any constituent blocks source_tree_converged."""
     inv = build_inventory(
         lock_obj=_lock(_all_versions("1.0.0")),
         has_lock_file=True,
@@ -757,16 +761,16 @@ def test_inventory_reports_dirty_working_tree() -> None:
         component_versions=_all_versions("1.0.0"),
         component_revisions={},
         current_quad=_QUAD,
-        origin_probe=_make_origin_probe({"regista": (None, 0, True)}),
+        origin_probe=_make_origin_probe({"regista": ("a" * 40, 0, 0, True, True)}),
     )
     assert inv.summary.any_dirty is True
-    assert inv.summary.candidate_publishable is False
+    assert inv.summary.source_tree_converged is False
     regista = next(c for c in inv.components if c.ident == "regista")
     assert regista.working_tree_dirty is True
 
 
 def test_inventory_reports_ahead_of_origin() -> None:
-    """Local-only commits ahead of origin on any constituent blocks publishability."""
+    """Local-only commits ahead of origin on any constituent blocks convergence."""
     inv = build_inventory(
         lock_obj=_lock(_all_versions("1.0.0")),
         has_lock_file=True,
@@ -774,15 +778,50 @@ def test_inventory_reports_ahead_of_origin() -> None:
         component_versions=_all_versions("1.0.0"),
         component_revisions={},
         current_quad=_QUAD,
-        origin_probe=_make_origin_probe({"agent-suite": ("a" * 40, 2, False)}),
+        origin_probe=_make_origin_probe({"agent-suite": ("a" * 40, 2, 0, False, True)}),
     )
     assert inv.summary.any_ahead is True
-    assert inv.summary.candidate_publishable is False
+    assert inv.summary.source_tree_converged is False
     assert inv.umbrella.local_only_commits == 2
 
 
+def test_inventory_reports_behind_origin() -> None:
+    """A checkout behind origin/main is stale and blocks convergence."""
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+        origin_probe=_make_origin_probe({"regista": ("a" * 40, 0, 3, False, True)}),
+    )
+    assert inv.summary.any_behind is True
+    assert inv.summary.source_tree_converged is False
+    regista = next(c for c in inv.components if c.ident == "regista")
+    assert regista.behind_origin == 3
+
+
+def test_inventory_reports_unknown_provenance() -> None:
+    """A failed origin probe (provenance_known=False) blocks convergence
+    even when ahead/behind read zero. Fail-closed on unknown provenance."""
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+        origin_probe=_make_origin_probe({"regista": (None, 0, 0, False, False)}),
+    )
+    assert inv.summary.any_provenance_unknown is True
+    assert inv.summary.source_tree_converged is False
+    regista = next(c for c in inv.components if c.ident == "regista")
+    assert regista.provenance_known is False
+
+
 def test_inventory_publishable_when_clean() -> None:
-    """A clean workspace with no drift is marked candidate_publishable."""
+    """A clean workspace with no drift, no ahead/behind, known provenance is converged."""
     inv = build_inventory(
         lock_obj=_lock(_all_versions("1.0.0")),
         has_lock_file=True,
@@ -794,8 +833,10 @@ def test_inventory_publishable_when_clean() -> None:
     )
     assert inv.summary.any_dirty is False
     assert inv.summary.any_ahead is False
+    assert inv.summary.any_behind is False
+    assert inv.summary.any_provenance_unknown is False
     assert inv.summary.drift_count == 0
-    assert inv.summary.candidate_publishable is True
+    assert inv.summary.source_tree_converged is True
 
 
 def test_inventory_records_regista_quad_versions() -> None:
@@ -856,8 +897,13 @@ def test_probe_plan_status_returns_none_for_missing_plans_dir(tmp_path: Path) ->
     assert inventory._probe_plan_status(tmp_path) is None
 
 
-def test_format_text_shows_publishable_summary() -> None:
-    """The text summary surfaces the candidate_publishable gate."""
+def test_format_text_shows_convergence_summary() -> None:
+    """The text summary surfaces the source_tree_converged gate.
+
+    A clean inventory with no drift, no ahead/behind, and known provenance
+    reports SOURCE-TREE-CONVERGED in the text output. Release-candidate
+    readiness is documented separately in the release board.
+    """
     inv = build_inventory(
         lock_obj=_lock(_all_versions("1.0.0")),
         has_lock_file=True,
@@ -868,5 +914,25 @@ def test_format_text_shows_publishable_summary() -> None:
         origin_probe=_make_origin_probe(),
     )
     text = format_text(inv)
-    assert "Suite candidate: PUBLISHABLE" in text
+    assert "Source tree: SOURCE-TREE-CONVERGED" in text
     assert "umbrella:" in text
+
+
+def test_format_text_shows_convergence_blockers() -> None:
+    """When convergence fails, the text summary names each blocker."""
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+        origin_probe=_make_origin_probe(
+            {"regista": ("a" * 40, 1, 0, True, True)}
+        ),
+    )
+    text = format_text(inv)
+    assert "NOT CONVERGED" in text
+    # Dirty + ahead are both present in the override; both must be named.
+    assert "dirty" in text
+    assert "unpushed" in text
