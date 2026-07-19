@@ -106,24 +106,68 @@ A committed manifest pinning the known-good set:
 
 ```toml
 [suite]
-release = "1.0.0"
-regista_schema_version = "…"
-regista_workflow_version = "canonical/1"
-regista_envelope_version = "v5"
+release = "1.0.0-dev"
+regista_library_version = "0.5.1"
+regista_schema_version = 43
+regista_workflow_version = "2"
+regista_envelope_version = 5
 
-[components]
-regista        = { repo = "hraedon/regista",        rev = "<sha>" }
-dossier        = { repo = "hraedon/dossier",        rev = "<sha>" }
-agent-notes    = { repo = "hraedon/agent-notes",    rev = "<sha>" }
-agent-provenance = { repo = "hraedon/agent-provenance", rev = "<sha>" }
-agent-capability-broker = { repo = "hraedon/agent-capability-broker", rev = "<sha>" }
-agent-wake     = { repo = "hraedon/agent-wake",     rev = "<sha>" }
+[components.regista]
+repo = "hraedon/regista"
+version = "0.5.1"
+revision = "ea434ace9a65bdcadf6161056433b57d7afeca01"
+
+[components.dossier]
+repo = "hraedon/dossier"
+version = "0.0.1"
+revision = "db834d834a7f3291acbe9206fcc6226f0b5f96c6"
+
+[components.agent-notes]
+repo = "hraedon/agent-notes"
+version = "1.0.0"
+revision = "a33e95092342b8d723a72d66275892531907ec64"
+
+[components.agent-provenance]
+repo = "hraedon/agent-provenance"
+version = "0.1.0"
+revision = "3605d67f15b03e0ed2dc2ce12f719729607066af"
+
+[components.agent-capability-broker]
+repo = "hraedon/agent-capability-broker"
+version = "0.1.0"
+revision = "9610aef6c0d223bc33157b200711953700ce747d"
+
+[components.agent-wake]
+repo = "hraedon/agent-wake"
+version = "0.1.0"
+revision = "90d83803e0824be132dfa531c07daa364a753966"
 ```
 
-`agent-suite lock` regenerates it from the currently-pinned set; `doctor` compares
-the installed versions against it and reports drift. A **suite release is a green
-`SUITE.lock`** — the pinned set passed the interop test (§5). This is what makes
-"deploy the suite" reproducible: you deploy a release, not six moving `@main`s.
+`agent-suite lock` regenerates it from the currently-pinned set; `doctor`
+compares the installed versions against it and reports drift. A **suite release
+is a green `SUITE.lock`** — the pinned set passed the interop test (§5). This is
+what makes "deploy the suite" reproducible: you deploy a release, not six
+moving `@main`s.
+
+### The `revision` field
+
+The `revision` field on each component pin is **optional**. Older locks omit it;
+locks generated in environments where the source checkout is absent (CI from
+wheels, production installs) also omit it. When present, it is the full git SHA
+(40-char sha-1 or 64-char sha-256 hex) the lock was generated against, and it is
+what makes the lock a *reproducible candidate definition* rather than a version
+hint: a version can be republished, but a SHA cannot.
+
+**The both-sides-have-SHA gate:** `check_drift` reports `REVISION_MISMATCH` only
+when *both* the locked pin and the current state carry a SHA. A version-only lock
+cannot detect revision drift by design; a current state where the SHA is
+unprobeable (a wheel install with no source checkout) does not false-positive
+against a locked revision.
+
+**Failure mode:** an operator who generates a lock in CI-from-wheels gets a
+version-only lock — same-version rebuilds at a different SHA are undetectable.
+For candidate releases, generate the lock in an environment with the source
+checkouts present (or pin revisions by hand) so the SHA is captured.
 
 ## 5. The interop test (what makes a lock "green")
 
