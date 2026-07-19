@@ -769,3 +769,307 @@ def test_suite_release_falls_back_when_no_board(tmp_path: Path, monkeypatch) -> 
     result = _suite_release()
     assert isinstance(result, str)
     assert result  # non-empty
+
+
+# ---------------------------------------------------------------------------
+# H-1: empty-string revision is normalized to None (no false REVISION_MISMATCH)
+# ---------------------------------------------------------------------------
+
+
+def test_empty_string_revision_normalized_to_none() -> None:
+    """A hand-edited lock with `revision = ""` round-trips as revision=None.
+
+    H-1: ``isinstance("", str)`` is True, so the prior parsing stored ``""``
+    rather than None. That broke round-trip (None → omitted on serialize;
+    "" → emitted as empty string) AND caused false drift: ``check_drift``'s
+    gate ``locked_rev is not None`` is True for ``""``, so a hand-edited lock
+    with ``revision = ""`` produced false REVISION_MISMATCH against any real SHA.
+    """
+    text = (
+        "[suite]\nrelease='1.0'\n\n"
+        "[components.regista]\nrepo='r'\nversion='0.5.1'\nrevision=''\n"
+    )
+    lock = deserialize_lock(text)
+    assert lock.components["regista"].revision is None
+
+    # Round-trip: a None revision is omitted on serialize.
+    round_tripped = deserialize_lock(serialize_lock(lock))
+    assert round_tripped.components["regista"].revision is None
+
+    # No false drift: a version-only pin (revision=None after normalization)
+    # must not report REVISION_MISMATCH even when the current state has a SHA.
+    result = check_drift(
+        lock,
+        current_quad=_QUAD,
+        component_versions={"regista": "0.5.1"},
+        component_revisions={"regista": _SHA_A},
+    )
+    rev_drifts = [d for d in result.drift if d.kind is DriftKind.REVISION_MISMATCH]
+    assert rev_drifts == []
+
+
+def test_whitespace_only_revision_normalized_to_none() -> None:
+    """A whitespace-only revision string is also normalized to None (H-1)."""
+    text = (
+        "[suite]\nrelease='1.0'\n\n"
+        "[components.regista]\nrepo='r'\nversion='0.5.1'\nrevision='   '\n"
+    )
+    lock = deserialize_lock(text)
+    assert lock.components["regista"].revision is None
+
+
+# ---------------------------------------------------------------------------
+# L-2: deserialize validates revision SHA format
+# ---------------------------------------------------------------------------
+
+
+def test_deserialize_rejects_non_hex_revision() -> None:
+    """A hand-edited revision that isn't a hex SHA is rejected (L-2).
+
+    A tag name like ``revision = "v0.5.1"`` would otherwise be accepted and
+    cause perpetual drift against any probed SHA.
+    """
+    text = (
+        "[suite]\nrelease='1.0'\n\n"
+        "[components.regista]\nrepo='r'\nversion='0.5.1'\nrevision='v0.5.1'\n"
+    )
+    with pytest.raises(ValueError, match="40- or 64-char hex SHA"):
+        deserialize_lock(text)
+
+
+def test_deserialize_rejects_wrong_length_revision() -> None:
+    """A revision that is hex but wrong length (not 40 or 64) is rejected (L-2)."""
+    # 39 chars — too short for sha-1
+    short = "a" * 39
+    text = (
+        f"[suite]\nrelease='1.0'\n\n"
+        f"[components.regista]\nrepo='r'\nversion='0.5.1'\nrevision='{short}'\n"
+    )
+    with pytest.raises(ValueError, match="40- or 64-char hex SHA"):
+        deserialize_lock(text)
+
+    # 65 chars — too long for sha-256
+    long = "a" * 65
+    text = (
+        f"[suite]\nrelease='1.0'\n\n"
+        f"[components.regista]\nrepo='r'\nversion='0.5.1'\nrevision='{long}'\n"
+    )
+    with pytest.raises(ValueError, match="40- or 64-char hex SHA"):
+        deserialize_lock(text)
+
+
+def test_deserialize_accepts_sha256_revision() -> None:
+    """A 64-char sha-256 hex SHA is accepted (L-2 accepts both 40 and 64)."""
+    sha256 = "a" * 64
+    text = (
+        f"[suite]\nrelease='1.0'\n\n"
+        f"[components.regista]\nrepo='r'\nversion='0.5.1'\nrevision='{sha256}'\n"
+    )
+    lock = deserialize_lock(text)
+    assert lock.components["regista"].revision == sha256
+
+
+def test_deserialize_accepts_uppercase_hex_revision() -> None:
+    """Uppercase hex SHAs (as git may emit) are accepted (L-2)."""
+    sha = "A" * 40
+    text = (
+        f"[suite]\nrelease='1.0'\n\n"
+        f"[components.regista]\nrepo='r'\nversion='0.5.1'\nrevision='{sha}'\n"
+    )
+    lock = deserialize_lock(text)
+    assert lock.components["regista"].revision == sha
+
+
+# ---------------------------------------------------------------------------
+# L-3: _probe_revision validates SHA length
+# ---------------------------------------------------------------------------
+
+
+def test_probe_revision_validates_sha_length(tmp_path: Path) -> None:
+    """_probe_revision rejects git output that isn't 40 or 64 hex chars (L-3).
+
+    A truncated or malformed ``git rev-parse HEAD`` output must not be mistaken
+    for a valid SHA.
+    """
+    import os
+    import subprocess as sp
+
+    from agent_suite.lock import _probe_revision
+
+    basename = "fake-comp-truncated"
+    checkout = tmp_path / basename
+    checkout.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    sp.run(["git", "init", "-q", str(checkout)], check=True)
+    (checkout / "README").write_text("hi\n")
+    sp.run(["git", "-C", str(checkout), "add", "."], check=True)
+    sp.run(["git", "-C", str(checkout), "commit", "-q", "-m", "init"], check=True, env=env)
+
+    # Monkey-patch subprocess.run to return a truncated SHA (39 chars).
+    real_run = sp.run
+
+    def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
+        if cmd[:4] == ("git", "-C", str(checkout), "rev-parse"):
+            return sp.CompletedProcess(cmd, 0, "a" * 39, "")
+        return real_run(cmd, **kw)
+
+    import agent_suite.lock as lock_mod
+    orig_run = lock_mod.subprocess.run
+    lock_mod.subprocess.run = fake_run  # type: ignore[method-assign]
+    try:
+        result = _probe_revision("owner/fake-comp-truncated", (tmp_path,))
+        assert result is None
+    finally:
+        lock_mod.subprocess.run = orig_run  # type: ignore[method-assign]
+
+
+def test_probe_revision_rejects_non_hex_sha(tmp_path: Path) -> None:
+    """_probe_revision rejects non-hex git output (L-3)."""
+    import os
+    import subprocess as sp
+
+    from agent_suite.lock import _probe_revision
+
+    basename = "fake-comp-nonhex"
+    checkout = tmp_path / basename
+    checkout.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    sp.run(["git", "init", "-q", str(checkout)], check=True)
+    (checkout / "README").write_text("hi\n")
+    sp.run(["git", "-C", str(checkout), "add", "."], check=True)
+    sp.run(["git", "-C", str(checkout), "commit", "-q", "-m", "init"], check=True, env=env)
+
+    real_run = sp.run
+
+    def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
+        if cmd[:4] == ("git", "-C", str(checkout), "rev-parse"):
+            return sp.CompletedProcess(cmd, 0, "g" * 40, "")  # 'g' is not hex
+        return real_run(cmd, **kw)
+
+    import agent_suite.lock as lock_mod
+    orig_run = lock_mod.subprocess.run
+    lock_mod.subprocess.run = fake_run  # type: ignore[method-assign]
+    try:
+        result = _probe_revision("owner/fake-comp-nonhex", (tmp_path,))
+        assert result is None
+    finally:
+        lock_mod.subprocess.run = orig_run  # type: ignore[method-assign]
+
+
+# ---------------------------------------------------------------------------
+# L-4: _probe_revision rejects path-traversal basenames
+# ---------------------------------------------------------------------------
+
+
+def test_probe_revision_rejects_path_traversal() -> None:
+    """A repo basename of `..` or containing separators is rejected (L-4).
+
+    For ``repo = ".."`` (no slash), ``basename = ".."`` would resolve to
+    ``root.parent``. Limited impact (subprocess uses tuple, no shell), but
+    worth defending.
+    """
+    from agent_suite.lock import _probe_revision
+
+    # `..` as the entire repo (no slash) → basename is `..`
+    assert _probe_revision("..", (Path("/projects"),)) is None
+    # `.` as the entire repo
+    assert _probe_revision(".", (Path("/projects"),)) is None
+    # A repo with multiple slashes → basename contains a separator
+    # e.g. "foo/bar/baz" → basename "bar/baz" (contains "/")
+    assert _probe_revision("foo/bar/baz", (Path("/projects"),)) is None
+    # Empty basename
+    assert _probe_revision("", (Path("/projects"),)) is None
+    # A normal "owner/repo" still works (basename "repo" has no separator)
+    # — verified by the existing test_read_component_revisions_reads_local_checkout_sha
+
+
+def test_probe_revision_rejects_backslash_basename() -> None:
+    """A basename containing a backslash is rejected (L-4)."""
+    from agent_suite.lock import _probe_revision
+
+    # A repo with no slash but a backslash in the basename
+    assert _probe_revision("foo\\bar", (Path("/projects"),)) is None
+
+
+# ---------------------------------------------------------------------------
+# M-5: search roots are absolute, not relative to CWD
+# ---------------------------------------------------------------------------
+
+
+def test_default_search_roots_are_absolute() -> None:
+    """The default search roots must be absolute paths (M-5).
+
+    The prior default included ``Path("../projects")`` — relative to CWD — so
+    ``agent-suite lock`` run from anywhere other than ``/projects/agent-suite``
+    resolved to the wrong path.
+    """
+    from agent_suite.lock import _default_search_roots
+
+    roots = _default_search_roots()
+    for root in roots:
+        assert root.is_absolute(), f"search root {root} must be absolute"
+        # The relative fallback "../projects" must not appear
+        assert str(root) != "../projects"
+
+
+def test_default_search_roots_respect_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SUITE_WORKSPACE_ROOT overrides the default search roots (M-5)."""
+    from agent_suite.lock import _default_search_roots
+
+    monkeypatch.setenv("SUITE_WORKSPACE_ROOT", "/custom/workspace")
+    roots = _default_search_roots()
+    assert roots == (Path("/custom/workspace"),)
+    assert roots[0].is_absolute()
+
+
+def test_read_component_revisions_finds_checkout_from_non_workspace_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Running from a non-workspace CWD still finds checkouts (M-5).
+
+    The test creates a checkout under a custom root, sets SUITE_WORKSPACE_ROOT
+    to that root, and changes CWD to /tmp (away from /projects/agent-suite).
+    The revision must still be found.
+    """
+    import os
+    import subprocess as sp
+
+    from agent_suite.components import _component, Tier
+    from agent_suite.lock import read_component_revisions
+
+    basename = "fake-suite-comp-cwd"
+    checkout = tmp_path / basename
+    checkout.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    sp.run(["git", "init", "-q", str(checkout)], check=True)
+    (checkout / "README").write_text("hi\n")
+    sp.run(["git", "-C", str(checkout), "add", "."], check=True)
+    sp.run(["git", "-C", str(checkout), "commit", "-q", "-m", "init"], check=True, env=env)
+    head = sp.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    # Change CWD to somewhere completely unrelated.
+    monkeypatch.chdir("/tmp")
+    monkeypatch.setenv("SUITE_WORKSPACE_ROOT", str(tmp_path))
+
+    comp = _component("fake", "owner/fake-suite-comp-cwd", Tier.SPINE, ("fake", "doctor"))
+    revisions = read_component_revisions(components=(comp,))
+    assert revisions["fake"] == head
+
+
+def test_read_component_revisions_honest_none_when_checkout_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the checkout is absent, the revision is honestly None (M-5)."""
+    from agent_suite.components import _component, Tier
+    from agent_suite.lock import read_component_revisions
+
+    monkeypatch.setenv("SUITE_WORKSPACE_ROOT", str(tmp_path / "nonexistent"))
+    comp = _component("fake", "owner/fake-suite-comp", Tier.SPINE, ("fake", "doctor"))
+    revisions = read_component_revisions(components=(comp,))
+    assert revisions["fake"] is None
