@@ -3,25 +3,38 @@
 Implements WI-0.2. ``agent-suite inventory`` emits a structured view of the
 suite's current state: the release identity, whether a lock is present, each
 component's pinned vs installed version and revision, the regista quad (locked
-vs current), and the locked memory-provider extension. Per-component drift is
-named with a closed :class:`ComponentDrift` set so a reader can see at a glance
-what matches and what has diverged — the same honest-health rule that governs
-``doctor``: a gap is a named state, not silence.
+vs current), the locked memory-provider extension, and now the workspace
+provenance required by Plan 015 Gate 0: origin revision, local-only commits,
+dirty working-tree state, plan status, and deployed version. Per-component drift
+is named with a closed :class:`ComponentDrift` set so a reader can see at a
+glance what matches and what has diverged — the same honest-health rule that
+governs ``doctor``: a gap is a named state, not silence.
 
 The module is stdlib-only and composes :mod:`agent_suite.doctor` (for installed
 versions) and :mod:`agent_suite.lock` (for the lock + regista quad + revisions)
-— it adds no new shelling, just a structured reconciliation view over state the
-suite already probes. ``assert_never`` guards the closed drift sets in the
-formatting consumers (:func:`_component_drift_label`, :func:`_quad_drift_label`)
-so a newly added kind can't slip through the text formatter ungated — mirroring
+— it adds no new shelling beyond the origin/plan probes documented below, just a
+structured reconciliation view over state the suite already probes.
+``assert_never`` guards the closed drift sets in the formatting consumers
+(:func:`_component_drift_label`, :func:`_quad_drift_label`) so a newly added kind
+can't slip through the text formatter ungated — mirroring
 :func:`agent_suite.lock.format_drift_text`. The producer functions
 (:func:`_component_drift`, :func:`_quad_drift`) are total by construction
 (mypy's return-type checking on the closed enum).
+
+The inventory now also represents the umbrella repository itself, because
+Plan 015 WI-0.2 AC requires "all seven repositories and the deployed estate".
+A top-level ``summary`` answers the AC's publishability gate directly:
+``candidate_publishable`` is true only when no constituent is dirty, no
+constituent is ahead of origin, and no drift is recorded.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import re
+import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -103,23 +116,43 @@ class LockFileStatus:
 
 @dataclass(frozen=True)
 class ComponentInventory:
+    """One constituent (component or umbrella) in the candidate inventory."""
+
     ident: str
     repo: str
+    role: str  # "component" | "umbrella"
+    origin_revision: str | None
+    local_only_commits: int
+    working_tree_dirty: bool
     pinned_revision: str | None
     pinned_version: str | None
     installed_version: str | None
     installed_revision: str | None
     drift: ComponentDrift
+    schema_version: int | None
+    workflow_version: str | None
+    envelope_version: int | None
+    plan_status: str | None
+    deployed_version: str | None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "ident": self.ident,
             "repo": self.repo,
+            "role": self.role,
+            "origin_revision": self.origin_revision,
+            "local_only_commits": self.local_only_commits,
+            "working_tree_dirty": self.working_tree_dirty,
             "pinned_revision": self.pinned_revision,
             "pinned_version": self.pinned_version,
             "installed_version": self.installed_version,
             "installed_revision": self.installed_revision,
             "drift": self.drift.value,
+            "schema_version": self.schema_version,
+            "workflow_version": self.workflow_version,
+            "envelope_version": self.envelope_version,
+            "plan_status": self.plan_status,
+            "deployed_version": self.deployed_version,
         }
 
 
@@ -138,21 +171,43 @@ class RegistaQuadInventory:
 
 
 @dataclass(frozen=True)
+class Summary:
+    """The candidate publishability gate (Plan 015 WI-0.2 AC)."""
+
+    any_dirty: bool
+    any_ahead: bool
+    drift_count: int
+    candidate_publishable: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "any_dirty": self.any_dirty,
+            "any_ahead": self.any_ahead,
+            "drift_count": self.drift_count,
+            "candidate_publishable": self.candidate_publishable,
+        }
+
+
+@dataclass(frozen=True)
 class Inventory:
     release: str
     lock_file: LockFileStatus
+    umbrella: ComponentInventory
     components: list[ComponentInventory]
     regista_quad: RegistaQuadInventory
     memory_provider: dict[str, object] | None
+    summary: Summary
     generated_at: str
 
     def to_dict(self) -> dict[str, object]:
         return {
             "release": self.release,
             "lock_file": self.lock_file.to_dict(),
+            "umbrella": self.umbrella.to_dict(),
             "components": [c.to_dict() for c in self.components],
             "regista_quad": self.regista_quad.to_dict(),
             "memory_provider": self.memory_provider,
+            "summary": self.summary.to_dict(),
             "generated_at": self.generated_at,
         }
 
@@ -267,6 +322,172 @@ def _quad_drift_label(drift: QuadDrift) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Origin / plan / deployed-version probes (impure — default injection only)
+# ---------------------------------------------------------------------------
+
+
+def _package_root() -> Path:
+    """Return the agent-suite repository root (<root> where src/ lives)."""
+    return Path(__file__).resolve().parents[2]
+
+
+def _checkout_path_for_ident(
+    ident: str,
+    search_roots: tuple[Path, ...] | None = None,
+) -> Path | None:
+    """Resolve the local checkout path used for origin/plan probes.
+
+    ``ident`` is either a component ident or ``"agent-suite"`` for the
+    umbrella. Returns ``None`` when no suitable checkout exists.
+    """
+    if ident == "agent-suite":
+        root = _package_root()
+        return root if (root / ".git").exists() else None
+
+    comp = next((c for c in COMPONENTS if c.ident == ident), None)
+    if comp is None:
+        return None
+
+    basename = comp.repo.split("/", 1)[-1] if "/" in comp.repo else comp.repo
+    # L-4: reject path-traversal basenames (mirrors lock._probe_revision).
+    if not basename or basename in (".", "..") or "/" in basename or "\\" in basename:
+        return None
+
+    roots = search_roots if search_roots is not None else lock._default_search_roots()
+    for root in roots:
+        candidate = root / basename
+        if candidate.is_dir() and (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, bool]:
+    """Return ``(origin_revision, local_only_commits, dirty)`` for a checkout.
+
+    All three git commands are defensive: any subprocess failure, missing
+    remote, or malformed output returns ``None`` / ``0`` / ``False`` so a
+    probe failure never crashes the inventory.
+    """
+    origin_revision: str | None = None
+    local_only_commits = 0
+    dirty = False
+
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(checkout_path), "rev-parse", "origin/main"),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            sha = result.stdout.strip()
+            if lock._is_valid_sha(sha):
+                origin_revision = sha
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(checkout_path), "rev-list", "origin/main..HEAD", "--count"),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            local_only_commits = int(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(checkout_path), "status", "--porcelain"),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            dirty = bool(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+    return origin_revision, local_only_commits, dirty
+
+
+_STATUS_RE = re.compile(r"^\*\*status:\*\*\s*(.+?)\s*(?:\*\*)?\s*$", re.IGNORECASE)
+
+
+def _probe_plan_status(checkout_path: Path) -> str | None:
+    """Scan ``checkout_path/plans`` for the newest plan file and read its status.
+
+    The newest file is chosen by mtime. The status line must match
+    ``**Status:** <value>`` (Markdown strong). Returns ``None`` when the
+    directory is absent, no plan file exists, the newest file is unreadable,
+    or no status line is found. This is best-effort commentary.
+    """
+    plans_dir = checkout_path / "plans"
+    if not plans_dir.is_dir():
+        return None
+    files = sorted(plans_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        return None
+    try:
+        text = files[0].read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        match = _STATUS_RE.match(line.strip())
+        if match:
+            return match.group(1).strip() or None
+    return None
+
+
+def _probe_head(checkout_path: Path) -> str | None:
+    """Return the current HEAD SHA of a checkout, or None on failure."""
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(checkout_path), "rev-parse", "HEAD"),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            sha = result.stdout.strip()
+            if lock._is_valid_sha(sha):
+                return sha
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    return None
+
+
+def _umbrella_package_version() -> str | None:
+    """Return the installed ``agent-suite`` package version, or None."""
+    try:
+        from importlib.metadata import version
+
+        pkg_version = version("agent-suite")
+        return pkg_version if pkg_version else None
+    except Exception:
+        return None
+
+
+def _default_origin_probe(ident: str) -> tuple[str | None, int, bool]:
+    """Default origin-state probe used by :func:`collect_inventory`.
+
+    Maps ``ident`` to its checkout path and runs the three defensive git
+    commands. Returns ``(None, 0, False)`` when no checkout is found.
+    """
+    path = _checkout_path_for_ident(ident)
+    if path is None:
+        return None, 0, False
+    return _probe_origin_state(path)
+
+
+def _deployed_version_env_var(ident: str) -> str:
+    """Env var name used for the best-effort deployed-version lookup."""
+    return f"{ident.upper().replace('-', '_')}_DEPLOYED_VERSION"
+
+
+# ---------------------------------------------------------------------------
 # build_inventory — pure, fully injectable (the test surface)
 # ---------------------------------------------------------------------------
 
@@ -283,6 +504,11 @@ def build_inventory(
     components: tuple[Component, ...] = COMPONENTS,
     lock_parseable: bool = True,
     lock_note: str = "",
+    origin_probe: Callable[[str], tuple[str | None, int, bool]] = _default_origin_probe,
+    plan_statuses: dict[str, str | None] | None = None,
+    deployed_versions: dict[str, str | None] | None = None,
+    umbrella_version: str | None = None,
+    umbrella_revision: str | None = None,
 ) -> Inventory:
     """Build the inventory from a lock and the current installed state.
 
@@ -291,6 +517,11 @@ def build_inventory(
     unreadable (distinguished by ``has_lock_file`` + ``lock_parseable`` so the
     report can say "present but malformed" honestly). ``release`` defaults to
     :func:`agent_suite.lock._suite_release` (the release board identity).
+
+    ``origin_probe`` receives a component ident (or ``"agent-suite"`` for the
+    umbrella) and returns ``(origin_revision, local_only_commits,
+    working_tree_dirty)``. Tests inject a stub; the default uses defensive git
+    commands against the workspace checkout.
     """
     rel = release if release is not None else lock._suite_release()
     lock_status = LockFileStatus(
@@ -299,6 +530,9 @@ def build_inventory(
         parseable=lock_parseable,
         note=lock_note,
     )
+
+    statuses = plan_statuses if plan_statuses is not None else {}
+    deployed = deployed_versions if deployed_versions is not None else {}
 
     has_lock = lock_obj is not None  # a malformed lock is "no baseline"
     comp_entries: list[ComponentInventory] = []
@@ -316,15 +550,35 @@ def build_inventory(
             installed_version=installed_version,
             installed_revision=installed_revision,
         )
+
+        origin_revision, local_only_commits, dirty = origin_probe(comp.ident)
+
+        schema_version: int | None = None
+        workflow_version: str | None = None
+        envelope_version: int | None = None
+        if comp.ident == "regista" and current_quad is not None:
+            schema_version = current_quad.schema_version
+            workflow_version = current_quad.canonical_workflow_version
+            envelope_version = current_quad.envelope_version
+
         comp_entries.append(
             ComponentInventory(
                 ident=comp.ident,
                 repo=comp.repo,
+                role="component",
+                origin_revision=origin_revision,
+                local_only_commits=local_only_commits,
+                working_tree_dirty=dirty,
                 pinned_revision=pinned_revision,
                 pinned_version=pinned_version,
                 installed_version=installed_version,
                 installed_revision=installed_revision,
                 drift=drift,
+                schema_version=schema_version,
+                workflow_version=workflow_version,
+                envelope_version=envelope_version,
+                plan_status=statuses.get(comp.ident),
+                deployed_version=deployed.get(comp.ident),
             )
         )
 
@@ -343,12 +597,48 @@ def build_inventory(
     if lock_obj is not None and lock_obj.provider_extension is not None:
         memory_provider = lock_obj.provider_extension.to_dict()
 
+    # Umbrella entry: the agent-suite repository itself.
+    umbrella_origin, umbrella_ahead, umbrella_dirty = origin_probe("agent-suite")
+    umbrella_entry = ComponentInventory(
+        ident="agent-suite",
+        repo="hraedon/agent-suite",
+        role="umbrella",
+        origin_revision=umbrella_origin,
+        local_only_commits=umbrella_ahead,
+        working_tree_dirty=umbrella_dirty,
+        pinned_revision=None,
+        pinned_version=None,
+        installed_version=umbrella_version if umbrella_version is not None else rel,
+        installed_revision=umbrella_revision,
+        drift=ComponentDrift.MATCHES,
+        schema_version=None,
+        workflow_version=None,
+        envelope_version=None,
+        plan_status=statuses.get("agent-suite"),
+        deployed_version=deployed.get("agent-suite"),
+    )
+
+    all_constituents = [umbrella_entry, *comp_entries]
+    any_dirty = any(c.working_tree_dirty for c in all_constituents)
+    any_ahead = any(c.local_only_commits > 0 for c in all_constituents)
+    drift_count = sum(1 for c in comp_entries if c.drift is not ComponentDrift.MATCHES)
+    if quad_inv.drift is not QuadDrift.MATCHES:
+        drift_count += 1
+    summary = Summary(
+        any_dirty=any_dirty,
+        any_ahead=any_ahead,
+        drift_count=drift_count,
+        candidate_publishable=not any_dirty and not any_ahead and drift_count == 0,
+    )
+
     return Inventory(
         release=rel,
         lock_file=lock_status,
+        umbrella=umbrella_entry,
         components=comp_entries,
         regista_quad=quad_inv,
         memory_provider=memory_provider,
+        summary=summary,
         generated_at=datetime.now(UTC).isoformat(),
     )
 
@@ -413,6 +703,19 @@ def collect_inventory(
     component_revisions = lock.read_component_revisions(components=components)
     current_quad = lock.read_regista_quad(runner=v_runner, installed=v_installed)
 
+    # Best-effort plan statuses and deployed versions for every constituent.
+    plan_statuses: dict[str, str | None] = {}
+    deployed_versions: dict[str, str | None] = {}
+    for ident in ("agent-suite", *(c.ident for c in components)):
+        checkout = _checkout_path_for_ident(ident)
+        if checkout is not None:
+            plan_statuses[ident] = _probe_plan_status(checkout)
+        deployed_var = _deployed_version_env_var(ident)
+        deployed_versions[ident] = os.environ.get(deployed_var)
+
+    umbrella_checkout = _checkout_path_for_ident("agent-suite")
+    umbrella_revision = _probe_head(umbrella_checkout) if umbrella_checkout is not None else None
+
     return build_inventory(
         lock_obj=lock_obj,
         has_lock_file=has_lock_file,
@@ -424,6 +727,11 @@ def collect_inventory(
         components=components,
         lock_parseable=lock_parseable,
         lock_note=lock_note,
+        origin_probe=_default_origin_probe,
+        plan_statuses=plan_statuses,
+        deployed_versions=deployed_versions,
+        umbrella_version=_umbrella_package_version(),
+        umbrella_revision=umbrella_revision,
     )
 
 
@@ -465,11 +773,25 @@ def _short_sha(sha: str | None) -> str:
     return sha[:8]
 
 
+def _publishable_text(summary: Summary) -> str:
+    if summary.candidate_publishable:
+        return "PUBLISHABLE"
+    reasons: list[str] = []
+    if summary.any_dirty:
+        reasons.append("dirty workspace")
+    if summary.any_ahead:
+        reasons.append("unpushed commits")
+    if summary.drift_count:
+        reasons.append(f"{summary.drift_count} drift")
+    return f"NOT PUBLISHABLE: {', '.join(reasons)}"
+
+
 def format_text(inv: Inventory) -> str:
     """Human-readable summary for ``agent-suite inventory`` without ``--json``."""
     lines: list[str] = ["agent-suite candidate inventory"]
     lines.append(f"release: {inv.release}")
     lines.append(f"generated: {inv.generated_at}")
+    lines.append(f"Suite candidate: {_publishable_text(inv.summary)}")
 
     if inv.lock_file.present:
         lock_tag = "present" if inv.lock_file.parseable else "present (unreadable)"
@@ -480,23 +802,13 @@ def format_text(inv: Inventory) -> str:
         lines.append(f"  note: {inv.lock_file.note}")
 
     lines.append("")
+    lines.append("umbrella:")
+    lines.append(_format_constituent_line(inv.umbrella))
+
+    lines.append("")
     lines.append("components:")
     for c in inv.components:
-        if c.pinned_version:
-            pinned = f"v{c.pinned_version}"
-            if c.pinned_revision:
-                pinned += f" @ {_short_sha(c.pinned_revision)}"
-        else:
-            pinned = "(not pinned)"
-        if c.installed_version:
-            installed = f"v{c.installed_version}"
-            if c.installed_revision:
-                installed += f" @ {_short_sha(c.installed_revision)}"
-        else:
-            installed = "(not installed)"
-        lines.append(
-            f"  {c.ident:<24} {pinned:<28} {installed:<28} {_component_drift_label(c.drift)}"
-        )
+        lines.append(_format_constituent_line(c))
 
     lines.append("")
     lines.append("regista quad:")
@@ -521,3 +833,33 @@ def format_text(inv: Inventory) -> str:
     else:
         lines.append("memory provider: (none / native)")
     return "\n".join(lines)
+
+
+def _format_constituent_line(c: ComponentInventory) -> str:
+    """Format one constituent row for text output, including provenance hints."""
+    if c.pinned_version:
+        pinned = f"v{c.pinned_version}"
+        if c.pinned_revision:
+            pinned += f" @ {_short_sha(c.pinned_revision)}"
+    else:
+        pinned = "(not pinned)"
+    if c.installed_version:
+        installed = f"v{c.installed_version}"
+        if c.installed_revision:
+            installed += f" @ {_short_sha(c.installed_revision)}"
+    else:
+        installed = "(not installed)"
+    extras: list[str] = []
+    if c.working_tree_dirty:
+        extras.append("dirty")
+    if c.local_only_commits:
+        extras.append(f"ahead:{c.local_only_commits}")
+    if c.plan_status:
+        extras.append(f"plan:{c.plan_status}")
+    if c.deployed_version:
+        extras.append(f"deployed:{c.deployed_version}")
+    extra = f" ({', '.join(extras)})" if extras else ""
+    return (
+        f"  {c.ident:<24} {pinned:<28} {installed:<28} "
+        f"{_component_drift_label(c.drift)}{extra}"
+    )
