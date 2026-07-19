@@ -103,7 +103,10 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Install regista (spine)
-        run: pip install "git+https://github.com/hraedon/regista.git@${REGISTA_SHA}"
+        # regista-hraedon is the published PyPI distribution of hraedon/regista.
+        # The import name remains 'regista'. SUITE.lock still pins the source
+        # SHA for reproducibility checks; the install pulls from PyPI for speed.
+        run: pip install "regista-hraedon==0.5.1"
 
       # Both face repos are public — install as a hard required step. If the
       # install fails, CI fails: combined with INTEROP_REQUIRE_FACES=1 above,
