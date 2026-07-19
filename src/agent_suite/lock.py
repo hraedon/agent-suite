@@ -320,15 +320,19 @@ def _default_search_roots() -> tuple[Path, ...]:
     M-5: the prior default included ``Path("../projects")``, a path relative to
     CWD — so ``agent-suite lock`` run from anywhere other than
     ``/projects/agent-suite`` resolved to the wrong directory. The default is now
-    absolute-only: ``/projects`` (the canonical workspace root). An operator may
-    override the roots entirely by setting ``SUITE_WORKSPACE_ROOT`` to a single
-    absolute path; that one root replaces the defaults (useful in CI or non-
-    standard layouts).
+    absolute-only: ``/projects`` (the canonical POSIX workspace root). On
+    Windows, ``/projects`` is drive-relative — we resolve it against the
+    current drive so the path is genuinely absolute and ``is_absolute()``
+    holds cross-platform. An operator may override the roots entirely by
+    setting ``SUITE_WORKSPACE_ROOT`` to a single absolute path; that one root
+    replaces the defaults (useful in CI or non-standard layouts).
     """
     env_root = os.environ.get("SUITE_WORKSPACE_ROOT")
     if env_root and env_root.strip():
         return (Path(env_root).expanduser().resolve(),)
-    return (Path("/projects"),)
+    # Path("/projects").resolve() is /projects on POSIX and <current_drive>:\projects
+    # on Windows — both are absolute, which is the contract callers rely on.
+    return (Path("/projects").resolve(),)
 
 
 def read_component_revisions(
