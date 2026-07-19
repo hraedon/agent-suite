@@ -223,3 +223,66 @@ def test_doctor_default_revision_probe_is_the_real_lock_probe() -> None:
     # _check_lock_drift's param defaults directly to the real probe.
     cld_sig = inspect.signature(doctor_mod._check_lock_drift)
     assert cld_sig.parameters["revision_probe"].default is lock_mod.read_component_revisions
+
+
+def test_lock_check_memory_provider_drift_uses_current_provider() -> None:
+    """WI-003 regression: lock --check must not false-positive provider drift.
+
+    When the lock pins a memory-provider extension (e.g. hindsight) and the
+    operator's current engine matches, lock --check must NOT report
+    provider_extension drift. Prior to this fix, lock --check passed None
+    for current_provider_extension even when the engine was configured,
+    causing every check to report 'pinned -> absent'.
+    """
+    from agent_suite.lock import (
+        ComponentPin,
+        ProviderExtension,
+        SuiteLock,
+        check_drift,
+        RegistaVersionQuad,
+    )
+
+    quad = RegistaVersionQuad(
+        library_version="0.5.1",
+        schema_version=43,
+        canonical_workflow_version="2",
+        envelope_version=5,
+    )
+    pe = ProviderExtension(
+        provider_name="hindsight",
+        adapter_version="0.8.4",
+        protocol_version="1.0",
+        deployment_mode="remote",
+        support_level="supported",
+        config_digest=None,
+    )
+    lock = SuiteLock(
+        release="1.0.0-dev",
+        regista_quad=quad,
+        components={"regista": ComponentPin(repo="hraedon/regista", version="0.5.1")},
+        provider_extension=pe,
+    )
+
+    # Case 1: current_provider_extension is None (the bug) — false drift.
+    result_buggy = check_drift(
+        lock,
+        current_quad=quad,
+        component_versions={"regista": "0.5.1"},
+        current_provider_extension=None,
+    )
+    assert result_buggy.matches is False
+    assert any(
+        d.kind.value == "provider_drift" and d.field == "provider_extension"
+        for d in result_buggy.drift
+    ), "absent current provider must produce named provider_drift"
+
+    # Case 2: current_provider_extension matches — no drift (the fix).
+    result_fixed = check_drift(
+        lock,
+        current_quad=quad,
+        component_versions={"regista": "0.5.1"},
+        current_provider_extension=pe,
+    )
+    assert result_fixed.matches is True, (
+        f"matching provider must not drift; got: {[d.to_dict() for d in result_fixed.drift]}"
+    )

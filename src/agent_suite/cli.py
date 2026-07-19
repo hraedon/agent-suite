@@ -414,6 +414,7 @@ def main(argv: list[str] | None = None) -> int:
                 generate_lock,
                 load_lock_file,
                 read_component_revisions,
+                read_provider_extension,
                 read_regista_quad,
                 serialize_lock,
                 write_lock_file,
@@ -432,11 +433,22 @@ def main(argv: list[str] | None = None) -> int:
                 except ValueError as exc:
                     print(f"agent-suite lock --check: {exc}", file=sys.stderr)
                     return 1
+                # When the lock pins a memory-provider extension, probe the
+                # current provider so check_drift can detect real provider
+                # drift instead of false-positive "pinned → absent" (WI-003).
+                # Native engine yields None and check_drift handles that path.
+                from agent_suite.config import memory_provider_config
+
+                mp_engine_check = str(memory_provider_config()["engine"])
+                current_provider = read_provider_extension(
+                    engine=mp_engine_check,
+                )
                 drift_result = check_drift(
                     existing,
                     current_quad=current_quad,
                     component_versions=component_versions,
                     component_revisions=component_revisions,
+                    current_provider_extension=current_provider,
                 )
                 if getattr(args, "json", False):
                     import json as _json
