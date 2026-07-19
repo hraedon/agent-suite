@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import assert_never
 
 from agent_suite.profiles import (
@@ -22,6 +23,21 @@ from agent_suite.profiles import (
     PROFILE_REQUIREMENTS,
     Profile,
 )
+
+
+def _canonical_data_path(filename: str) -> Path:
+    """Resolve ``data/<filename>`` relative to the package root.
+
+    Sol Gate 0 Workstream 1: the committed JSON files under ``data/`` are
+    the canonical source of truth for the release artifacts.
+    ``Path(__file__).resolve().parents[2]`` walks from
+    ``src/agent_suite/release_artifacts.py`` up to the package root
+    (``src/agent_suite/`` -> ``src/`` -> ``<pkg-root>``). Editable installs,
+    wheel installs, and frozen apps all resolve consistently because the
+    ``data/`` directory is shipped with the package (or, for editable
+    installs, lives at the repo root as it does today).
+    """
+    return Path(__file__).resolve().parents[2] / "data" / filename
 
 
 class IdentityBackendKind(Enum):
@@ -555,88 +571,24 @@ class SupportMatrix:
 
     @classmethod
     def default(cls) -> SupportMatrix:
-        all_components = PROFILE_REQUIREMENTS[Profile.C]
-        profiles = tuple(
-            ProfileSupport(
-                profile=p,
-                required_components=tuple(
-                    sorted(PROFILE_REQUIREMENTS[p])
-                ),
-                optional_components=tuple(
-                    sorted(all_components - PROFILE_REQUIREMENTS[p])
-                ),
-                release_status=(
-                    "in_qualification"
-                    if p in (Profile.A, Profile.B)
-                    else "preview"
-                ),
-            )
-            for p in (Profile.A, Profile.B, Profile.C)
-        )
-        return cls(
-            release="1.0.0-dev",
-            python_versions=("3.12", "3.13", "3.14"),
-            python_versions_note="Windows native support may require 3.14 for latest stdlib improvements; 3.12/3.13 are the baseline for Linux/Docker.",
-            postgres_version="18+",
-            reference_linux="Ubuntu 22.04+",
-            docker="supported",
-            kubernetes="optional",
-            kubernetes_note="An optional manifest may exist for shops that already run k8s; it is never the required path. No k8s operator is produced.",
-            windows_versions=("10", "11", "Server 2022"),
-            browsers=(
-                BrowserTarget(name="Chrome", version="latest-1", status="not_qualified"),
-                BrowserTarget(name="Firefox", version="latest-1", status="not_qualified"),
-                BrowserTarget(name="Safari", version="latest-1", status="not_qualified"),
-                BrowserTarget(name="Edge", version="latest-1", status="not_qualified"),
-            ),
-            identity_backends=(
-                IdentityBackend(
-                    kind=IdentityBackendKind.ENTRA_OIDC,
-                    status="not_qualified",
-                ),
-                IdentityBackend(
-                    kind=IdentityBackendKind.LOCAL,
-                    status="supported",
-                ),
-            ),
-            secret_backends=(
-                SecretBackend(
-                    kind=SecretBackendKind.VAULT,
-                    status="not_qualified",
-                ),
-                SecretBackend(
-                    kind=SecretBackendKind.AKV,
-                    status="not_qualified",
-                ),
-                SecretBackend(
-                    kind=SecretBackendKind.WINDOWS_NATIVE_FILE,
-                    status="not_qualified",
-                ),
-            ),
-            profiles=profiles,
-            availability=AvailabilityObjectives(
-                backup_cadence="daily",
-                max_rpo="24h",
-                rto="4h",
-                health_check_cadence="15min",
-                key_rotation="90 days",
-                rc_soak_days=14,
-            ),
-            compatibility_window="N-1 upgrade supported",
-            compatibility_window_note="Upgrade/rollback logic is unit-tested with stubbed runners; live N-1 upgrade proof is Gate 4 WI-4.3.",
-            excluded_surfaces=(
-                "Kubernetes operator (k8s is an optional substrate, not a required dependency)",
-                "SaaS",
-                "Multi-region active/active",
-                "Fleet management",
-            ),
-            windows_qualification="unit_tests_only",
-            windows_qualification_note="agent-suite unit tests pass on windows-latest CI; native Windows qualification (Setup, DPAPI, WinSW, dual-control) is Gate 4 WI-4.2 and not yet started.",
-            browsers_qualification_note="No browser CI lane exists; dossier WCAG/accessibility qualification is Gate 1 WI-1.6 and not yet started.",
-            identity_backends_note="Local identity is CI-tested via interop. Entra/OIDC qualification is dossier Plan 020 and not yet started.",
-            secret_backends_note="Secret resolver design is documented; no backend is CI-qualified. Backend SDKs live behind extras and are imported only at the secret-resolution edge.",
-            availability_note="Objectives are targets for Gate 0 WI-0.3 ratification, not yet proven by qualification.",
-        )
+        """Load and validate the canonical ``data/support-matrix.json``.
+
+        Sol Gate 0 Workstream 1: the committed JSON is the sole source of
+        truth. The prior hardcoded data table is removed; this loader is the
+        only path. Raises ``FileNotFoundError`` if the canonical file is
+        absent and ``ValueError`` if it fails to validate.
+
+        Backwards-compat: callers that previously did
+        ``SupportMatrix.default().validate()`` keep working — the load
+        already validates, and ``validate()`` re-checks on the loaded
+        instance.
+        """
+        path = _canonical_data_path("support-matrix.json")
+        text = path.read_text(encoding="utf-8")
+        matrix = cls.from_json(text)
+        if not matrix.validate():
+            raise ValueError(f"{path}: canonical support-matrix.json failed validation")
+        return matrix
 
     def validate(self) -> bool:
         if not self.python_versions:
@@ -862,377 +814,28 @@ class ReleaseBoard:
 
     @classmethod
     def default(cls) -> ReleaseBoard:
-        return cls(
-            release="1.0.0-dev",
-            feature_matrix_ref="data/v1-feature-matrix.json",
-            claims_ledger_ref="data/claims-ledger.json",
-            gates=(
-                Gate(
-                    number=0,
-                    name=(
-                        "Reconcile truth and freeze the release "
-                        "candidate contract"
-                    ),
-                    work_items=(
-                        WorkItem(
-                            id="WI-0.1",
-                            title=(
-                                "Replace hand assessment with executable "
-                                "baseline probes"
-                            ),
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="Plan 009 WI-0.3",
-                            status=WIStatus.COMPLETE,
-                            proof_command=(
-                                "python3 scripts/feature-probes.py --check"
-                            ),
-                            proof_artifact="data/v1-feature-matrix.json",
-                        ),
-                        WorkItem(
-                            id="WI-0.2",
-                            title=(
-                                "Reconcile plans, source state, and "
-                                "dogfood state"
-                            ),
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="\u2014",
-                            status=WIStatus.IN_PROGRESS,
-                            status_note=(
-                                "SUITE.lock updated with real SHAs; "
-                                "identifier gate replaced with canonical "
-                                "script; plan status lines reconciled. "
-                                "Inventory CLI (agent-suite inventory) not "
-                                "yet implemented."
-                            ),
-                            proof_command="agent-suite inventory --json",
-                            proof_artifact="data/candidate-inventory.json",
-                        ),
-                        WorkItem(
-                            id="WI-0.3",
-                            title=(
-                                "Ratify the 1.0 support matrix and "
-                                "objectives"
-                            ),
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="WI-0.2",
-                            status=WIStatus.IN_PROGRESS,
-                            proof_command=(
-                                "python -c \"from agent_suite."
-                                "release_artifacts import SupportMatrix; "
-                                "assert SupportMatrix.default()."
-                                "validate()\""
-                            ),
-                            proof_artifact="data/support-matrix.json",
-                        ),
-                        WorkItem(
-                            id="WI-0.4",
-                            title="Establish the release board",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="WI-0.3",
-                            status=WIStatus.IN_PROGRESS,
-                            proof_command=(
-                                "python -c \"from agent_suite."
-                                "release_artifacts import ReleaseBoard; "
-                                "assert ReleaseBoard.default()."
-                                "validate()\""
-                            ),
-                            proof_artifact="data/release-board.json",
-                        ),
-                    ),
-                ),
-                Gate(
-                    number=1,
-                    name=(
-                        "Complete the Profile B product through dossier"
-                    ),
-                    work_items=(
-                        WorkItem(
-                            id="WI-1.1",
-                            title="Freeze versioned provider contracts",
-                            owner_repo="hraedon/dossier",
-                            blocking_dependency="Gate 0",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "pytest tests/test_provider_contracts.py"
-                            ),
-                            proof_artifact="data/contracts/",
-                        ),
-                        WorkItem(
-                            id="WI-1.2",
-                            title="Work and knowledge journeys",
-                            owner_repo="hraedon/dossier",
-                            blocking_dependency="WI-1.1",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "pytest tests/test_golden_journeys.py "
-                                "-k 'GJ-1 or GJ-2 or GJ-3 or GJ-4'"
-                            ),
-                            proof_artifact="golden/gj-1-through-4.json",
-                        ),
-                        WorkItem(
-                            id="WI-1.3",
-                            title="Activity and evidence journeys",
-                            owner_repo="hraedon/dossier",
-                            blocking_dependency="WI-1.1",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "pytest tests/test_golden_journeys.py "
-                                "-k 'GJ-5 or GJ-8'"
-                            ),
-                            proof_artifact="golden/gj-5-gj-8.json",
-                        ),
-                        WorkItem(
-                            id="WI-1.4",
-                            title=(
-                                "Identity, keys, and protected "
-                                "administration"
-                            ),
-                            owner_repo="hraedon/dossier",
-                            blocking_dependency="WI-1.1",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "pytest tests/test_identity_keys.py"
-                            ),
-                            proof_artifact="golden/identity-keys.json",
-                        ),
-                        WorkItem(
-                            id="WI-1.5",
-                            title="Daily operation and notifications",
-                            owner_repo="hraedon/dossier",
-                            blocking_dependency="WI-1.2, WI-1.4",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "pytest tests/test_notifications.py"
-                            ),
-                            proof_artifact="golden/notifications.json",
-                        ),
-                        WorkItem(
-                            id="WI-1.6",
-                            title=(
-                                "Console and accessibility qualification"
-                            ),
-                            owner_repo="hraedon/dossier",
-                            blocking_dependency=(
-                                "WI-1.2, WI-1.3, WI-1.4, WI-1.5"
-                            ),
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "pytest tests/test_accessibility.py"
-                            ),
-                            proof_artifact="golden/a11y-report.json",
-                        ),
-                    ),
-                ),
-                Gate(
-                    number=2,
-                    name=(
-                        "Make candidate artifacts immutable and "
-                        "reproducible"
-                    ),
-                    work_items=(
-                        WorkItem(
-                            id="WI-2.1",
-                            title="Replace the current compatibility lock",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="Gate 1",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command="agent-suite lock --certify",
-                            proof_artifact="SUITE.lock",
-                        ),
-                        WorkItem(
-                            id="WI-2.2",
-                            title="Test the lock, not moving branches",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="WI-2.1",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command="pytest tests/test_lock_ci.py",
-                            proof_artifact="ci/lock-build.yml",
-                        ),
-                        WorkItem(
-                            id="WI-2.3",
-                            title="Publish one release bundle",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="WI-2.2",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "agent-suite bundle --publish"
-                            ),
-                            proof_artifact="dist/agent-suite-1.0.0/",
-                        ),
-                        WorkItem(
-                            id="WI-2.4",
-                            title="Supply-chain and publication gates",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="WI-2.3",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command="agent-suite bundle --audit",
-                            proof_artifact="dist/audit-report.json",
-                        ),
-                    ),
-                ),
-                Gate(
-                    number=3,
-                    name=(
-                        "Close or narrow the production assurance "
-                        "claims"
-                    ),
-                    work_items=(
-                        WorkItem(
-                            id="WI-3.1",
-                            title="Required supported claims",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="Gate 2",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command="pytest tests/test_claims.py",
-                            proof_artifact="data/claims-ledger.json",
-                        ),
-                        WorkItem(
-                            id="WI-3.2",
-                            title=(
-                                "Optional claims are qualified or "
-                                "excluded"
-                            ),
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="WI-3.1",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "pytest tests/test_claims_optional.py"
-                            ),
-                            proof_artifact="data/claims-ledger.json",
-                        ),
-                        WorkItem(
-                            id="WI-3.3",
-                            title="Security and privacy review",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="Gate 2",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "agent-suite security-review --json"
-                            ),
-                            proof_artifact="data/security-review.json",
-                        ),
-                    ),
-                ),
-                Gate(
-                    number=4,
-                    name=(
-                        "Qualify deployment, migration, and recovery"
-                    ),
-                    work_items=(
-                        WorkItem(
-                            id="WI-4.1",
-                            title="Hermetic clean-install convergence",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="Gate 2",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "agent-suite doctor --clean-install --json"
-                            ),
-                            proof_artifact="golden/clean-install.json",
-                        ),
-                        WorkItem(
-                            id="WI-4.2",
-                            title="Native Windows proof",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="Gate 2",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "agent-suite doctor --windows --json"
-                            ),
-                            proof_artifact=(
-                                "golden/windows-qualification.json"
-                            ),
-                        ),
-                        WorkItem(
-                            id="WI-4.3",
-                            title="Schema and release transition proof",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="WI-4.1",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "agent-suite upgrade --dry-run --from N-1 "
-                                "--json"
-                            ),
-                            proof_artifact="golden/upgrade-proof.json",
-                        ),
-                        WorkItem(
-                            id="WI-4.4",
-                            title=(
-                                "Protection and disaster recovery proof"
-                            ),
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="WI-4.1",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "agent-suite restore --verify --json"
-                            ),
-                            proof_artifact="golden/restore-proof.json",
-                        ),
-                        WorkItem(
-                            id="WI-4.5",
-                            title="Existing-estate convergence",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="WI-4.1, WI-4.3",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "agent-suite upgrade --estate --json"
-                            ),
-                            proof_artifact=(
-                                "golden/estate-convergence.json"
-                            ),
-                        ),
-                    ),
-                ),
-                Gate(
-                    number=5,
-                    name="Release candidate, soak, and publication",
-                    work_items=(
-                        WorkItem(
-                            id="WI-5.1",
-                            title="Cut RC1 and freeze inputs",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="Gates 0-4",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "agent-suite release cut --rc 1"
-                            ),
-                            proof_artifact="releases/1.0.0-rc1/",
-                        ),
-                        WorkItem(
-                            id="WI-5.2",
-                            title="Operate the candidate",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="WI-5.1",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "agent-suite soak --report --json"
-                            ),
-                            proof_artifact="golden/soak-report.json",
-                        ),
-                        WorkItem(
-                            id="WI-5.3",
-                            title="Documentation and support readiness",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="WI-5.1",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command="agent-suite docs --check",
-                            proof_artifact="docs/",
-                        ),
-                        WorkItem(
-                            id="WI-5.4",
-                            title="Final release review",
-                            owner_repo="hraedon/agent-suite",
-                            blocking_dependency="WI-5.2, WI-5.3",
-                            status=WIStatus.NOT_STARTED,
-                            proof_command=(
-                                "agent-suite release promote --final"
-                            ),
-                            proof_artifact="releases/1.0.0/",
-                        ),
-                    ),
-                ),
-            ),
-        )
+        """Load and validate the canonical ``data/release-board.json``.
+
+        Sol Gate 0 Workstream 1: the committed JSON is the sole source of
+        truth. The prior hardcoded data table (Gates 0-5, every WI, every
+        proof_artifact) is removed; this loader is the only path. Raises
+        ``FileNotFoundError`` if the canonical file is absent and
+        ``ValueError`` if it fails to validate.
+
+        Backwards-compat: callers that previously did
+        ``ReleaseBoard.default().validate()`` keep working — the load
+        already validates, and ``validate()`` re-checks on the loaded
+        instance.
+        """
+        path = _canonical_data_path("release-board.json")
+        text = path.read_text(encoding="utf-8")
+        board = cls.from_json(text)
+        if not board.validate():
+            raise ValueError(
+                f"{path}: canonical release-board.json failed validation"
+            )
+        return board
+
 
     def validate(self) -> bool:
         all_ids: list[str] = []
