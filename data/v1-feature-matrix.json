@@ -1,9 +1,9 @@
 {
   "version": "v1",
-  "generated_at": "2026-07-19T06:43:29.767598Z",
+  "generated_at": "2026-07-19T07:06:03.356053Z",
   "status_source": "probe-emitted",
   "observed_revisions": {
-    "agent-suite": "6b551a2",
+    "agent-suite": "497b897",
     "regista": "0.5.1",
     "agent-notes": "1.0.0",
     "dossier": "0.0.1",

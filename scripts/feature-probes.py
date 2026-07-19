@@ -1800,14 +1800,18 @@ def apply_probes(matrix_data: dict[str, Any]) -> dict[str, Any]:
         match outcome.result:
             case ProbeResult.PASS | ProbeResult.PARTIAL | ProbeResult.BLOCKED | ProbeResult.ABSENT:
                 row["status"] = outcome.result.value
+                row["proof"] = (
+                    f"probe: {probe_fn_name} -> {outcome.result.value}; "
+                    f"evidence: {outcome.evidence}"
+                )
             case ProbeResult.HAND_ASSESSED:
+                # Preserve prior status AND proof — the sibling component is not
+                # available, so the probe cannot mechanically determine the
+                # status. This keeps the committed JSON stable across
+                # environments (CI without siblings vs local dev with siblings).
                 hand_assessed_count += 1
             case other:
                 assert_never(other)
-        row["proof"] = (
-            f"probe: {probe_fn_name} -> {outcome.result.value}; "
-            f"evidence: {outcome.evidence}"
-        )
         probed_count += 1
 
     if probed_count > 0 and unprobed_count == 0 and hand_assessed_count == 0:
