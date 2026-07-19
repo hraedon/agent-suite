@@ -16,12 +16,12 @@ revision = "9610aef6c0d223bc33157b200711953700ce747d"
 [components.agent-notes]
 repo = "hraedon/agent-notes"
 version = "1.0.0"
-revision = "a33e95092342b8d723a72d66275892531907ec64"
+revision = "b92d0d6a2b172f7f2daa7c0068a6e01b62fb92fb"
 
 [components.agent-provenance]
 repo = "hraedon/agent-provenance"
 version = "0.1.0"
-revision = "3605d67f15b03e0ed2dc2ce12f719729607066af"
+revision = "6e986e703c6a4072e33cfecee44355d191a4e3b6"
 
 [components.agent-wake]
 repo = "hraedon/agent-wake"
@@ -31,12 +31,12 @@ revision = "90d83803e0824be132dfa531c07daa364a753966"
 [components.dossier]
 repo = "hraedon/dossier"
 version = "0.0.1"
-revision = "db834d834a7f3291acbe9206fcc6226f0b5f96c6"
+revision = "306e4a25f28fd6a1af5e8bd73a2e0b0f9eebf6b2"
 
 [components.regista]
 repo = "hraedon/regista"
 version = "0.5.1"
-revision = "ea434ace9a65bdcadf6161056433b57d7afeca01"
+revision = "1b869976eb6d7081a2e37f04dadfc75df615ce4f"
 
 [memory_provider]
 provider_name = "hindsight"
