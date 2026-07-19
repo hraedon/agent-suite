@@ -1,0 +1,56 @@
+name: Release inventory artifact
+
+# Generates `data/candidate-inventory.json` as a release-time artifact on tag
+# push and attaches it to the GitHub release. The inventory is a current-state
+# read of the operator's checkouts + suite.env, so a committed snapshot in the
+# main branch would always be self-stale (committing it changes the umbrella
+# HEAD it just snapshotted — see Sol round-2/3 finding #2). Generating it in CI
+# against the tagged release revision is the canonical path.
+#
+# Triggers only on tag pushes matching `v*`. The artifact is uploaded to the
+# release; the main branch never carries it.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the origin probe can compare against main.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install agent-suite
+        run: pip install -e ".[dev]"
+
+      # The release inventory is generated against the tag's own source tree.
+      # Component checkouts are absent in CI (no /projects/* on the runner), so
+      # origin provenance will read unknown for every component and the summary
+      # will honestly report source_tree_converged=false. That is the correct
+      # signal for a release-from-wheel path: the suite's release artifact
+      # carries its own source-tree-converged read, and consumers compare it
+      # against their locally-installed estate via `agent-suite inventory`.
+      - name: Generate candidate inventory
+        run: |
+          mkdir -p out
+          agent-suite inventory --json > out/candidate-inventory.json
+          cat out/candidate-inventory.json
+
+      - name: Attach inventory to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/candidate-inventory.json

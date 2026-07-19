@@ -408,27 +408,36 @@ def _checkout_path_for_ident(
 def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, int, bool, bool]:
     """Return ``(origin_revision, ahead, behind, dirty, provenance_known)``.
 
-    ``provenance_known`` is the fail-closed flag: it is True only when the
-    origin probe successfully returned a parseable SHA. Callers MUST treat
-    ``provenance_known=False`` as "do not claim convergence" — the ahead/
-    behind defaults of zero are placeholders, not confirmed values.
+    ``provenance_known`` is the fail-closed flag. It is True **only** when
+    every relevant Git probe succeeded: origin resolution, ahead count,
+    behind count, and working-tree status. If any one of them failed (no
+    remote, subprocess error, malformed output), the safe-looking defaults
+    remain but ``provenance_known`` is False so the summary's
+    ``any_provenance_unknown`` flag fires and convergence is honestly
+    withheld.
+
+    A subtler failure mode Sol reproduced (round 3 finding #1): the prior
+    implementation marked ``provenance_known=True`` as soon as
+    ``git rev-parse origin/main`` succeeded, leaving the ahead/behind/dirty
+    reads to fall through to their 0/0/False defaults on partial failure.
+    A checkout with a known origin but a broken ahead-probe would read as
+    "clean, current, not dirty" even though the ahead read failed. This
+    function treats every probe as a precondition.
 
     ``behind`` is computed from ``git rev-list HEAD..origin/main --count``
-    (commits on origin not in HEAD). ``ahead`` is ``origin/main..HEAD`` as
-    before. The two together distinguish "local-only" from "stale" from
-    "diverged."
-
-    All five git invocations are defensive: any subprocess failure, missing
-    remote, or malformed output returns the safe defaults (None, 0, 0,
-    False, False) so a probe failure never crashes the inventory. The
-    ``provenance_known`` flag is the signal that those defaults are real
-    reads vs probe failures.
+    (commits on origin not in HEAD). ``ahead`` is ``origin/main..HEAD``.
+    The two together distinguish "local-only" from "stale" from "diverged."
     """
+    # Each probe records both its value AND whether it succeeded. The final
+    # provenance_known flag is the AND of every probe_ok.
     origin_revision: str | None = None
     ahead = 0
     behind = 0
     dirty = False
-    provenance_known = False
+    origin_ok = False
+    ahead_ok = False
+    behind_ok = False
+    dirty_ok = False
 
     try:
         result = subprocess.run(
@@ -441,7 +450,7 @@ def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, int, bool
             sha = result.stdout.strip()
             if lock._is_valid_sha(sha):
                 origin_revision = sha
-                provenance_known = True
+                origin_ok = True
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
 
@@ -454,6 +463,7 @@ def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, int, bool
         )
         if result.returncode == 0:
             ahead = int(result.stdout.strip())
+            ahead_ok = True
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
         pass
 
@@ -466,6 +476,7 @@ def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, int, bool
         )
         if result.returncode == 0:
             behind = int(result.stdout.strip())
+            behind_ok = True
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
         pass
 
@@ -478,9 +489,11 @@ def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, int, bool
         )
         if result.returncode == 0:
             dirty = bool(result.stdout.strip())
+            dirty_ok = True
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
 
+    provenance_known = origin_ok and ahead_ok and behind_ok and dirty_ok
     return origin_revision, ahead, behind, dirty, provenance_known
 
 
