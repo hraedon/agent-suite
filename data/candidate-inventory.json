@@ -10,7 +10,7 @@
     "ident": "agent-suite",
     "repo": "hraedon/agent-suite",
     "role": "umbrella",
-    "origin_revision": "812c321309e70dbe9856a107cfd147aa2f022d99",
+    "origin_revision": "79f185857afcca8f6cd5e073b2fd030f8dda21c4",
     "local_only_commits": 0,
     "behind_origin": 0,
     "provenance_known": true,
@@ -18,7 +18,7 @@
     "pinned_revision": null,
     "pinned_version": null,
     "installed_version": "0.0.1",
-    "installed_revision": "812c321309e70dbe9856a107cfd147aa2f022d99",
+    "installed_revision": "79f185857afcca8f6cd5e073b2fd030f8dda21c4",
     "drift": "matches",
     "schema_version": null,
     "workflow_version": null,
@@ -179,5 +179,5 @@
     "drift_count": 0,
     "source_tree_converged": false
   },
-  "generated_at": "2026-07-19T05:29:54.837550+00:00"
+  "generated_at": "2026-07-19T05:32:09.128890+00:00"
 }
