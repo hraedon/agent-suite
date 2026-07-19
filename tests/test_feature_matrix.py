@@ -82,11 +82,16 @@ def test_matrix_check_mode_passes() -> None:
 
 
 def test_committed_json_matches_generator() -> None:
-    """The committed JSON must be in sync with _matrix() (ignoring timestamp)."""
+    """The committed JSON must be in sync with _matrix().
+
+    Ignores ``generated_at`` (timestamp) and ``observed_revisions`` (git HEAD
+    revs / package versions captured at probe-run time — these are run-time
+    observations, not structural properties of the matrix).
+    """
     committed = json.loads(DATA_PATH.read_text(encoding="utf-8"))
     matrix = feature_matrix._matrix()
     generated = json.loads(feature_matrix._matrix_to_json(matrix))
-    ignored = {"generated_at"}
+    ignored = {"generated_at", "observed_revisions"}
     for key in ignored:
         committed.pop(key, None)
         generated.pop(key, None)
@@ -133,6 +138,7 @@ def test_validation_catches_errors() -> None:
             version=matrix.version,
             generated_at=matrix.generated_at,
             status_source=matrix.status_source,
+            observed_revisions=matrix.observed_revisions,
             profiles=matrix.profiles,
             golden_journeys=matrix.golden_journeys,
             rows=[*matrix.rows, bad_row],
@@ -148,6 +154,7 @@ def test_validation_catches_duplicate_rows() -> None:
         version=matrix.version,
         generated_at=matrix.generated_at,
         status_source=matrix.status_source,
+        observed_revisions=matrix.observed_revisions,
         profiles=matrix.profiles,
         golden_journeys=matrix.golden_journeys,
         rows=[*matrix.rows, duplicate],

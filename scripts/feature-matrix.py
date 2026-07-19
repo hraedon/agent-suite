@@ -15,13 +15,28 @@ Status values (Plan 009 §8 baseline vocabulary):
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import assert_never
+from typing import Any, assert_never
+
+# Load the probe layer (scripts/feature-probes.py) so _matrix() can apply
+# probes during generation. This keeps feature-matrix.py as the source of
+# truth for row structure while delegating status/proof determination to
+# the named probes in feature-probes.py. Loaded via importlib because the
+# scripts directory is not on sys.path when this file is loaded by tests.
+_THIS_DIR = Path(__file__).resolve().parent
+_PROBES_PATH = _THIS_DIR / "feature-probes.py"
+_spec = importlib.util.spec_from_file_location("_feature_probes", _PROBES_PATH)
+assert _spec is not None and _spec.loader is not None
+_feature_probes = importlib.util.module_from_spec(_spec)
+# Register before exec_module so dataclass decorators can resolve the module.
+sys.modules["_feature_probes"] = _feature_probes
+_spec.loader.exec_module(_feature_probes)
 
 
 class Status(Enum):
@@ -49,6 +64,7 @@ class Matrix:
     version: str
     generated_at: str
     status_source: str
+    observed_revisions: dict[str, str | None]
     profiles: list[str]
     golden_journeys: dict[str, str]
     rows: list[MatrixRow]
@@ -80,9 +96,10 @@ def _status_label(status: Status) -> str:
 def _matrix_rows() -> list[MatrixRow]:
     """Static definition of the v1 warranted surface.
 
-    Statuses in this initial matrix are hand-assessed from the 2026-07-11
-    cross-project review. Future runs of the baseline (WI-0.3) should replace
-    hand-assessed statuses with probe results where feasible.
+    The ``status`` and ``proof`` fields are placeholders that get overwritten
+    by named probes in ``feature-probes.py`` via ``apply_probes()`` during
+    ``_matrix()`` construction. Only the structural fields (journey, component,
+    surface, profile, dependency, excluded, notes) are authoritative here.
     """
     return [
         # GJ-1 — Start a project
@@ -604,12 +621,25 @@ def _matrix_rows() -> list[MatrixRow]:
 
 
 def _matrix() -> Matrix:
-    return Matrix(
-        version="v1",
-        generated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        status_source="mixed-probe-and-hand",
-        profiles=["A", "B", "C"],
-        golden_journeys={
+    """Build the v1 feature matrix with probe-emitted statuses.
+
+    Row structure (journey, component, surface, profile, dependency, excluded,
+    notes) is defined statically in ``_matrix_rows()``. The ``status`` and
+    ``proof`` fields are placeholders that get overwritten by the named probes
+    in ``feature-probes.py`` via ``apply_probes()``. This keeps feature-matrix.py
+    as the source of truth for row structure while delegating status/proof
+    determination to the probe layer.
+    """
+    base_rows = _matrix_rows()
+    # Build a dict payload, apply probes (which set status/proof/status_source/
+    # observed_revisions), then reconstruct the Matrix dataclass.
+    payload: dict[str, Any] = {
+        "version": "v1",
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "status_source": "hand-assessed",
+        "observed_revisions": {},
+        "profiles": ["A", "B", "C"],
+        "golden_journeys": {
             "GJ-1": "Start a project",
             "GJ-2": "Plan and execute work",
             "GJ-3": "Capture and reuse knowledge",
@@ -620,7 +650,17 @@ def _matrix() -> Matrix:
             "GJ-8": "Investigate and export evidence",
             "GJ-9": "Operate and recover",
         },
-        rows=_matrix_rows(),
+        "rows": [asdict(r) for r in base_rows],
+    }
+    payload = _feature_probes.apply_probes(payload)
+    return Matrix(
+        version=payload["version"],
+        generated_at=payload["generated_at"],
+        status_source=payload["status_source"],
+        observed_revisions=payload["observed_revisions"],
+        profiles=payload["profiles"],
+        golden_journeys=payload["golden_journeys"],
+        rows=[MatrixRow(**r) for r in payload["rows"]],
     )
 
 
@@ -649,6 +689,7 @@ def _matrix_to_json(matrix: Matrix) -> str:
         "version": matrix.version,
         "generated_at": matrix.generated_at,
         "status_source": matrix.status_source,
+        "observed_revisions": matrix.observed_revisions,
         "profiles": matrix.profiles,
         "golden_journeys": matrix.golden_journeys,
         "rows": [asdict(row) for row in matrix.rows],
@@ -667,7 +708,14 @@ def _matrix_to_markdown(matrix: Matrix) -> str:
     lines.append("")
     if matrix.status_source == "probe-emitted":
         lines.append(
-            "This matrix is emitted by the WI-0.3 baseline run; do not hand-edit the status column."
+            "This matrix is emitted by named probes; every row's status is "
+            "mechanically determined. Do not hand-edit the status column."
+        )
+    elif matrix.status_source == "mixed-probe-and-hand":
+        lines.append(
+            "Most rows are probe-emitted; some probes returned HAND_ASSESSED "
+            "(sibling component not available). Re-run with siblings installed "
+            "for full coverage."
         )
     else:
         lines.append(
@@ -675,6 +723,12 @@ def _matrix_to_markdown(matrix: Matrix) -> str:
             "The WI-0.3 baseline run will replace them with probe-emitted statuses."
         )
     lines.append("")
+    if matrix.observed_revisions:
+        lines.append("## Observed revisions")
+        lines.append("")
+        for component, rev in matrix.observed_revisions.items():
+            lines.append(f"- **{component}**: {rev if rev else '(unavailable)'}")
+        lines.append("")
     lines.append("## Golden journeys")
     lines.append("")
     for key, value in matrix.golden_journeys.items():

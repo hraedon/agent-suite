@@ -1,7 +1,16 @@
 {
   "version": "v1",
-  "generated_at": "2026-07-19T00:17:43.359400Z",
-  "status_source": "mixed-probe-and-hand",
+  "generated_at": "2026-07-19T06:43:29.767598Z",
+  "status_source": "probe-emitted",
+  "observed_revisions": {
+    "agent-suite": "6b551a2",
+    "regista": "0.5.1",
+    "agent-notes": "1.0.0",
+    "dossier": "0.0.1",
+    "agent-provenance": "0.1.0",
+    "agent-capability-broker": "0.1.0",
+    "agent-wake": "90d8380"
+  },
   "profiles": [
     "A",
     "B",
@@ -26,7 +35,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "Plan 008 WI-3.2, Plan 009 WI-4.1",
-      "proof": "src/agent_suite/deploy.py; tests/test_deploy.py; probe: _probe_deploy_cli -> pass",
+      "proof": "probe: _probe_deploy_cli -> pass; evidence: src/agent_suite/deploy.py present; deploy.run_deploy exposed; CLI 'deploy' registered; tests/test_deploy.py present",
       "excluded": "SaaS, Kubernetes operator, fleet remote management",
       "notes": "Deploy front door composes preflight \u2192 bootstrap \u2192 onboard \u2192 lock \u2192 doctor."
     },
@@ -37,7 +46,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "Plan 009 WI-1.3, Plan 009 WI-4.1",
-      "proof": "src/agent_suite/onboard.py; tests/test_onboard.py; probe: _probe_onboard_harness -> pass",
+      "proof": "probe: _probe_onboard_harness -> pass; evidence: src/agent_suite/onboard.py present; onboard.run_onboard exposed; tests/test_onboard.py present",
       "excluded": "\u2014",
       "notes": "Suite-level onboard: spec \u2192 provision \u2192 sign event-zero \u2192 wire harness."
     },
@@ -48,7 +57,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "Regista.create_project, regista provision; tests/test_provision.py",
+      "proof": "probe: _probe_regista_provisioning -> pass; evidence: Regista.create_project=present; regista/_provision.py=present; regista/_migrations.py=present; tests/test_provision.py=present",
       "excluded": "Multi-region active/active replication",
       "notes": "PostgreSQL schema + roles created idempotently."
     },
@@ -59,7 +68,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "Regista.register_workflow, regista workflow validate",
+      "proof": "probe: _probe_regista_workflow_registration -> pass; evidence: Regista.register_workflow=present; Regista.register_workflow_file=present; regista/_workflow.py=present; tests/test_canonical_workflow.py=present",
       "excluded": "General saga / workflow execution engine",
       "notes": "Canonical workflow is versioned and stored per project."
     },
@@ -70,7 +79,7 @@
       "profile": "A",
       "status": "partial",
       "dependency": "agent-notes WI-013",
-      "proof": "src/agent_notes/core/face_factory.py",
+      "proof": "probe: _probe_agent_notes_project_discovery -> partial; evidence: agent_notes/core/face_factory.py=present; face_factory importable=yes; agent_notes/cli/workspace.py=present; write-through gated per agent-notes WI-013",
       "excluded": "\u2014",
       "notes": "Per-project RegistaFace exists but write-through is gated."
     },
@@ -81,7 +90,7 @@
       "profile": "B",
       "status": "partial",
       "dependency": "dossier WI-017",
-      "proof": "src/dossier/app.py:149-175, src/dossier/authz.py",
+      "proof": "probe: _probe_dossier_project_switcher -> partial; evidence: dossier/authz.py=present; dossier/app.py=present; route /p/{project}=present; route /login=present; tests/test_auth.py=present; authz defaults to flat-open per dossier WI-017",
       "excluded": "\u2014",
       "notes": "Authz implementation exists but defaults to flat-open."
     },
@@ -92,7 +101,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/regista/_principal_keys.py; regista principal revoke CLI",
+      "proof": "probe: _probe_regista_principal_lifecycle -> pass; evidence: PrincipalLifecycle=present; prepare_enrollment=present; prepare_rotation=present; prepare_revocation=present; regista/_principal_keys.py=present; regista/principal_lifecycle.py=present; tests/test_enroll_principal.py=present",
       "excluded": "\u2014",
       "notes": "Asymmetric principal key registry with validity windows and revocation."
     },
@@ -103,7 +112,7 @@
       "profile": "A",
       "status": "partial",
       "dependency": "Plan 009 WI-1.3, Plan 009 WI-2.2",
-      "proof": "src/agent_suite/bootstrap.py (_step_user_onboarding); probe: _probe_identity_lifecycle -> partial",
+      "proof": "probe: _probe_identity_lifecycle -> partial; evidence: bootstrap.run_bootstrap present; bootstrap._step_user_onboarding present; offboarding step absent (step reports 'not yet implemented')",
       "excluded": "\u2014",
       "notes": "Per-user onboarding step exists but reports 'not yet implemented'; offboarding absent."
     },
@@ -114,7 +123,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "Regista.create_work_item / transition / replay; adversarial corpus",
+      "proof": "probe: _probe_regista_work_item_lifecycle -> pass; evidence: Regista.create_work_item=present; Regista.transition=present; Regista.replay=present; regista/_work_items.py=present; tests/test_canonical_workflow.py=present",
       "excluded": "\u2014",
       "notes": "Canonical workflow covers start, submit, review, accept, done."
     },
@@ -125,7 +134,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/agent_notes/cli/work_items.py",
+      "proof": "probe: _probe_agent_notes_work_item_cli -> pass; evidence: agent_notes/cli/work_items.py=present; register_work_item_parsers=present; tests/test_cli.py=present",
       "excluded": "\u2014",
       "notes": "Full create / claim / transition / review CLI surface."
     },
@@ -136,7 +145,7 @@
       "profile": "B",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/dossier/app.py:779-1028",
+      "proof": "probe: _probe_dossier_work_forms -> pass; evidence: route /p/{project}/issues/new=present; route /p/{project}/issues/{work_item_id}=present; route .../transitions=present; route /my-work=present; tests/test_app.py=present",
       "excluded": "Sprint planning, time tracking, billing",
       "notes": "Web create/edit/transition/review flows are present."
     },
@@ -147,7 +156,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/regista/_api_claim.py; tests/test_claims.py",
+      "proof": "probe: _probe_regista_race_free_claims -> pass; evidence: Regista.claims property=present; ClaimOps.acquire=present; ClaimOps.heartbeat=present; ClaimOps.release=present; regista/_api_claim.py=present; tests/test_claim_link_idempotency.py=present",
       "excluded": "\u2014",
       "notes": "Lease-based claims with expiry and heartbeat."
     },
@@ -158,7 +167,7 @@
       "profile": "B",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/dossier/assurance.py",
+      "proof": "probe: _probe_dossier_separation_of_duties -> pass; evidence: dossier/assurance.py=present; route /review=present; route .../transitions=present; tests/test_app.py=present",
       "excluded": "\u2014",
       "notes": "Assurance fail-open fixed (dossier WI-014); separation-of-duties now enforced."
     },
@@ -169,7 +178,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "skills/file-breadcrumb/SKILL.md, skills/add-memory/SKILL.md, skills/reflect/SKILL.md; src/agent_notes/cli/memory.py",
+      "proof": "probe: _probe_agent_notes_knowledge_cli -> pass; evidence: agent_notes/cli/memory.py=present; agent_notes/cli/skills.py=present; agent_notes/cli/breadcrumbs.py=present; skills/ dir=present; tests/test_breadcrumbs.py=present",
       "excluded": "General wiki / document authoring",
       "notes": "Skills and CLI both present."
     },
@@ -180,7 +189,7 @@
       "profile": "A",
       "status": "partial",
       "dependency": "agent-notes WI-013, dossier Plan 009",
-      "proof": "src/agent_notes/core/note_model.py, src/agent_notes/core/memory_model.py",
+      "proof": "probe: _probe_agent_notes_write_through -> partial; evidence: agent_notes/core/note_model.py=present; agent_notes/core/memory_model.py=present; agent_notes/cli/outbox.py=present; cmd_outbox_reconcile=present; write-through implemented but gated (agent-notes WI-013)",
       "excluded": "\u2014",
       "notes": "Write-through implemented but gated; dossier has no note read surface."
     },
@@ -189,9 +198,9 @@
       "component": "dossier",
       "surface": "knowledge read / browse / search",
       "profile": "B",
-      "status": "absent",
+      "status": "pass",
       "dependency": "dossier Plan 009",
-      "proof": "\u2014",
+      "proof": "probe: _probe_dossier_knowledge -> pass; evidence: dossier/knowledge.py=present; list_notes=present; search_notes=present; get_note=present; route /knowledge=present; route /knowledge/search=present; tests/test_knowledge.py=present",
       "excluded": "\u2014",
       "notes": "No routes or templates for note / knowledge entities."
     },
@@ -202,7 +211,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/agent_notes/cli/search.py",
+      "proof": "probe: _probe_agent_notes_search -> pass; evidence: agent_notes/cli/search.py=present; register_search_parsers=present; tests/test_search.py=present",
       "excluded": "\u2014",
       "notes": "CLI search covers all three entity kinds."
     },
@@ -213,7 +222,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/agent_notes/cli/work_items.py:1053-1131",
+      "proof": "probe: _probe_agent_notes_review_cli -> pass; evidence: agent_notes/cli/work_items.py=present; register_work_item_parsers=present; tests/test_cli.py=present",
       "excluded": "\u2014",
       "notes": "Adversarial-review skill consumes the same surface."
     },
@@ -224,7 +233,7 @@
       "profile": "B",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/dossier/app.py:629-665, :923-1028",
+      "proof": "probe: _probe_dossier_review_queue -> pass; evidence: route /review=present; route .../transitions=present; tests/test_app.py=present",
       "excluded": "\u2014",
       "notes": "Accept/reject/request-changes supported in web UI."
     },
@@ -235,7 +244,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "regista canonical workflow; adversarial corpus unauthorized_project_access",
+      "proof": "probe: _probe_regista_review_validators -> pass; evidence: BUILTIN_REVIEW_VALIDATORS=present; regista/_review_validators.py=present; tests/test_plan023_review_validators.py=present",
       "excluded": "\u2014",
       "notes": "Workflow enforces distinct actor roles."
     },
@@ -246,7 +255,7 @@
       "profile": "B",
       "status": "partial",
       "dependency": "dossier WI-012",
-      "proof": "src/dossier/assurance.py",
+      "proof": "probe: _probe_dossier_assurance -> partial; evidence: dossier/assurance.py=present; compute_assurance_level=present; tests/test_app.py=present; computation home-grown, not delegated to regista (dossier WI-012)",
       "excluded": "\u2014",
       "notes": "Assurance fail-open fixed (WI-014); computation remains home-grown rather than delegated to regista (WI-012)."
     },
@@ -257,7 +266,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/cairn/_claude_hook.py; live proof passed 2026-07-11",
+      "proof": "probe: _probe_cairn_session_capture -> pass; evidence: cairn/_claude_hook.py=present; cairn/_codex_hook.py=present; handle_pre=present; handle_post=present; run_install_harness=present; tests/test_claude_code_hook.py=present",
       "excluded": "Covert monitoring of unsanctioned harnesses, screen recording",
       "notes": "Claude and OpenCode hooks are proven; Hermes is provisional."
     },
@@ -268,7 +277,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/cairn/adapter.py:744-782; CairnClient.tool_call work_item_id",
+      "proof": "probe: _probe_cairn_principal_binding -> pass; evidence: CairnClient=present; CairnAdapter=present; CairnClient.tool_call=present; SubagentIdentity=present; cairn/adapter.py=present; tests/test_cairn.py=present",
       "excluded": "\u2014",
       "notes": "Subagent attribution and on_behalf_of are captured."
     },
@@ -279,7 +288,7 @@
       "profile": "B",
       "status": "partial",
       "dependency": "dossier Plan 017/018",
-      "proof": "src/dossier/app.py:563-625, src/dossier/provenance.py",
+      "proof": "probe: _probe_dossier_activity_views -> partial; evidence: dossier/provenance.py=present; route /sessions=present; route /p/{project}/sessions/{session_id}=present; route /feed=present; tests/test_app.py=present; session list/detail present; verification UX partial (dossier Plan 017/018)",
       "excluded": "\u2014",
       "notes": "Session list/detail and tool trail exist; verification UX is partial."
     },
@@ -290,7 +299,7 @@
       "profile": "B",
       "status": "partial",
       "dependency": "dossier WI-012",
-      "proof": "src/dossier/assurance.py",
+      "proof": "probe: _probe_dossier_degraded_capture -> partial; evidence: dossier/assurance.py=present; compute_assurance_level=present; tests/test_app.py=present; fail-open fixed (WI-014); regista delegation pending (WI-012)",
       "excluded": "\u2014",
       "notes": "Assurance level no longer fails open (WI-014 fixed); delegation to regista still pending (WI-012)."
     },
@@ -301,7 +310,7 @@
       "profile": "C",
       "status": "partial",
       "dependency": "acb Plan 006 WI-1.2",
-      "proof": "src/agent_capability_broker/cli.py:448-505; tests/test_doctor_conformance.py",
+      "proof": "probe: _probe_acb_core_verbs -> partial; evidence: cli.py=present; model.py=present; CLI 'doctor'=present; CLI 'reconcile'=present; CLI 'exec'=present; CLI 'install-harness'=present; tests/test_doctor_conformance.py=present; tests/test_reconcile.py=present; core verbs present; e2e exec is NotImplementedError (acb Plan 006 WI-1.2)",
       "excluded": "Credential marketplace, device management",
       "notes": "Core verbs exist; e2e exec is NotImplementedError."
     },
@@ -312,7 +321,7 @@
       "profile": "C",
       "status": "partial",
       "dependency": "acb Plan 006 WI-1.2",
-      "proof": "src/agent_capability_broker/providers.py:352-494; tests/test_exec.py",
+      "proof": "probe: _probe_acb_credential_provider -> partial; evidence: providers.py=present; exec_composed=present; cred_vault.py=present; tests/test_exec.py=present; provider injection unit-tested; full e2e exec is NotImplementedError",
       "excluded": "\u2014",
       "notes": "Provider injection works and is unit-tested; full end-to-end `acb exec` invocation is NotImplementedError."
     },
@@ -323,7 +332,7 @@
       "profile": "C",
       "status": "partial",
       "dependency": "acb Plan 006 WI-1.2, Plan 007",
-      "proof": "src/agent_capability_broker/providers.py:118-258; tests/test_e2e.py",
+      "proof": "probe: _probe_acb_e2e_provider -> partial; evidence: E2eProvider=present; E2eProvider.inspect=present; E2eProvider.exec=present; exec raises NotImplementedError=yes; tests/test_e2e_inspect.py=present; E2eProvider.inspect present; exec not implemented; Codex deferred",
       "excluded": "\u2014",
       "notes": "E2eProvider.inspect exists; exec is not implemented; Codex deferred."
     },
@@ -334,7 +343,7 @@
       "profile": "C",
       "status": "absent",
       "dependency": "agent-suite WI-001 capability_clobber",
-      "proof": "\u2014",
+      "proof": "probe: _probe_acb_rogue_detection -> absent; evidence: _cmd_doctor=present; _doctor_checks=present; _inspect_all=present; rogue/clobber scan in cli.py=present; doctor only inspects manifest-listed capabilities (agent-suite WI-001)",
       "excluded": "\u2014",
       "notes": "Doctor only inspects manifest-listed capabilities."
     },
@@ -345,7 +354,7 @@
       "profile": "C",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "daemon/src/agent_waked/ingest.py:140-182",
+      "proof": "probe: _probe_wake_http_ingress -> pass; evidence: daemon/src/agent_waked/ingest.py=present; daemon/src/agent_waked/gating.py=present; HMAC auth in gating.py=present; ingest.py imports verify_signature=present; create_ingest_app=present; daemon/tests/test_ingest.py=present",
       "excluded": "Universal wake protocol",
       "notes": "HMAC-SHA256 per-source auth."
     },
@@ -356,7 +365,7 @@
       "profile": "C",
       "status": "partial",
       "dependency": "agent-wake BC-WAKE-004, BC-WAKE-012",
-      "proof": "daemon/src/agent_waked/ingest.py:57-73; tests/test_ingest.py:93-108",
+      "proof": "probe: _probe_wake_dedup_retry -> partial; evidence: Dedupe class in ingest.py=present; agent_waked/outbox.py=present; dead-letter logic=absent; daemon/tests/test_ingest.py=present; daemon/tests/test_outbox.py=present; dedup is in-memory FIFO; no durable inbox or dead-letter (BC-WAKE-004/012)",
       "excluded": "Exactly-once delivery across external systems",
       "notes": "Dedup is in-memory FIFO; no durable inbox or dead-letter visibility."
     },
@@ -367,7 +376,7 @@
       "profile": "C",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "adapters/opencode/src/wake.ts:88-157; adapters/claude/src/agent_wake_claude/channel.py",
+      "proof": "probe: _probe_wake_live_wake -> pass; evidence: adapters/opencode/src/wake.ts=present; adapters/claude/src/agent_wake_claude/channel.py=present; daemon/tests/test_e2e.py=present",
       "excluded": "\u2014",
       "notes": "Both adapters can deliver live prompts."
     },
@@ -378,7 +387,7 @@
       "profile": "C",
       "status": "partial",
       "dependency": "agent-wake Plan 006",
-      "proof": "adapters/opencode/src/wake.ts:125-126",
+      "proof": "probe: _probe_wake_silent_inject -> partial; evidence: opencode noReply/silent=present; claude silent handling=drops; OpenCode supports silent inject; Claude adapter drops silent events",
       "excluded": "\u2014",
       "notes": "OpenCode supports silent inject; Claude adapter drops silent events."
     },
@@ -389,7 +398,7 @@
       "profile": "C",
       "status": "absent",
       "dependency": "agent-wake Plan 006",
-      "proof": "\u2014",
+      "proof": "probe: _probe_wake_next_session -> absent; evidence: next_session/managed_session in daemon+adapters=absent; design exists, no implementation (agent-wake Plan 006)",
       "excluded": "\u2014",
       "notes": "Design exists; no implementation."
     },
@@ -400,7 +409,7 @@
       "profile": "C",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "daemon/src/agent_waked/channels/webhook.py; daemon/src/agent_waked/channels/email.py",
+      "proof": "probe: _probe_wake_human_delivery -> pass; evidence: channels/webhook.py=present; channels/email.py=present; daemon/tests/test_channels_webhook.py=present; daemon/tests/test_channels_email.py=present",
       "excluded": "Replacing chat/email providers",
       "notes": "Signed webhook and SMTP email channels implemented."
     },
@@ -411,7 +420,7 @@
       "profile": "C",
       "status": "partial",
       "dependency": "agent-wake BC-WAKE-004, BC-WAKE-012",
-      "proof": "daemon/src/agent_waked/ingest.py:209-210; tests/test_ingest.py:93-108; tests/test_e2e.py:309-343",
+      "proof": "probe: _probe_wake_replay_rejection -> partial; evidence: Dedupe class=present; dedupe.check call=present; daemon/tests/test_ingest.py=present; daemon/tests/test_e2e.py=present; dedup rejects duplicates while running; in-memory dedup lost on restart (BC-WAKE-004/012)",
       "excluded": "\u2014",
       "notes": "Duplicate event_id rejected while daemon is running; in-memory dedup is lost on restart, so post-restart replay is not prevented."
     },
@@ -420,9 +429,9 @@
       "component": "dossier",
       "surface": "notification preferences and review/recovery deep links",
       "profile": "B",
-      "status": "absent",
+      "status": "partial",
       "dependency": "Plan 009 WI-3.3, dossier Plan 018",
-      "proof": "\u2014",
+      "proof": "probe: _probe_dossier_notification_prefs -> partial; evidence: dossier/notifications.py=present; NotificationEmitter=present; notification preference route=missing; tests/test_app.py=present; NotificationEmitter present but no preference UI or deep-link routing",
       "excluded": "Replacing chat/email providers",
       "notes": "No notification preference UI or deep-link routing exists."
     },
@@ -433,7 +442,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "Regista.export_audit_bundle; src/regista/_bundle.py:71",
+      "proof": "probe: _probe_regista_bundle_export -> pass; evidence: Regista.export_audit_bundle=present; regista/_bundle.py=present; regista/_archive.py=present; tests/test_bundle.py=present",
       "excluded": "\u2014",
       "notes": "Self-contained JSON with events, receipts, segments, public keys."
     },
@@ -444,7 +453,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "Regista.verify_audit_bundle_offline; src/regista/_bundle.py:230",
+      "proof": "probe: _probe_regista_bundle_verify -> pass; evidence: Regista.verify_audit_bundle_offline=present; regista/_bundle.py=present; tests/test_bundle.py=present",
       "excluded": "\u2014",
       "notes": "v2 verifies ed25519 signatures; v1 reports skipped honestly."
     },
@@ -455,7 +464,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/cairn/_cli.py:318-750; src/cairn/proof.py",
+      "proof": "probe: _probe_cairn_bundle_export -> pass; evidence: cairn/_cli.py=present; cairn/proof.py=present; cairn/verifier.py=present; CLI 'export'=present; CLI 'verify'=present; CLI 'verify-chain'=present; CLI 'diff'=present; CLI 'portal'=present; tests/test_e2e_proof.py=present",
       "excluded": "\u2014",
       "notes": "cairn verify, verify-chain, export, diff, portal all present."
     },
@@ -466,7 +475,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "Plan 009 WI-2.3",
-      "proof": "src/agent_suite/evidence.py; tests/test_evidence.py; probe: _probe_evidence_export -> pass",
+      "proof": "probe: _probe_evidence_export -> pass; evidence: src/agent_suite/evidence.py present; evidence.run_evidence_export exposed; CLI 'export-evidence' registered; tests/test_evidence.py present",
       "excluded": "\u2014",
       "notes": "Composes regista bundle export + cairn export + verify into one suite-level manifest."
     },
@@ -477,7 +486,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/agent_suite/doctor.py; tests/test_doctor.py",
+      "proof": "probe: _probe_doctor -> pass; evidence: doctor.aggregate exposed; tests/test_doctor.py present",
       "excluded": "\u2014",
       "notes": "Honest health reporting for required/optional components."
     },
@@ -488,7 +497,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "src/agent_suite/lock.py; tests/test_lock.py",
+      "proof": "probe: _probe_lock -> pass; evidence: lock.generate_lock exposed; tests/test_lock.py present",
       "excluded": "\u2014",
       "notes": "SUITE.lock parsing and drift detection implemented."
     },
@@ -499,7 +508,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "Plan 008 WI-4.1, Plan 009 WI-4.2",
-      "proof": "src/agent_suite/backup.py; tests/test_backup.py; probe: _probe_backup_restore -> pass",
+      "proof": "probe: _probe_backup_restore -> pass; evidence: src/agent_suite/backup.py present; run_backup/run_restore exposed; CLI 'backup'+'restore' registered; tests/test_backup.py present",
       "excluded": "\u2014",
       "notes": "Suite-level backup: doctor \u2192 pg_dump \u2192 verify \u2192 evidence export \u2192 manifest."
     },
@@ -510,7 +519,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "Plan 008 WI-3.4, Plan 009 WI-4.2",
-      "proof": "src/agent_suite/upgrade.py (run_upgrade, run_rollback, run_forward_recovery); tests/test_upgrade.py; probe: _probe_upgrade_rollback_forward -> pass",
+      "proof": "probe: _probe_upgrade_rollback_forward -> pass; evidence: upgrade.run_upgrade/run_rollback/run_forward_recovery exposed; tests/test_upgrade.py present",
       "excluded": "\u2014",
       "notes": "Staged upgrade with interop gate, rollback across schema boundaries refused, forward-recovery completes partial upgrades."
     },
@@ -521,7 +530,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "\u2014",
-      "proof": "regista doctor --json; src/regista/_cli.py doctor commands",
+      "proof": "probe: _probe_regista_contracts -> pass; evidence: regista/_doctor.py=present; regista/_cli.py=present; CLI 'version'=present; CLI 'doctor'=present; CLI 'config'=present; CLI 'secrets'=present",
       "excluded": "\u2014",
       "notes": "Doctor, version, and config contracts are exposed."
     }
