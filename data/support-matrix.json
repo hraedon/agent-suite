@@ -10,14 +10,14 @@
   "reference_linux": "Ubuntu 22.04+",
   "docker": "supported",
   "kubernetes": "optional",
-  "kubernetes_note": "An optional manifest may exist for shops that already run k8s; it is never the required path. No k8s operator is produced.",
+  "kubernetes_note": "Optional substrate. Where an operator chooses k8s, the components that make sense to host there (dossier, regista, cairn, agent-notes, agent-wake) are supported on standard k8s deployments; no operator artifact is produced. Owner ruling 2026-07-19: k8s stays optional but is genuinely supported for applicable components.",
   "windows_versions": [
-    "10",
     "11",
-    "Server 2022"
+    "Server 2022",
+    "Server 2025"
   ],
   "windows_qualification": "unit_tests_only",
-  "windows_qualification_note": "agent-suite unit tests pass on windows-latest CI; native Windows qualification (Setup, DPAPI, WinSW, dual-control) is Gate 4 WI-4.2 and not yet started.",
+  "windows_qualification_note": "agent-suite unit tests pass on windows-latest CI; native Windows qualification (Setup, DPAPI, WinSW, dual-control) is Gate 4 WI-4.2 and not yet started. Windows 10 dropped per owner ruling 2026-07-19 (Server 2022/2025 are the target surfaces).",
   "browsers": [
     {
       "name": "Chrome",
