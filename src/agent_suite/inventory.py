@@ -23,9 +23,12 @@ can't slip through the text formatter ungated — mirroring
 
 The inventory now also represents the umbrella repository itself, because
 Plan 015 WI-0.2 AC requires "all seven repositories and the deployed estate".
-A top-level ``summary`` answers the AC's publishability gate directly:
-``candidate_publishable`` is true only when no constituent is dirty, no
-constituent is ahead of origin, and no drift is recorded.
+A top-level ``summary`` carries the source-tree convergence gate:
+``source_tree_converged`` is true only when no constituent is dirty, none
+are ahead of origin, none are behind origin, every constituent's origin
+provenance is known (fail-closed), and no drift is recorded. Release-
+candidate readiness is broader (immutable artifacts, deployed posture,
+operator config) and lives in the release board, not this field.
 """
 
 from __future__ import annotations
@@ -116,13 +119,29 @@ class LockFileStatus:
 
 @dataclass(frozen=True)
 class ComponentInventory:
-    """One constituent (component or umbrella) in the candidate inventory."""
+    """One constituent (component or umbrella) in the candidate inventory.
+
+    The ``provenance_known`` field is the fail-closed gate for the origin
+    probe: it is ``False`` when ``_probe_origin_state`` could not determine
+    the origin revision (no remote, subprocess failure, malformed output).
+    A constituent with unknown provenance fails ``source_tree_converged``
+    even when its local-only commit count reads zero — the read of zero is
+    not the same as a confirmed-zero ahead-count.
+
+    ``behind_origin`` is true when ``HEAD`` is at an ancestor of
+    ``origin/main`` (i.e. the checkout is stale relative to upstream). The
+    ahead/behind distinction matters: a checkout that is both ahead AND
+    behind has diverged and needs a rebase; a checkout that is only behind
+    is just stale; a checkout that is only ahead is local-only-but-current.
+    """
 
     ident: str
     repo: str
     role: str  # "component" | "umbrella"
     origin_revision: str | None
     local_only_commits: int
+    behind_origin: int
+    provenance_known: bool
     working_tree_dirty: bool
     pinned_revision: str | None
     pinned_version: str | None
@@ -142,6 +161,8 @@ class ComponentInventory:
             "role": self.role,
             "origin_revision": self.origin_revision,
             "local_only_commits": self.local_only_commits,
+            "behind_origin": self.behind_origin,
+            "provenance_known": self.provenance_known,
             "working_tree_dirty": self.working_tree_dirty,
             "pinned_revision": self.pinned_revision,
             "pinned_version": self.pinned_version,
@@ -172,19 +193,42 @@ class RegistaQuadInventory:
 
 @dataclass(frozen=True)
 class Summary:
-    """The candidate publishability gate (Plan 015 WI-0.2 AC)."""
+    """Source-tree convergence gate (Plan 015 WI-0.2 AC).
+
+    ``source_tree_converged`` is the renamed, honest field: it reports
+    whether every constituent's source tree agrees with its pinned origin
+    revision at the moment of inventory collection. It is True only when:
+
+    - no constituent has a dirty working tree,
+    - no constituent has local-only commits ahead of origin,
+    - no constituent is behind origin/main,
+    - every constituent's origin provenance is known (fail closed),
+    - every pinned component resolves to its locked version + revision,
+    - the regista quad matches the locked quad.
+
+    Release-candidate readiness is **broader** than source-tree convergence:
+    it also requires immutable wheel artifacts (not editable checkouts),
+    deployed-version verification, and the operator-side production posture
+    documented in the release board. ``source_tree_converged`` does NOT
+    claim release readiness; the release board does, and today the board
+    honestly records the candidate as not publishable.
+    """
 
     any_dirty: bool
     any_ahead: bool
+    any_behind: bool
+    any_provenance_unknown: bool
     drift_count: int
-    candidate_publishable: bool
+    source_tree_converged: bool
 
     def to_dict(self) -> dict[str, object]:
         return {
             "any_dirty": self.any_dirty,
             "any_ahead": self.any_ahead,
+            "any_behind": self.any_behind,
+            "any_provenance_unknown": self.any_provenance_unknown,
             "drift_count": self.drift_count,
-            "candidate_publishable": self.candidate_publishable,
+            "source_tree_converged": self.source_tree_converged,
         }
 
 
@@ -361,16 +405,30 @@ def _checkout_path_for_ident(
     return None
 
 
-def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, bool]:
-    """Return ``(origin_revision, local_only_commits, dirty)`` for a checkout.
+def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, int, bool, bool]:
+    """Return ``(origin_revision, ahead, behind, dirty, provenance_known)``.
 
-    All three git commands are defensive: any subprocess failure, missing
-    remote, or malformed output returns ``None`` / ``0`` / ``False`` so a
-    probe failure never crashes the inventory.
+    ``provenance_known`` is the fail-closed flag: it is True only when the
+    origin probe successfully returned a parseable SHA. Callers MUST treat
+    ``provenance_known=False`` as "do not claim convergence" — the ahead/
+    behind defaults of zero are placeholders, not confirmed values.
+
+    ``behind`` is computed from ``git rev-list HEAD..origin/main --count``
+    (commits on origin not in HEAD). ``ahead`` is ``origin/main..HEAD`` as
+    before. The two together distinguish "local-only" from "stale" from
+    "diverged."
+
+    All five git invocations are defensive: any subprocess failure, missing
+    remote, or malformed output returns the safe defaults (None, 0, 0,
+    False, False) so a probe failure never crashes the inventory. The
+    ``provenance_known`` flag is the signal that those defaults are real
+    reads vs probe failures.
     """
     origin_revision: str | None = None
-    local_only_commits = 0
+    ahead = 0
+    behind = 0
     dirty = False
+    provenance_known = False
 
     try:
         result = subprocess.run(
@@ -383,6 +441,7 @@ def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, bool]:
             sha = result.stdout.strip()
             if lock._is_valid_sha(sha):
                 origin_revision = sha
+                provenance_known = True
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
 
@@ -394,7 +453,19 @@ def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, bool]:
             timeout=10,
         )
         if result.returncode == 0:
-            local_only_commits = int(result.stdout.strip())
+            ahead = int(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(checkout_path), "rev-list", "HEAD..origin/main", "--count"),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            behind = int(result.stdout.strip())
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
         pass
 
@@ -410,7 +481,7 @@ def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, bool]:
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
 
-    return origin_revision, local_only_commits, dirty
+    return origin_revision, ahead, behind, dirty, provenance_known
 
 
 _STATUS_RE = re.compile(r"^\*\*status:\*\*\s*(.+?)\s*(?:\*\*)?\s*$", re.IGNORECASE)
@@ -470,15 +541,18 @@ def _umbrella_package_version() -> str | None:
         return None
 
 
-def _default_origin_probe(ident: str) -> tuple[str | None, int, bool]:
+def _default_origin_probe(ident: str) -> tuple[str | None, int, int, bool, bool]:
     """Default origin-state probe used by :func:`collect_inventory`.
 
-    Maps ``ident`` to its checkout path and runs the three defensive git
-    commands. Returns ``(None, 0, False)`` when no checkout is found.
+    Maps ``ident`` to its checkout path and runs the defensive git probes
+    (origin revision, ahead, behind, dirty, provenance_known). Returns
+    ``(None, 0, 0, False, False)`` when no checkout is found — note
+    ``provenance_known=False`` so the failure surfaces in the summary's
+    any_provenance_unknown flag (fail closed).
     """
     path = _checkout_path_for_ident(ident)
     if path is None:
-        return None, 0, False
+        return None, 0, 0, False, False
     return _probe_origin_state(path)
 
 
@@ -504,7 +578,7 @@ def build_inventory(
     components: tuple[Component, ...] = COMPONENTS,
     lock_parseable: bool = True,
     lock_note: str = "",
-    origin_probe: Callable[[str], tuple[str | None, int, bool]] = _default_origin_probe,
+    origin_probe: Callable[[str], tuple[str | None, int, int, bool, bool]] = _default_origin_probe,
     plan_statuses: dict[str, str | None] | None = None,
     deployed_versions: dict[str, str | None] | None = None,
     umbrella_version: str | None = None,
@@ -551,7 +625,7 @@ def build_inventory(
             installed_revision=installed_revision,
         )
 
-        origin_revision, local_only_commits, dirty = origin_probe(comp.ident)
+        origin_revision, ahead, behind, dirty, provenance_known = origin_probe(comp.ident)
 
         schema_version: int | None = None
         workflow_version: str | None = None
@@ -567,7 +641,9 @@ def build_inventory(
                 repo=comp.repo,
                 role="component",
                 origin_revision=origin_revision,
-                local_only_commits=local_only_commits,
+                local_only_commits=ahead,
+                behind_origin=behind,
+                provenance_known=provenance_known,
                 working_tree_dirty=dirty,
                 pinned_revision=pinned_revision,
                 pinned_version=pinned_version,
@@ -598,19 +674,38 @@ def build_inventory(
         memory_provider = lock_obj.provider_extension.to_dict()
 
     # Umbrella entry: the agent-suite repository itself.
-    umbrella_origin, umbrella_ahead, umbrella_dirty = origin_probe("agent-suite")
+    umbrella_origin, umbrella_ahead, umbrella_behind, umbrella_dirty, umbrella_provenance = (
+        origin_probe("agent-suite")
+    )
+    # The umbrella has no SUITE.lock pin (the lock pins the constituents,
+    # not the orchestrator). Drift is computed against origin/main: if the
+    # local HEAD differs from origin AND provenance is known, that is a
+    # real drift (local-only or stale). The earlier code hardcoded drift to
+    # MATCHES, which masked both stale and divergent orchestrator checkouts.
+    umbrella_drift: ComponentDrift
+    if umbrella_provenance and umbrella_origin is not None:
+        if umbrella_ahead > 0 or umbrella_behind > 0:
+            umbrella_drift = ComponentDrift.REVISION_MISMATCH
+        else:
+            umbrella_drift = ComponentDrift.MATCHES
+    else:
+        # Provenance unknown — surface as not_locked rather than matches so
+        # the summary's any_provenance_unknown flag fires (fail closed).
+        umbrella_drift = ComponentDrift.NOT_LOCKED
     umbrella_entry = ComponentInventory(
         ident="agent-suite",
         repo="hraedon/agent-suite",
         role="umbrella",
         origin_revision=umbrella_origin,
         local_only_commits=umbrella_ahead,
+        behind_origin=umbrella_behind,
+        provenance_known=umbrella_provenance,
         working_tree_dirty=umbrella_dirty,
         pinned_revision=None,
         pinned_version=None,
         installed_version=umbrella_version if umbrella_version is not None else rel,
         installed_revision=umbrella_revision,
-        drift=ComponentDrift.MATCHES,
+        drift=umbrella_drift,
         schema_version=None,
         workflow_version=None,
         envelope_version=None,
@@ -621,14 +716,24 @@ def build_inventory(
     all_constituents = [umbrella_entry, *comp_entries]
     any_dirty = any(c.working_tree_dirty for c in all_constituents)
     any_ahead = any(c.local_only_commits > 0 for c in all_constituents)
-    drift_count = sum(1 for c in comp_entries if c.drift is not ComponentDrift.MATCHES)
+    any_behind = any(c.behind_origin > 0 for c in all_constituents)
+    any_provenance_unknown = any(not c.provenance_known for c in all_constituents)
+    drift_count = sum(1 for c in all_constituents if c.drift is not ComponentDrift.MATCHES)
     if quad_inv.drift is not QuadDrift.MATCHES:
         drift_count += 1
     summary = Summary(
         any_dirty=any_dirty,
         any_ahead=any_ahead,
+        any_behind=any_behind,
+        any_provenance_unknown=any_provenance_unknown,
         drift_count=drift_count,
-        candidate_publishable=not any_dirty and not any_ahead and drift_count == 0,
+        source_tree_converged=(
+            not any_dirty
+            and not any_ahead
+            and not any_behind
+            and not any_provenance_unknown
+            and drift_count == 0
+        ),
     )
 
     return Inventory(
@@ -773,17 +878,27 @@ def _short_sha(sha: str | None) -> str:
     return sha[:8]
 
 
-def _publishable_text(summary: Summary) -> str:
-    if summary.candidate_publishable:
-        return "PUBLISHABLE"
+def _convergence_text(summary: Summary) -> str:
+    """Render the source_tree_converged flag with named blockers.
+
+    Reports SOURCE-TREE-CONVERGED when every gate is clean; otherwise lists
+    each blocker explicitly. The release-candidate-readiness verdict lives
+    in the release board, not here — see data/release-board.json WI-0.2.
+    """
+    if summary.source_tree_converged:
+        return "SOURCE-TREE-CONVERGED"
     reasons: list[str] = []
     if summary.any_dirty:
         reasons.append("dirty workspace")
     if summary.any_ahead:
         reasons.append("unpushed commits")
+    if summary.any_behind:
+        reasons.append("stale vs origin")
+    if summary.any_provenance_unknown:
+        reasons.append("unknown origin provenance")
     if summary.drift_count:
         reasons.append(f"{summary.drift_count} drift")
-    return f"NOT PUBLISHABLE: {', '.join(reasons)}"
+    return f"NOT CONVERGED: {', '.join(reasons)}"
 
 
 def format_text(inv: Inventory) -> str:
@@ -791,7 +906,7 @@ def format_text(inv: Inventory) -> str:
     lines: list[str] = ["agent-suite candidate inventory"]
     lines.append(f"release: {inv.release}")
     lines.append(f"generated: {inv.generated_at}")
-    lines.append(f"Suite candidate: {_publishable_text(inv.summary)}")
+    lines.append(f"Source tree: {_convergence_text(inv.summary)}")
 
     if inv.lock_file.present:
         lock_tag = "present" if inv.lock_file.parseable else "present (unreadable)"

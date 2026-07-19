@@ -15,33 +15,33 @@ can see at a glance what is proven vs. provisional.
 | CL-004 | Cross-face interop | supported | agent-suite | — |
 | CL-005 | Post-restore integrity | supported | agent-suite | — |
 | CL-006 | Idempotent bootstrap | supported | agent-suite | — |
-| CL-007 | Honest health | experimental | agent-suite | F-6 |
-| CL-008 | Secret safety | experimental | agent-suite + regista | F-4 |
+| CL-007 | Honest health | supported | agent-suite | F-6 fixed |
+| CL-008 | Secret safety | provisional | agent-suite + regista | F-4/F-5 fixed; canonical identifier gate installed |
 | CL-009 | Lock integrity | supported | agent-suite | — |
 | CL-010 | Key rotation safety | experimental | regista | — |
 | CL-011 | Delegation chain | experimental | regista | — |
 | CL-012 | External anchoring | experimental | regista | F-1, F-3 |
-| CL-013 | Offline verification | experimental | agent-provenance | F-2 |
+| CL-013 | Offline verification | provisional | agent-provenance | F-2 — live proof PASSED against a real Claude Code session 2026-07-11 |
 | CL-014 | Upgrade safety | supported | agent-suite | — |
 
 ## Maturity counts
 
 | Maturity | Count | Claims |
 |----------|-------|--------|
-| supported | 7 | CL-001, CL-003, CL-004, CL-005, CL-006, CL-009, CL-014 |
-| experimental | 7 | CL-002, CL-007, CL-008, CL-010, CL-011, CL-012, CL-013 |
-| provisional | 0 | |
+| supported | 8 | CL-001, CL-003, CL-004, CL-005, CL-006, CL-007, CL-009, CL-014 |
+| provisional | 2 | CL-008, CL-013 |
+| experimental | 4 | CL-002, CL-010, CL-011, CL-012 |
 
 ## Holistic review findings mapped to claims
 
 | Finding | Severity | Claim | Status |
 |---------|----------|-------|--------|
 | F-1 | Critical | CL-012 | Experimental — anchor commits to content; bundle v2 export + offline verification incl. event signatures |
-| F-2 | Critical | CL-013 | Experimental — live proof PASSED against a real Claude Code session 2026-07-11 |
+| F-2 | Critical | CL-013 | Provisional — live proof PASSED against a real Claude Code session 2026-07-11 |
 | F-3 | High | CL-012 | Experimental — receipt concurrency safe; cross-segment chain verification implemented |
-| F-4 | High | CL-008 | Experimental — deployment evidence contains identifiers |
-| F-5 | High | — (agent-notes) | Not a suite-level claim; tracked in agent-notes |
-| F-6 | High | CL-007 | Experimental — fail-honest fix applied but legacy path remains |
+| F-4 | High | CL-008 | Fixed — canonical identifier gate installed; deployment docs use placeholders; F-5 closed in agent-notes |
+| F-5 | High | — (agent-notes) | Closed in agent-notes (REGISTA_DSN no longer satisfies the native agent-notes DSN) |
+| F-6 | High | CL-007 | Fixed — doctor requires top-level `ok` boolean; legacy compatibility path removed (`doctor.py:235-242`) |
 
 ## README Status section mapping
 
