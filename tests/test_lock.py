@@ -1020,7 +1020,11 @@ def test_default_search_roots_respect_env_var(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setenv("SUITE_WORKSPACE_ROOT", "/custom/workspace")
     roots = _default_search_roots()
-    assert roots == (Path("/custom/workspace"),)
+    # The code resolves the env var (expanduser + resolve) so the expected
+    # value must go through the same transform. On POSIX this is identity for
+    # /custom/workspace; on Windows it fixes the drive so the path is absolute.
+    expected = (Path("/custom/workspace").expanduser().resolve(),)
+    assert roots == expected
     assert roots[0].is_absolute()
 
 
