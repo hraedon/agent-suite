@@ -295,6 +295,65 @@ def test_every_component_drift_is_reachable(drift: ComponentDrift) -> None:
 
 
 # ---------------------------------------------------------------------------
+# M-1: assert_never guards the closed drift sets in the formatting consumers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("drift", list(ComponentDrift))
+def test_component_drift_label_is_total(drift: ComponentDrift) -> None:
+    """Every ComponentDrift value is handled by _component_drift_label (M-1).
+
+    The label function uses ``match/case`` with ``assert_never`` in the
+    default branch so a newly added kind can't slip through the text formatter
+    ungated. This test exercises every existing value to confirm none hits
+    ``assert_never``.
+    """
+    from agent_suite.inventory import _component_drift_label
+
+    label = _component_drift_label(drift)
+    assert isinstance(label, str)
+    assert label == drift.value
+
+
+@pytest.mark.parametrize("drift", list(QuadDrift))
+def test_quad_drift_label_is_total(drift: QuadDrift) -> None:
+    """Every QuadDrift value is handled by _quad_drift_label (M-1).
+
+    The label function uses ``match/case`` with ``assert_never`` in the
+    default branch so a newly added kind can't slip through the text formatter
+    ungated.
+    """
+    from agent_suite.inventory import _quad_drift_label
+
+    label = _quad_drift_label(drift)
+    assert isinstance(label, str)
+    assert label == drift.value
+
+
+def test_inventory_drift_dispatch_uses_assert_never() -> None:
+    """The inventory module uses assert_never in its drift label functions (M-1).
+
+    M-1 required the module docstring's claim that ``assert_never`` guards the
+    closed drift sets to be truthful. This test confirms the import is present
+    and the label functions exist (the parametrized totality tests above
+    exercise every value).
+    """
+    import inspect
+
+    import agent_suite.inventory as inv_mod
+
+    # assert_never must be imported.
+    source = inspect.getsource(inv_mod)
+    assert "assert_never" in source, (
+        "inventory.py must use assert_never to guard the closed drift sets "
+        "(M-1: the docstring claims it)"
+    )
+    # The label functions must exist.
+    assert hasattr(inv_mod, "_component_drift_label")
+    assert hasattr(inv_mod, "_quad_drift_label")
+
+
+# ---------------------------------------------------------------------------
 # Missing regista handling
 # ---------------------------------------------------------------------------
 

@@ -11,8 +11,12 @@ what matches and what has diverged — the same honest-health rule that governs
 The module is stdlib-only and composes :mod:`agent_suite.doctor` (for installed
 versions) and :mod:`agent_suite.lock` (for the lock + regista quad + revisions)
 — it adds no new shelling, just a structured reconciliation view over state the
-suite already probes. ``assert_never`` guards the closed drift sets so a newly
-added kind can't slip through ungated.
+suite already probes. ``assert_never`` guards the closed drift sets in the
+formatting consumers (:func:`_component_drift_label`, :func:`_quad_drift_label`)
+so a newly added kind can't slip through the text formatter ungated — mirroring
+:func:`agent_suite.lock.format_drift_text`. The producer functions
+(:func:`_component_drift`, :func:`_quad_drift`) are total by construction
+(mypy's return-type checking on the closed enum).
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
+from typing import assert_never
 
 from agent_suite import doctor
 from agent_suite import lock
@@ -208,6 +213,57 @@ def _quad_drift(
     # Both None: the lock had no quad (regista was absent at generation) and it's
     # still absent — the baseline is unchanged, so this is not drift.
     return QuadDrift.MATCHES
+
+
+# ---------------------------------------------------------------------------
+# Drift labels — assert_never enforces totality in the formatting consumers
+# ---------------------------------------------------------------------------
+
+
+def _component_drift_label(drift: ComponentDrift) -> str:
+    """Format a :class:`ComponentDrift` as a text label for ``format_text``.
+
+    ``match/case`` with ``assert_never`` in the default branch mirrors
+    :func:`agent_suite.lock.format_drift_text`: a newly added
+    :class:`ComponentDrift` value can't slip through the formatter ungated.
+    """
+    match drift:
+        case ComponentDrift.MATCHES:
+            return str(drift.value)
+        case ComponentDrift.VERSION_MISMATCH:
+            return str(drift.value)
+        case ComponentDrift.REVISION_MISMATCH:
+            return str(drift.value)
+        case ComponentDrift.MISSING:
+            return str(drift.value)
+        case ComponentDrift.UNEXPECTED:
+            return str(drift.value)
+        case ComponentDrift.NOT_LOCKED:
+            return str(drift.value)
+        case other:
+            assert_never(other)
+
+
+def _quad_drift_label(drift: QuadDrift) -> str:
+    """Format a :class:`QuadDrift` as a text label for ``format_text``.
+
+    ``match/case`` with ``assert_never`` in the default branch mirrors
+    :func:`agent_suite.lock.format_drift_text`: a newly added :class:`QuadDrift`
+    value can't slip through the formatter ungated.
+    """
+    match drift:
+        case QuadDrift.MATCHES:
+            return str(drift.value)
+        case QuadDrift.MISMATCH:
+            return str(drift.value)
+        case QuadDrift.MISSING:
+            return str(drift.value)
+        case QuadDrift.UNEXPECTED:
+            return str(drift.value)
+        case QuadDrift.NOT_LOCKED:
+            return str(drift.value)
+        case other:
+            assert_never(other)
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +495,7 @@ def format_text(inv: Inventory) -> str:
         else:
             installed = "(not installed)"
         lines.append(
-            f"  {c.ident:<24} {pinned:<28} {installed:<28} {c.drift.value}"
+            f"  {c.ident:<24} {pinned:<28} {installed:<28} {_component_drift_label(c.drift)}"
         )
 
     lines.append("")
@@ -453,7 +509,7 @@ def format_text(inv: Inventory) -> str:
         lines.append(f"  current: {_quad_str(q.current)}")
     else:
         lines.append("  current: (regista absent)")
-    lines.append(f"  drift:   {q.drift.value}")
+    lines.append(f"  drift:   {_quad_drift_label(q.drift)}")
 
     lines.append("")
     if inv.memory_provider is not None:

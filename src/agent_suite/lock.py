@@ -17,6 +17,7 @@ the core imports only stdlib + its own modules; every closed-set dispatch uses
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tomllib
@@ -30,6 +31,17 @@ from agent_suite.components import COMPONENTS, Component
 DEFAULT_LOCK_PATH = Path("SUITE.lock")
 
 _REGISTA_VERSION_CMD: tuple[str, ...] = ("regista", "version", "--json")
+
+# A full git SHA is 40 hex chars (sha-1) or 64 (sha-256). Used to validate
+# both locked revisions (on deserialize) and probed revisions (on read) so a
+# hand-edited tag name or short hash can't masquerade as a pinned SHA.
+_SHA_LENGTHS: tuple[int, ...] = (40, 64)
+_HEX_DIGITS: frozenset[str] = frozenset("0123456789abcdef")
+
+
+def _is_valid_sha(value: str) -> bool:
+    """Return True iff ``value`` is a 40- or 64-char lowercase/uppercase hex SHA."""
+    return len(value) in _SHA_LENGTHS and all(c in _HEX_DIGITS for c in value.lower())
 
 
 def _suite_release() -> str:
@@ -302,10 +314,27 @@ _PROVIDER_DESCRIBE_CMD: tuple[str, ...] = (
 )
 
 
+def _default_search_roots() -> tuple[Path, ...]:
+    """Resolve the default search roots for component source checkouts.
+
+    M-5: the prior default included ``Path("../projects")``, a path relative to
+    CWD — so ``agent-suite lock`` run from anywhere other than
+    ``/projects/agent-suite`` resolved to the wrong directory. The default is now
+    absolute-only: ``/projects`` (the canonical workspace root). An operator may
+    override the roots entirely by setting ``SUITE_WORKSPACE_ROOT`` to a single
+    absolute path; that one root replaces the defaults (useful in CI or non-
+    standard layouts).
+    """
+    env_root = os.environ.get("SUITE_WORKSPACE_ROOT")
+    if env_root and env_root.strip():
+        return (Path(env_root).expanduser().resolve(),)
+    return (Path("/projects"),)
+
+
 def read_component_revisions(
     components: tuple[Component, ...] = COMPONENTS,
     *,
-    search_roots: tuple[Path, ...] = (Path("/projects"), Path("../projects")),
+    search_roots: tuple[Path, ...] | None = None,
 ) -> dict[str, str | None]:
     """Probe each component's local source checkout for its current git SHA.
 
@@ -322,10 +351,15 @@ def read_component_revisions(
 
     The function never raises — git failures, missing directories, and
     non-checkout directories all return ``None`` for that component.
+
+    ``search_roots`` defaults to :func:`_default_search_roots` (absolute-only;
+    overridable via ``SUITE_WORKSPACE_ROOT``). Pass an explicit tuple from
+    tests to avoid touching the real workspace.
     """
+    roots = search_roots if search_roots is not None else _default_search_roots()
     revisions: dict[str, str | None] = {}
     for comp in components:
-        revisions[comp.ident] = _probe_revision(comp.repo, search_roots)
+        revisions[comp.ident] = _probe_revision(comp.repo, roots)
     return revisions
 
 
@@ -335,6 +369,13 @@ def _probe_revision(
 ) -> str | None:
     """Find a local checkout for ``owner/repo`` and return its HEAD SHA."""
     basename = repo.split("/", 1)[-1] if "/" in repo else repo
+    # L-4: reject path-traversal basenames. A repo like `..` (no slash) would
+    # resolve to ``root.parent``; a basename with a separator could escape the
+    # search root. Limited impact (subprocess uses a tuple, no shell), but the
+    # defense is cheap and the failure mode (probing the wrong directory) is
+    # confusing.
+    if not basename or basename in (".", "..") or "/" in basename or "\\" in basename:
+        return None
     for root in search_roots:
         candidate = root / basename
         if not candidate.is_dir():
@@ -354,8 +395,10 @@ def _probe_revision(
         if result.returncode != 0:
             return None
         sha = result.stdout.strip()
-        # A full git SHA is 40 hex chars (sha-1) or 64 (sha-256); accept either.
-        if not sha or not all(c in "0123456789abcdef" for c in sha.lower()):
+        # L-3: a full git SHA is 40 hex chars (sha-1) or 64 (sha-256); enforce
+        # the length so a truncated or malformed output is not mistaken for a
+        # valid SHA.
+        if not _is_valid_sha(sha):
             return None
         return sha
     return None
@@ -560,8 +603,27 @@ def deserialize_lock(text: str) -> SuiteLock:
         # revision is optional (older locks omit it; locks generated in
         # environments without source checkouts omit it). When present it
         # must be a string and is what makes the pin a reproducible candidate.
+        # H-1: normalize empty/whitespace-only strings to None so a hand-edited
+        # lock with `revision = ""` round-trips as None and does not false-
+        # positive REVISION_MISMATCH (the drift gate is `locked_rev is not None`).
+        # L-2: validate the SHA format (40- or 64-char hex) so a hand-edited
+        # tag name like `revision = "v0.5.1"` is rejected rather than causing
+        # perpetual drift against any probed SHA.
         raw_revision = raw.get("revision")
-        revision: str | None = raw_revision if isinstance(raw_revision, str) else None
+        revision: str | None
+        if isinstance(raw_revision, str):
+            stripped = raw_revision.strip()
+            if not stripped:
+                revision = None
+            elif not _is_valid_sha(stripped):
+                raise ValueError(
+                    f"SUITE.lock: components.{ident}.revision must be a "
+                    "40- or 64-char hex SHA"
+                )
+            else:
+                revision = stripped
+        else:
+            revision = None
         pins[ident] = ComponentPin(repo=repo, version=version, revision=revision)
 
     provider_extension: ProviderExtension | None = None
