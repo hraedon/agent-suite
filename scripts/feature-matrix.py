@@ -57,6 +57,8 @@ class MatrixRow:
     proof: str
     excluded: str
     notes: str
+    owning_wi: str = ""           # Sol Gate 0 WS3: WI that owns closing this row's gap
+    release_status: str = ""      # Sol Gate 0 WS3: "in_qualification" | "preview" | "supported"
 
 
 @dataclass(frozen=True)
@@ -68,11 +70,66 @@ class Matrix:
     profiles: list[str]
     golden_journeys: dict[str, str]
     rows: list[MatrixRow]
+    wi_assignment_summary: dict[str, object] | None = None  # Sol Gate 0 WS3
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = REPO_ROOT / "data" / "v1-feature-matrix.json"
 DOCS_PATH = REPO_ROOT / "docs" / "v1-feature-matrix.md"
+
+
+# Sol Gate 0 WS3 — owning WI per non-pass Profile B row. Each non-pass row in
+# Profile A or B must have exactly one owning WI. Profile C rows are explicitly
+# preview/deferred (do not need owning WIs at this gate). Update this mapping
+# when WIs close (status moves to pass) or when a new gap surfaces.
+_WI_ASSIGNMENTS: dict[tuple[str, str, str], str] = {
+    ("GJ-1", "agent-notes", "project discovery from cwd and per-user identity"): "WI-010",
+    ("GJ-1", "dossier", "authenticated project switcher"): "WI-011",
+    ("GJ-1", "agent-suite", "identity lifecycle / onboarding / offboarding"): "WI-012",
+    ("GJ-3", "agent-notes", "signed note write-through to regista"): "WI-013",
+    ("GJ-4", "dossier", "honest assurance level / independent-review signal"): "WI-014",
+    ("GJ-5", "dossier", "session / tool / file activity views"): "WI-015",
+    ("GJ-5", "dossier", "degraded / unsupported capture rendered honestly"): "WI-016",
+    ("GJ-7", "dossier", "notification preferences and review/recovery deep links"): "WI-017",
+}
+
+
+def _release_status_for_row(profile: str, journey: str, component: str) -> str:
+    """Release-stage label per Sol Gate 0 WS3.
+
+    Profile C rows are explicitly preview-stage (do not block core
+    development). Profile A/B rows are in_qualification (the Gate 0/1
+    target). Rows that have moved to pass could be labeled supported,
+    but the matrix leaves that decision to the release board; here we
+    only carry the stage label.
+    """
+    if profile == "C":
+        return "preview"
+    return "in_qualification"
+
+
+def _wi_assignment_summary(rows: list[MatrixRow]) -> dict[str, object]:
+    """Summary of WI assignments for the matrix payload."""
+    profile_ab_non_pass = [
+        r for r in rows if r.profile in ("A", "B") and r.status != "pass"
+    ]
+    assigned = [
+        r for r in profile_ab_non_pass if r.owning_wi
+    ]
+    unassigned = [
+        (r.journey, r.component, r.surface) for r in profile_ab_non_pass if not r.owning_wi
+    ]
+    wi_ids = sorted({r.owning_wi for r in assigned})
+    return {
+        "profile_b_non_pass_count": len(profile_ab_non_pass),
+        "assigned_count": len(assigned),
+        "unassigned": unassigned,
+        "wi_ids": wi_ids,
+        "profile_c_deferred": (
+            "Profile C rows remain explicitly preview-stage per Sol Gate 0 "
+            "WS3. They do not need owning WIs at this gate."
+        ),
+    }
 
 
 def _allowed_statuses() -> set[str]:
@@ -675,6 +732,14 @@ def _matrix() -> Matrix:
         except (json.JSONDecodeError, KeyError, TypeError):
             pass  # Fall back to placeholders from _matrix_rows()
     payload = _feature_probes.apply_probes(payload)
+    # Sol Gate 0 WS3: attach owning WI per row + release-stage label.
+    for row in payload["rows"]:
+        key = (row["journey"], row["component"], row["surface"])
+        row["owning_wi"] = _WI_ASSIGNMENTS.get(key, "")
+        row["release_status"] = _release_status_for_row(
+            row["profile"], row["journey"], row["component"]
+        )
+    constructed_rows = [MatrixRow(**r) for r in payload["rows"]]
     return Matrix(
         version=payload["version"],
         generated_at=payload["generated_at"],
@@ -682,7 +747,8 @@ def _matrix() -> Matrix:
         observed_revisions=payload["observed_revisions"],
         profiles=payload["profiles"],
         golden_journeys=payload["golden_journeys"],
-        rows=[MatrixRow(**r) for r in payload["rows"]],
+        rows=constructed_rows,
+        wi_assignment_summary=_wi_assignment_summary(constructed_rows),
     )
 
 
@@ -716,6 +782,8 @@ def _matrix_to_json(matrix: Matrix) -> str:
         "golden_journeys": matrix.golden_journeys,
         "rows": [asdict(row) for row in matrix.rows],
     }
+    if matrix.wi_assignment_summary is not None:
+        payload["wi_assignment_summary"] = matrix.wi_assignment_summary
     return json.dumps(payload, indent=2) + "\n"
 
 

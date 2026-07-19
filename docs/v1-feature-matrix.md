@@ -1,7 +1,7 @@
 # v1 Feature Matrix (Plan 009 WI-0.1)
 
 **Version:** v1  
-**Generated:** 2026-07-19T07:06:03.356053Z  
+**Generated:** 2026-07-19T12:24:41.717955Z  
 **Status source:** probe-emitted
 **Status values:** pass / partial / blocked / absent
 
@@ -9,7 +9,7 @@ This matrix is emitted by named probes; every row's status is mechanically deter
 
 ## Observed revisions
 
-- **agent-suite**: 497b897
+- **agent-suite**: bafbb3f
 - **regista**: 0.5.1
 - **agent-notes**: 1.0.0
 - **dossier**: 0.0.1
