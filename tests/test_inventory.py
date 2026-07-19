@@ -8,7 +8,9 @@ collect_inventory shell-out path with a stubbed doctor aggregate.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -707,3 +709,164 @@ def test_cli_inventory_text(capsys: pytest.CaptureFixture[str], monkeypatch: pyt
     assert "agent-suite candidate inventory" in captured.out
     assert "components:" in captured.out
     assert (tmp_path / "candidate-inventory.json").is_file()
+
+
+# ---------------------------------------------------------------------------
+# WI-0.2 schema expansion: umbrella, origin state, publishability, plan status
+# ---------------------------------------------------------------------------
+
+
+def _make_origin_probe(
+    overrides: dict[str, tuple[str | None, int, bool]] | None = None,
+) -> Callable[[str], tuple[str | None, int, bool]]:
+    """Return a stub origin probe with per-ident overrides.
+
+    The default clean state is ``(None, 0, False)``.
+    """
+    mapping = overrides or {}
+
+    def probe(ident: str) -> tuple[str | None, int, bool]:
+        return mapping.get(ident, (None, 0, False))
+
+    return probe
+
+
+def test_inventory_includes_umbrella_entry() -> None:
+    """The inventory includes an umbrella entry for the agent-suite repository."""
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+        origin_probe=_make_origin_probe(),
+    )
+    assert inv.umbrella.ident == "agent-suite"
+    assert inv.umbrella.repo == "hraedon/agent-suite"
+    assert inv.umbrella.role == "umbrella"
+    assert "umbrella" in inv.to_dict()
+
+
+def test_inventory_reports_dirty_working_tree() -> None:
+    """A dirty working tree on any constituent blocks publishability."""
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+        origin_probe=_make_origin_probe({"regista": (None, 0, True)}),
+    )
+    assert inv.summary.any_dirty is True
+    assert inv.summary.candidate_publishable is False
+    regista = next(c for c in inv.components if c.ident == "regista")
+    assert regista.working_tree_dirty is True
+
+
+def test_inventory_reports_ahead_of_origin() -> None:
+    """Local-only commits ahead of origin on any constituent blocks publishability."""
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+        origin_probe=_make_origin_probe({"agent-suite": ("a" * 40, 2, False)}),
+    )
+    assert inv.summary.any_ahead is True
+    assert inv.summary.candidate_publishable is False
+    assert inv.umbrella.local_only_commits == 2
+
+
+def test_inventory_publishable_when_clean() -> None:
+    """A clean workspace with no drift is marked candidate_publishable."""
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+        origin_probe=_make_origin_probe(),
+    )
+    assert inv.summary.any_dirty is False
+    assert inv.summary.any_ahead is False
+    assert inv.summary.drift_count == 0
+    assert inv.summary.candidate_publishable is True
+
+
+def test_inventory_records_regista_quad_versions() -> None:
+    """The regista component carries schema/workflow/envelope versions from the quad."""
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+        origin_probe=_make_origin_probe(),
+    )
+    regista = next(c for c in inv.components if c.ident == "regista")
+    assert regista.schema_version == _QUAD.schema_version
+    assert regista.workflow_version == _QUAD.canonical_workflow_version
+    assert regista.envelope_version == _QUAD.envelope_version
+    for c in inv.components:
+        if c.ident != "regista":
+            assert c.schema_version is None
+            assert c.workflow_version is None
+            assert c.envelope_version is None
+
+
+def test_inventory_plan_status_is_best_effort() -> None:
+    """plan_status is None when no statuses are supplied (no plans/ dir or unreadable)."""
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+        origin_probe=_make_origin_probe(),
+        plan_statuses={},
+    )
+    assert inv.umbrella.plan_status is None
+    for c in inv.components:
+        assert c.plan_status is None
+
+
+def test_probe_plan_status_reads_newest_plan_file(tmp_path: Path) -> None:
+    """_probe_plan_status reads the **Status:** line from the newest plans/*.md."""
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    old = plans / "001-old.md"
+    new = plans / "002-new.md"
+    old.write_text("**Status:** completed\n", encoding="utf-8")
+    new.write_text("**Status:** in_progress\n", encoding="utf-8")
+    # Force the new file to be strictly newer by mtime.
+    new_mtime = new.stat().st_mtime + 10
+    os.utime(new, times=(new_mtime, new_mtime))
+    assert inventory._probe_plan_status(tmp_path) == "in_progress"
+
+
+def test_probe_plan_status_returns_none_for_missing_plans_dir(tmp_path: Path) -> None:
+    """_probe_plan_status returns None when the plans/ directory is absent."""
+    assert inventory._probe_plan_status(tmp_path) is None
+
+
+def test_format_text_shows_publishable_summary() -> None:
+    """The text summary surfaces the candidate_publishable gate."""
+    inv = build_inventory(
+        lock_obj=_lock(_all_versions("1.0.0")),
+        has_lock_file=True,
+        lock_path=Path("SUITE.lock"),
+        component_versions=_all_versions("1.0.0"),
+        component_revisions={},
+        current_quad=_QUAD,
+        origin_probe=_make_origin_probe(),
+    )
+    text = format_text(inv)
+    assert "Suite candidate: PUBLISHABLE" in text
+    assert "umbrella:" in text
