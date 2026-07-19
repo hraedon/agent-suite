@@ -72,6 +72,20 @@ class Installed(Protocol):
     def __call__(self, cli_name: str) -> bool: ...
 
 
+class RevisionProbe(Protocol):
+    """Probe each component's current git revision (HEAD SHA).
+
+    Returns a map of component ident → full git SHA (or ``None`` when the
+    local source checkout is absent or not a git repo). Defaults to
+    :func:`agent_suite.lock.read_component_revisions` so the doctor's
+    lock-drift check sees the same revisions ``agent-suite lock --check``
+    sees — closing the false-green where the umbrella reported a green lock
+    while the lock command detected revision drift.
+    """
+
+    def __call__(self) -> dict[str, str | None]: ...
+
+
 def _default_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
@@ -187,13 +201,18 @@ def _check_lock_drift(
     lock_path: Path = lock.DEFAULT_LOCK_PATH,
     version_runner: lock.VersionRunner = lock._default_runner,
     version_installed: lock.Installed = lock._default_installed,
+    revision_probe: RevisionProbe = lock.read_component_revisions,
     current_provider_extension: lock.ProviderExtension | None = None,
 ) -> lock.LockDriftResult:
     """Compare installed component versions against SUITE.lock.
 
     Uses the regista quad from ``regista version --json`` (not the doctor
     output, which lacks the full quad) so the schema/workflow/envelope versions
-    are checked too — not just the library version.
+    are checked too — not just the library version. Probes each component's
+    local git checkout for its current SHA via ``revision_probe`` (defaulting
+    to :func:`agent_suite.lock.read_component_revisions`) so revision drift is
+    detected here exactly as it is by ``agent-suite lock --check`` — the two
+    commands must agree on whether the lock is healthy.
 
     A malformed lock file is a named state (``matches=False``), not a crash —
     the doctor is read-only and must never traceback.
@@ -207,10 +226,18 @@ def _check_lock_drift(
         )
     component_versions: dict[str, str | None] = {r.component: r.version for r in reports}
     current_quad = lock.read_regista_quad(runner=version_runner, installed=version_installed)
+    # Probe revisions only when there's a lock to compare against — no point
+    # shelling out to git when no lock exists (``check_drift`` short-circuits
+    # to ``matches=None`` anyway). This also keeps ``aggregate()`` hermetic
+    # for callers that have no lock file (the common test fixture).
+    component_revisions: dict[str, str | None] = (
+        revision_probe() if existing is not None else {}
+    )
     return lock.check_drift(
         existing,
         current_quad=current_quad,
         component_versions=component_versions,
+        component_revisions=component_revisions,
         current_provider_extension=current_provider_extension,
     )
 
@@ -516,6 +543,7 @@ def aggregate(
     lock_path: Path | None = None,
     version_runner: lock.VersionRunner | None = None,
     version_installed: lock.Installed | None = None,
+    revision_probe: RevisionProbe | None = None,
     verify_restore_dsn: str | None = None,
     key_watch_checks: bool = True,
     profile: Profile | None = None,
@@ -530,7 +558,12 @@ def aggregate(
     Both `installed` and `runner` are injectable so tests drive aggregation against
     stubbed component doctors with no real binaries on PATH (no live infra in CI).
     `lock_path`, `version_runner`, and `version_installed` control the lock-drift
-    check (also injectable for the same reason).
+    check (also injectable for the same reason). `revision_probe` (defaulting to
+    :func:`agent_suite.lock.read_component_revisions`) supplies the current git
+    SHAs so revision drift is detected here exactly as it is by
+    ``agent-suite lock --check``; inject a no-op (``lambda: {}``) for hermetic
+    tests. A drifted lock (``lock.matches is False``) makes ``suite_ok`` False —
+    the umbrella must not report a green suite over a red lock.
 
     When ``verify_restore_dsn`` is provided, the post-restore chain verification
     (``verify_restore``) runs across every project and the result is attached to
@@ -594,6 +627,9 @@ def aggregate(
         installed=version_installed if version_installed is not None else lock._default_installed,
     )
 
+    rprobe: RevisionProbe = (
+        revision_probe if revision_probe is not None else lock.read_component_revisions
+    )
     lock_result = _check_lock_drift(
         reports,
         lock_path=lock_path if lock_path is not None else lock.DEFAULT_LOCK_PATH,
@@ -601,6 +637,7 @@ def aggregate(
         version_installed=version_installed
         if version_installed is not None
         else lock._default_installed,
+        revision_probe=rprobe,
         current_provider_extension=current_provider_extension,
     )
     post_restore: verify_restore.VerifyRestoreResult | None = None
@@ -624,6 +661,13 @@ def aggregate(
     if post_restore is not None and not post_restore.ok:
         suite_ok = False
     if key_rotation is not None and not key_rotation.ok:
+        suite_ok = False
+    # A drifted lock is a red suite — the umbrella must not smooth a red lock
+    # into "ok." ``matches=None`` (no lock file) is informational and does NOT
+    # fail the suite: there's no baseline to compare against. ``matches=False``
+    # (drift, or an unreadable lock) MUST fail the suite so that ``doctor`` and
+    # ``lock --check`` agree on whether the lock is healthy.
+    if lock_result.matches is False:
         suite_ok = False
 
     if memory_provider is not None:
