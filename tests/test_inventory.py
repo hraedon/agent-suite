@@ -820,6 +820,61 @@ def test_inventory_reports_unknown_provenance() -> None:
     assert regista.provenance_known is False
 
 
+def test_probe_origin_state_partial_failure_withholds_provenance(
+    tmp_path: Path,
+) -> None:
+    """Sol round-3 finding #1 regression: a partial probe failure must NOT
+    silently read as clean/current.
+
+    The prior implementation marked provenance_known=True as soon as the
+    origin revision resolved, leaving ahead/behind/dirty probes to fall
+    through to their safe defaults (0/0/False) on failure. A synthetic
+    failure of the ahead probe while origin succeeded would read as
+    "clean, current, not dirty" even though the ahead read failed.
+
+    Construct a real throwaway git checkout, then monkey-patch one of the
+    subprocess calls to fail. Assert provenance_known comes back False.
+    """
+    import subprocess as sp
+    from unittest.mock import patch
+
+    from agent_suite.inventory import _probe_origin_state
+
+    # Set up a real git checkout so the origin probe can succeed.
+    repo = tmp_path / "fake"
+    repo.mkdir()
+    sp.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    sp.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+    sp.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "r").write_text("x")
+    sp.run(["git", "-C", str(repo), "add", "."], check=True)
+    sp.run(["git", "-C", str(repo), "commit", "-q", "-m", "x"], check=True)
+    # Add an origin so rev-parse origin/main can succeed (points at HEAD).
+    sp.run(["git", "-C", str(repo), "remote", "add", "origin", str(repo)], check=True)
+    sp.run(
+        ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"],
+        check=True,
+    )
+
+    # Save the real run; patch the ahead-count invocation to raise.
+    real_run = sp.run
+
+    def patched_run(args, **kwargs):  # type: ignore[no-untyped-def]
+        if "rev-list" in args and "origin/main..HEAD" in args:
+            raise sp.TimeoutExpired(cmd=args, timeout=1)
+        return real_run(args, **kwargs)
+
+    with patch("subprocess.run", side_effect=patched_run):
+        origin_rev, ahead, behind, dirty, provenance_known = _probe_origin_state(repo)
+
+    # Origin resolved, but ahead probe failed -> provenance_known must be False.
+    assert origin_rev is not None, "origin probe should have succeeded"
+    assert provenance_known is False, (
+        "partial probe failure must withhold provenance_known; "
+        f"got origin_rev={origin_rev!r}, ahead={ahead}, behind={behind}, dirty={dirty}"
+    )
+
+
 def test_inventory_publishable_when_clean() -> None:
     """A clean workspace with no drift, no ahead/behind, known provenance is converged."""
     inv = build_inventory(
