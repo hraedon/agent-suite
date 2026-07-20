@@ -21,6 +21,11 @@ operator docs — nothing else. See `README.md` for the charter and
 3. **Know the boundary.** This layer *calls* each component's own
    `provision` / `install-harness` / `doctor`; it never reimplements them. A change
    that adds store/face/detector logic here is in the wrong repo.
+4. **Know the CLI contract.** `docs/cli-contract.md` (contract v1) is normative
+   for every suite CLI, this repo's included: stream discipline, exit-code
+   taxonomy, the common error envelope, grammar conventions. The conformance kit
+   lives at `src/agent_suite/conformance/`; per-component results in
+   `data/cli-conformance.json`.
 
 ## Hard rules
 
