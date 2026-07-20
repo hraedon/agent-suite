@@ -12,6 +12,7 @@ import os
 from enum import Enum
 from typing import assert_never
 
+from agent_suite.conformance.envelope import emit_error
 from agent_suite.harness import HarnessTarget
 
 
@@ -370,7 +371,6 @@ def main(argv: list[str] | None = None) -> int:
             from agent_suite.doctor import aggregate, format_text
             from agent_suite.profiles import Profile
             import json as _json
-            import sys
 
             verify_restore_dsn: str | None = None
             if getattr(args, "verify_restore", False):
@@ -378,12 +378,12 @@ def main(argv: list[str] | None = None) -> int:
                     "REGISTA_DSN"
                 )
                 if verify_restore_dsn is None:
-                    print(
-                        "agent-suite doctor --verify-restore: no DSN provided. "
-                        "Use --restore-dsn or set REGISTA_DSN.",
-                        file=sys.stderr,
+                    return emit_error(
+                        "DSN_MISSING",
+                        "doctor --verify-restore: no DSN provided",
+                        detail="Use --restore-dsn or set REGISTA_DSN.",
+                        json_mode=getattr(args, "json", False),
                     )
-                    return 1
             profile: Profile | None = None
             profile_arg: str | None = getattr(args, "profile", None)
             if profile_arg is not None:
@@ -406,7 +406,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(format_text(report))
             return 1 if (getattr(args, "exit_code", False) and not report.suite_ok) else 0
         case Command.LOCK:
-            import sys
 
             from agent_suite.doctor import aggregate
             from agent_suite.lock import (
@@ -431,8 +430,11 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     existing = load_lock_file()
                 except ValueError as exc:
-                    print(f"agent-suite lock --check: {exc}", file=sys.stderr)
-                    return 1
+                    return emit_error(
+                        "LOCK_UNREADABLE",
+                        f"lock --check: {exc}",
+                        json_mode=getattr(args, "json", False),
+                    )
                 # When the lock pins a memory-provider extension, probe the
                 # current provider so check_drift can detect real provider
                 # drift instead of false-positive "pinned → absent" (WI-003).
@@ -556,15 +558,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 0 if rb_result.ok else 1
 
             if getattr(args, "forward_recover", False):
-                import sys
-
                 if args.dry_run:
-                    print(
-                        "agent-suite upgrade --forward-recover: --dry-run is not supported "
-                        "with --forward-recover (forward recovery completes a partial upgrade)",
-                        file=sys.stderr,
+                    return emit_error(
+                        "FLAG_CONFLICT",
+                        "upgrade --forward-recover does not support --dry-run",
+                        detail="Forward recovery completes a partial upgrade; run without --dry-run.",
+                        json_mode=getattr(args, "json", False),
                     )
-                    return 1
                 from agent_suite.upgrade import (
                     format_forward_recovery_text,
                     run_forward_recovery,
@@ -736,10 +736,11 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 receipt = apply_plan(plan, dry_run=not args.apply)
             except ValueError as exc:
-                import sys
-
-                print(f"agent-suite setup-install: {exc}", file=sys.stderr)
-                return 1
+                return emit_error(
+                    "SETUP_PLAN_REJECTED",
+                    f"setup-install: {exc}",
+                    json_mode=getattr(args, "json", False),
+                )
             if getattr(args, "json", False):
                 import json as _json
 
@@ -768,8 +769,39 @@ def main(argv: list[str] | None = None) -> int:
             import json as _json
             import time as _time
 
+            # Validate flags before touching the store: the store eagerly
+            # creates its directory, and a flag error must not depend on
+            # store-path writability (CLI contract v1 §2).
+            dc_json = getattr(args, "json", False)
+            if args.action == "request" and (not args.operation or not args.token):
+                return emit_error(
+                    "FLAG_MISSING",
+                    "dual-control request requires --operation and --token",
+                    json_mode=dc_json,
+                )
+            if args.action == "approve" and (not args.request_id or not args.token):
+                return emit_error(
+                    "FLAG_MISSING",
+                    "dual-control approve requires --request-id and --token",
+                    json_mode=dc_json,
+                )
+            if args.action == "execute" and not args.request_id:
+                return emit_error(
+                    "FLAG_MISSING",
+                    "dual-control execute requires --request-id",
+                    json_mode=dc_json,
+                )
+
             store_path = Path(args.store_path)
-            store = DualControlStore(store_path)
+            try:
+                store = DualControlStore(store_path)
+            except OSError as exc:
+                return emit_error(
+                    "STORE_UNAVAILABLE",
+                    f"dual-control store not usable at {store_path}",
+                    detail=str(exc),
+                    json_mode=dc_json,
+                )
 
             if args.action == "list":
                 pending = store.list_pending()
@@ -797,14 +829,6 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.action == "request":
-                if not args.operation or not args.token:
-                    import sys
-
-                    print(
-                        "dual-control request requires --operation and --token",
-                        file=sys.stderr,
-                    )
-                    return 1
                 operation = ProtectedOperation(args.operation)
                 token_hash = _hash_token(args.token)
                 token = ValidatedToken(
@@ -838,18 +862,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.action == "approve":
-                if not args.request_id or not args.token:
-                    import sys
-
-                    print(
-                        "dual-control approve requires --request-id and --token",
-                        file=sys.stderr,
-                    )
-                    return 1
                 record = store.get(args.request_id)
                 if record is None:
-                    print(f"Request not found: {args.request_id}")
-                    return 1
+                    return emit_error(
+                        "REQUEST_NOT_FOUND",
+                        f"dual-control request not found: {args.request_id}",
+                        json_mode=dc_json,
+                    )
                 token_hash = _hash_token(args.token)
                 approver_token = ValidatedToken(
                     principal_id="cli-approver",
@@ -873,11 +892,6 @@ def main(argv: list[str] | None = None) -> int:
                 return 0 if decision.is_approved else 1
 
             if args.action == "execute":
-                if not args.request_id:
-                    import sys
-
-                    print("dual-control execute requires --request-id", file=sys.stderr)
-                    return 1
                 from agent_suite.dual_control import mark_executed
 
                 decision = mark_executed(args.request_id, store)
