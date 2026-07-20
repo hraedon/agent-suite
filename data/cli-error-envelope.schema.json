@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hraedon/agent-suite/data/cli-error-envelope.schema.json",
+  "title": "Suite CLI error envelope (CLI contract v1 §3)",
+  "type": "object",
+  "required": ["ok", "error"],
+  "properties": {
+    "ok": {
+      "const": false,
+      "description": "Always false in an error envelope; success documents are the verb's own shape."
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "description": "Stable machine-readable code. API surface: renaming or removing a code is a breaking change."
+        },
+        "message": {
+          "type": "string",
+          "description": "One human-readable line. Not API surface; must not be parsed."
+        },
+        "detail": {
+          "type": ["string", "null"],
+          "description": "Remediation or specifics. Not API surface."
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "True only for transient infrastructure failures; caller errors are false."
+        },
+        "partial": {
+          "type": ["object", "null"],
+          "required": ["succeeded", "failed"],
+          "properties": {
+            "succeeded": {"type": "integer", "minimum": 0},
+            "failed": {"type": "integer", "minimum": 1},
+            "items": {"type": "array"}
+          },
+          "description": "Non-null only for batch verbs documenting partial success; a non-null partial still exits nonzero."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

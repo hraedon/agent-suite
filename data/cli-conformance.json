@@ -1,0 +1,15 @@
+{
+  "description": "Per-component CLI contract conformance results (Plan 018 WI-2). Separate from the frozen v1 feature matrix by design (Sol review): this tracks the horizontal contract effort. A component is recorded here only when the kit runs green in its CI.",
+  "cli_contract_version": 1,
+  "components": {
+    "agent-suite": {
+      "kit_version": "1.0.0",
+      "cli_contract_version": 1,
+      "lane": "source-checkout",
+      "result": "pass",
+      "evidence": "tests/test_cli_conformance.py in agent-suite CI (lint-and-test job)",
+      "recorded": "2026-07-20",
+      "notes": "Wheel lane (P1) not yet wired. dry-run exit-2 convention (bootstrap/codex-plugins) conflicts with the usage-error taxonomy; tracked for adjudication in agent-suite WI-021."
+    }
+  }
+}

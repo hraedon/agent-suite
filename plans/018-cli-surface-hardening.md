@@ -177,8 +177,8 @@ later. P0 rows block WI-4 for their component.
 
 | Pri | Component | Defect / work | Tracker | Depends on |
 |-----|-----------|---------------|---------|------------|
-| P0 | regista | structlog → stderr (kills the strip-non-JSON class at the root) | regista WI-211 (file) | WI-1 |
-| P0 | regista | error envelope on `--json` error paths | regista WI-212 (file) | WI-1.5 |
+| P0 | regista | structlog → stderr (kills the strip-non-JSON class at the root) | regista WI-212 | WI-1 |
+| P0 | regista | error envelope on `--json` error paths | regista WI-213 | WI-1.5 |
 | P0 | agent-notes | WI-026: `Error:` + exit 0 — audit **every** error path, not just wi_kind validation | agent-notes WI-026 | WI-1 |
 | P0 | agent-notes | error envelope on `--json` error paths | agent-notes (file) | WI-1.5 |
 | P0 | agent-suite | envelope + kit adoption (dogfood) | this plan | WI-1.5, WI-2 |
