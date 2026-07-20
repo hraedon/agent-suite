@@ -19,7 +19,7 @@ for why the signing keys live in the backend, not on disk.
 
 ## 1. Prerequisites
 
-- Windows 10/11 or Windows Server 2019+.
+- Windows 11, Server 2022, or Server 2025.
 - `pywin32` installed: `pip install agent-suite[windows]` (the `windows` extra
   pulls `pywin32`; the core stays stdlib-only — see `pyproject.toml`).
 - The suite process running under the Windows account that owns the
