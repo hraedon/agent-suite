@@ -14,8 +14,8 @@ After this guide, an operator will have a running suite with a green
 
 | Dependency | Requirement |
 |------------|------------|
-| Python | 3.12 or 3.13 |
-| Postgres | 14+ (reachable from this host) |
+| Python | 3.12, 3.13, or 3.14 |
+| Postgres | 18+ (reachable from this host) |
 | Secret backend | Vault, AKV, or Windows Credential Manager (this host is Linux, so Vault or AKV — see [secrets-vault.md](secrets-vault.md) or [secrets-akv.md](secrets-akv.md)) |
 | OS | systemd-based Linux (Ubuntu 22.04+, RHEL 9+) |
 | Permissions | root (or sudo) for system-level config and service install |

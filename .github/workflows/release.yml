@@ -7,6 +7,12 @@ name: Release inventory artifact
 # HEAD it just snapshotted — see Sol round-2/3 finding #2). Generating it in CI
 # against the tagged release revision is the canonical path.
 #
+# Sol round-3 finding #2: the release workflow must produce proof of a clean,
+# tested source candidate, not just deployment metadata. Sibling components are
+# checked out at SUITE.lock-pinned revisions, the feature-probe strict check
+# must pass, and source_tree_converged must be true before the inventory is
+# attached to the release.
+#
 # Triggers only on tag pushes matching `v*`. The artifact is uploaded to the
 # release; the main branch never carries it.
 
@@ -21,7 +27,7 @@ permissions:
 jobs:
   publish-inventory:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # actions/checkout@v4
@@ -37,18 +43,60 @@ jobs:
       - name: Install agent-suite
         run: pip install -e ".[dev]"
 
-      # The release inventory is generated against the tag's own source tree.
-      # Component checkouts are absent in CI (no /projects/* on the runner), so
-      # origin provenance will read unknown for every component and the summary
-      # will honestly report source_tree_converged=false. That is the correct
-      # signal for a release-from-wheel path: the suite's release artifact
-      # carries its own source-tree-converged read, and consumers compare it
-      # against their locally-installed estate via `agent-suite inventory`.
+      - name: Checkout sibling components at SUITE.lock-pinned revisions
+        run: |
+          mkdir -p /tmp/siblings
+          python3 -c "
+          import tomllib, subprocess
+          from pathlib import Path
+          lock = tomllib.loads(Path('SUITE.lock').read_text())
+          for name, info in lock['components'].items():
+              repo = info['repo']
+              rev = info['revision']
+              dest = Path('/tmp/siblings') / name
+              subprocess.run(['git', 'clone', '--quiet', f'https://github.com/{repo}.git', str(dest)], check=True)
+              subprocess.run(['git', '-C', str(dest), 'checkout', rev], check=True)
+              print(f'  {name} @ {rev[:8]}')
+          "
+
+      - name: Install regista (spine)
+        run: pip install /tmp/siblings/regista
+
+      - name: Install faces (agent-notes + dossier)
+        run: pip install /tmp/siblings/agent-notes /tmp/siblings/dossier
+
+      - name: Install agent-provenance (cairn)
+        run: pip install /tmp/siblings/agent-provenance
+
+      - name: Install agent-capability-broker
+        run: pip install /tmp/siblings/agent-capability-broker
+
+      - name: Verify feature matrix (strict)
+        env:
+          AGENT_SUITE_SIBLINGS_ROOT: /tmp/siblings
+        run: python3 scripts/feature-probes.py --check --strict
+
       - name: Generate candidate inventory
+        env:
+          AGENT_SUITE_SIBLINGS_ROOT: /tmp/siblings
         run: |
           mkdir -p out
           agent-suite inventory --json > out/candidate-inventory.json
           cat out/candidate-inventory.json
+
+      - name: Verify source_tree_converged
+        run: |
+          python3 -c "
+          import json, sys
+          with open('out/candidate-inventory.json') as f:
+              inv = json.load(f)
+          converged = inv.get('summary', {}).get('source_tree_converged', False)
+          if not converged:
+              print('ERROR: source_tree_converged is false — the release inventory', file=sys.stderr)
+              print('does not prove a clean, tested source candidate (Sol round-3 #2).', file=sys.stderr)
+              sys.exit(1)
+          print('source_tree_converged: true')
+          "
 
       - name: Attach inventory to release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # softprops/action-gh-release@v2
