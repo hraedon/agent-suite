@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "scripts" / "feature-matrix.py"
+PROBES_SCRIPT_PATH = REPO_ROOT / "scripts" / "feature-probes.py"
 DATA_PATH = REPO_ROOT / "data" / "v1-feature-matrix.json"
 
 
@@ -84,13 +86,15 @@ def test_matrix_check_mode_passes() -> None:
 def test_committed_json_matches_generator() -> None:
     """The committed JSON must be in sync with _matrix().
 
-    Ignores ``generated_at`` (timestamp), ``observed_revisions`` (git HEAD
-    revs / package versions captured at probe-run time), and ``status_source``
-    (derived from which probes could run — environment-dependent: CI may not
-    have sibling checkouts installed). These are run-time observations, not
-    structural properties of the matrix. Row-level ``status`` and ``proof``
-    are preserved when a probe returns HAND_ASSESSED, so they stay stable
-    across environments.
+    Ignores ``generated_at`` (timestamp) and ``observed_revisions`` (git HEAD
+    revs / package versions captured at probe-run time) — these are run-time
+    observations, not structural properties of the matrix.
+
+    ``status_source`` is also ignored in the comparison because regenerating
+    without siblings produces ``mixed-probe-and-hand`` while the committed
+    file has ``probe-emitted``. A separate assertion verifies the committed
+    value is ``probe-emitted`` — see
+    :func:`test_committed_status_source_is_probe_emitted`.
     """
     committed = json.loads(DATA_PATH.read_text(encoding="utf-8"))
     matrix = feature_matrix._matrix()
@@ -100,6 +104,94 @@ def test_committed_json_matches_generator() -> None:
         committed.pop(key, None)
         generated.pop(key, None)
     assert committed == generated, "Committed data/v1-feature-matrix.json is out of sync with scripts/feature-matrix.py; run python3 scripts/feature-matrix.py"
+
+
+def test_committed_status_source_is_probe_emitted() -> None:
+    """The committed matrix must be fully probe-emitted (Plan 015 WI-0.1 AC).
+
+    A status_source of 'mixed-probe-and-hand' or 'hand-assessed' means some
+    rows were not mechanically verified — the gate would false-green
+    (Sol round-3 finding #1).
+    """
+    committed = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    assert committed["status_source"] == "probe-emitted", (
+        f"Committed matrix status_source is '{committed['status_source']}' — "
+        "expected 'probe-emitted'. Run with sibling checkouts to regenerate."
+    )
+
+
+def test_committed_observed_revisions_are_populated() -> None:
+    """Every component must have a non-None observed revision.
+
+    A None revision means the probe could not identify the component's
+    release identity — the matrix would not be 'reproduced by a named probe
+    against an identified revision set' (Plan 015 WI-0.1 AC).
+    """
+    committed = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    revisions = committed.get("observed_revisions", {})
+    expected_components = {
+        "agent-suite", "regista", "agent-notes", "dossier",
+        "agent-provenance", "agent-capability-broker", "agent-wake",
+    }
+    assert set(revisions.keys()) == expected_components, (
+        f"observed_revisions components mismatch: {set(revisions.keys())} "
+        f"vs expected {expected_components}"
+    )
+    for component, rev in revisions.items():
+        assert rev is not None, (
+            f"observed_revisions['{component}'] is None — the probe could "
+            "not identify this component's release identity."
+        )
+
+
+def test_feature_probe_strict_behavior() -> None:
+    """--strict fails when probes return HAND_ASSESSED (Sol round-3 finding #1).
+
+    With siblings available: --check --strict exits 0 (all probes ran).
+    Without siblings: --check --strict exits 1 (HAND_ASSESSED present).
+    """
+    result = subprocess.run(
+        [sys.executable, str(PROBES_SCRIPT_PATH), "--check", "--strict"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+    )
+    if result.returncode == 0:
+        committed = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+        assert committed["status_source"] == "probe-emitted"
+    else:
+        assert "HAND_ASSESSED" in result.stderr or "STRICT" in result.stderr, (
+            f"--strict exited {result.returncode} but stderr doesn't mention "
+            f"HAND_ASSESSED or STRICT:\n{result.stderr}"
+        )
+
+
+def test_feature_probe_check_detects_proof_drift(tmp_path: Path) -> None:
+    """--check detects proof changes, not just status changes (Sol round-3 #1).
+
+    Modifies an agent-suite row's proof (probes always run for agent-suite)
+    and verifies the check reports proof drift.
+    """
+    import copy
+    committed = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    tampered = copy.deepcopy(committed)
+    for row in tampered["rows"]:
+        if row["component"] == "agent-suite":
+            row["proof"] = "tampered-proof-for-test"
+            break
+    tampered_path = tmp_path / "tampered-matrix.json"
+    tampered_path.write_text(json.dumps(tampered, indent=2) + "\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(PROBES_SCRIPT_PATH), "--check", "--data", str(tampered_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+    )
+    assert result.returncode != 0, "--check should exit non-zero on proof drift"
+    assert "DRIFT" in result.stderr
+    assert "proof changed" in result.stderr
 
 
 def test_validation_catches_errors() -> None:
