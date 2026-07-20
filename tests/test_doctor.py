@@ -324,8 +324,9 @@ def test_doctor_only_reads_never_writes() -> None:
     runner = StubRunner({k: _completed(stdout=v) for k, v in outputs.items()})
     _aggregate_safe(installed=_installed_all(), runner=runner)
     # Every call is exactly the component's `doctor --json` invocation — no writes.
-    expected = [c.doctor_cmd for c in COMPONENTS]
-    assert runner.calls == expected
+    # Order is non-deterministic (concurrent probes); compare as sets.
+    expected = {c.doctor_cmd for c in COMPONENTS}
+    assert set(runner.calls) == expected
 
 
 # --- status enum exhaustiveness ---------------------------------------------
