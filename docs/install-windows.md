@@ -14,10 +14,10 @@ After this guide, an operator will have a running suite with a green
 
 | Dependency | Requirement |
 |------------|------------|
-| Python | 3.12 or 3.13 (from python.org or the Microsoft Store) |
-| Postgres | 14+ (reachable from this host) |
+| Python | 3.12, 3.13, or 3.14 (from python.org or the Microsoft Store) |
+| Postgres | 18+ (reachable from this host) |
 | Secret backend | Credential Manager (see [secrets-windows.md](secrets-windows.md)), Vault, or AKV |
-| OS | Windows 10/11 or Windows Server 2019+ |
+| OS | Windows 11, Server 2022, or Server 2025 |
 | Permissions | Administrator for system-level config and service install |
 
 > **Security — run inside a dedicated VM.** On native Windows, Claude Code's

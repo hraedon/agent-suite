@@ -9,8 +9,8 @@
   "postgres_version": "18+",
   "reference_linux": "Ubuntu 22.04+",
   "docker": "supported",
-  "kubernetes": "optional",
-  "kubernetes_note": "Optional substrate. Where an operator chooses k8s, the components that make sense to host there (dossier, regista, cairn, agent-notes, agent-wake) are supported on standard k8s deployments; no operator artifact is produced. Owner ruling 2026-07-19: k8s stays optional but is genuinely supported for applicable components.",
+  "kubernetes": "dogfood",
+  "kubernetes_note": "Optional substrate. Where an operator chooses k8s, the components that make sense to host there (dossier, regista, cairn, agent-notes, agent-wake) may run on standard k8s deployments; no operator artifact is produced and no k8s qualification lane exists. Relabeled to 'dogfood' per Sol round-3 finding #4: a platform is not supported merely because unit tests import on it.",
   "windows_versions": [
     "11",
     "Server 2022",
@@ -130,7 +130,7 @@
   "compatibility_window": "N-1 upgrade supported",
   "compatibility_window_note": "Upgrade/rollback logic is unit-tested with stubbed runners; live N-1 upgrade proof is Gate 4 WI-4.3.",
   "excluded_surfaces": [
-    "Kubernetes operator (k8s is an optional substrate, not a required dependency)",
+    "Kubernetes operator (k8s is a dogfood substrate, not a required dependency)",
     "SaaS",
     "Multi-region active/active",
     "Fleet management"
