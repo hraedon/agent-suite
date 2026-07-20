@@ -2,7 +2,18 @@
 
 **Date:** 2026-07-04  
 **Reviewer:** Claude (GLM 5.2)  
-**Verdict:** CLEARED for public publication.
+**Verdict:** REVOKED — re-review required before publication.
+
+**2026-07-19 update:** The prior CLEARED verdict is revoked. A 5.18 MB
+production operating-history export (`golden/operating-history/regista-
+history-bundle-20260719.json`) was committed containing 1,508 complete
+operational events with real identifiers and content. The export was
+identified as coming from the production store in the committed README. A
+denylist scan returning zero hits is not equivalent to privacy review — the
+committed-identifier rule (AGENTS.md §"No work-domain identifiers") and this
+review's own deployment-topology standard are violated. The export has been
+removed from the tracked tree and replaced with a metadata manifest; a full
+re-review is required before the repository can be cleared for publication.
 
 ## What was checked
 

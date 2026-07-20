@@ -20,6 +20,13 @@ samples/
 # even when the canonical identifier denylist does not forbid them.
 golden/local/
 
+# Production operating-history exports — never committed. These contain real
+# operational events and identifiers from the production store. A metadata
+# manifest (README.md) records the bundle hash, counts, and verifier result;
+# the full export belongs in access-controlled release evidence, not the public
+# tree (Sol round-3 finding #3).
+golden/operating-history/*.json
+
 # Generated inventory snapshot — never committed. The inventory is a
 # current-state read of the operator's checkouts + suite.env, so any
 # committed snapshot is immediately self-stale (committing it changes the
