@@ -10,6 +10,24 @@
       "evidence": "tests/test_cli_conformance.py in agent-suite CI (lint-and-test job)",
       "recorded": "2026-07-20",
       "notes": "Wheel lane (P1) not yet wired. dry-run exit-2 convention resolved: codex-plugins dry-run now exits 0 (plan display is success, not a usage error)."
+    },
+    "regista": {
+      "kit_version": "1.0.0",
+      "cli_contract_version": 1,
+      "lane": "source-checkout",
+      "result": "pass",
+      "evidence": "tests/test_cli_conformance.py in regista CI (check job, py3.13/3.14); regista PR #9",
+      "recorded": "2026-07-20",
+      "notes": "Adoption surfaced and fixed two contract §5 traceback defects (workflow validate on a missing file; RegistaError escaping Regista() construction). Kit pinned by git+SHA; CI matrix moved to 3.13/3.14 (kit requires >=3.12). Hermetic cases declared non-DB so the conftest DSN-substring skip heuristic doesn't silently skip the gate in CI."
+    },
+    "agent-notes": {
+      "kit_version": "1.0.0",
+      "cli_contract_version": 1,
+      "lane": "source-checkout",
+      "result": "pass",
+      "evidence": "tests/test_cli_conformance.py in agent-notes CI (check job, py3.13/3.14); agent-notes PR #10",
+      "recorded": "2026-07-20",
+      "notes": "Clean adoption — no CLI fixes required; the earlier P0 envelope conversion already held. Keeps decision-52 exit codes (2/3/4); kit checks version-independent contract invariants."
     }
   }
 }
