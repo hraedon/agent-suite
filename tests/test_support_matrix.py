@@ -62,7 +62,7 @@ def test_ci_postgres_version_matches_support_matrix() -> None:
     matrix = _load_support_matrix()
     expected_major = str(matrix["postgres_version"]).rstrip("+")
     ci_text = CI_PATH.read_text(encoding="utf-8")
-    match = re.search(r'image:\s*postgres:(\d+)', ci_text)
+    match = re.search(r'image:\s*(?:pgvector/pgvector:pg|postgres:)(\d+)', ci_text)
     assert match is not None, "Could not find postgres image in ci.yml"
     ci_major = match.group(1)
     assert ci_major == expected_major, (

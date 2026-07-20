@@ -63,7 +63,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:18
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: interop
           POSTGRES_PASSWORD: interop_pw
@@ -127,8 +127,21 @@ jobs:
       - name: Install agent-provenance (cairn)
         run: pip install "git+https://github.com/hraedon/agent-provenance.git@${CAIRN_SHA}"
 
-      - name: Run interop + tamper + restore-drill + adversarial-corpus tests
-        run: pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py tests/test_adversarial_corpus.py -v --tb=short
+      - name: Set up agent-notes schema (skill-smoke prerequisite)
+        run: |
+          psql "$INTEROP_DSN" -c "CREATE DATABASE agent_notes_smoke;" || true
+          git clone --quiet --depth 1 "https://github.com/hraedon/agent-notes.git" /tmp/an-src
+          git -C /tmp/an-src checkout "$AGENT_NOTES_SHA" --quiet 2>/dev/null || true
+          SMOKE_DSN="postgresql://interop:interop_pw@localhost:5432/agent_notes_smoke"
+          for f in /tmp/an-src/schema/*.sql; do
+            psql "$SMOKE_DSN" -f "$f" 2>&1 | grep -v "^CREATE\|^ALTER\|^INSERT\|^DROP\|^SET\|^--" || true
+          done
+          echo "agent-notes schema applied to agent_notes_smoke"
+
+      - name: Run interop + tamper + restore-drill + adversarial-corpus + skill-smoke tests
+        env:
+          AGENT_NOTES_SMOKE_DSN: postgresql://interop:interop_pw@localhost:5432/agent_notes_smoke
+        run: pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py tests/test_adversarial_corpus.py tests/test_skill_smoke.py -v --tb=short
 
   # Plan 015 WI-0.1 — strict feature-probe verification with all sibling
   # components checked out at SUITE.lock-pinned revisions. Prevents the
