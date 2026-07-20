@@ -120,9 +120,9 @@ def test_umbrella_shape_matches_contract() -> None:
     outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
     report = _aggregate_safe(installed=_installed_all(), runner=_runner_for(outputs))
     d = report.to_dict()
-    assert set(d) == {"suite_ok", "components", "lock"}
+    assert set(d) == {"suite_ok", "components", "lock", "duration_ms"}
     comp = d["components"][0]
-    assert {"component", "tier", "status", "ok", "version", "detail", "regista", "checks"} <= set(
+    assert {"component", "tier", "status", "ok", "version", "detail", "regista", "checks", "duration_ms"} <= set(
         comp
     )
     assert d["lock"]["matches"] is None  # no lock file in test env

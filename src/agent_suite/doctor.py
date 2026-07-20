@@ -16,9 +16,11 @@ not healthy). A missing/non-JSON result is a named status, never a traceback.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -40,6 +42,8 @@ from agent_suite.profiles import (
     classify_doctor,
     profile_label,
 )
+
+DEFAULT_GLOBAL_DEADLINE: float = 60.0
 
 
 class ComponentStatus(Enum):
@@ -181,6 +185,7 @@ class ComponentReport:
     detail: str = ""
     regista: dict[str, object] | None = None
     checks: list[dict[str, object]] = field(default_factory=list)
+    duration_ms: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -192,6 +197,7 @@ class ComponentReport:
             "detail": self.detail,
             "regista": self.regista,
             "checks": self.checks,
+            "duration_ms": self.duration_ms,
         }
 
 
@@ -255,12 +261,14 @@ class SuiteReport:
     profile_classification: ProfileClassification | None = None
     memory_provider: dict[str, object] | None = None
     codex_health: CodexHealthReport | None = None
+    duration_ms: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
             "suite_ok": self.suite_ok,
             "components": [c.to_dict() for c in self.components],
             "lock": self.lock.to_dict(),
+            "duration_ms": self.duration_ms,
         }
         if self.post_restore is not None:
             d["post_restore"] = self.post_restore.to_dict()
@@ -535,6 +543,26 @@ def _check_memory_provider(
     return data
 
 
+def _check_one_timed(
+    comp: Component,
+    *,
+    installed: Installed,
+    runner: Runner,
+    remote_checker: RemoteHealthChecker,
+    shared_endpoints: dict[str, str] | None,
+) -> ComponentReport:
+    start = time.monotonic()
+    report = _check_one(
+        comp,
+        installed=installed,
+        runner=runner,
+        remote_checker=remote_checker,
+        shared_endpoints=shared_endpoints,
+    )
+    report.duration_ms = round((time.monotonic() - start) * 1000, 1)
+    return report
+
+
 def aggregate(
     *,
     installed: Installed = _default_installed,
@@ -552,6 +580,8 @@ def aggregate(
     memory_provider_config: MemoryProviderConfig | None = None,
     memory_provider_checks: bool = True,
     codex_health_checks: bool = True,
+    lock_checks: bool = True,
+    probe_deadline: float = DEFAULT_GLOBAL_DEADLINE,
 ) -> SuiteReport:
     """Run each component's doctor and fold into one umbrella report.
 
@@ -564,6 +594,14 @@ def aggregate(
     ``agent-suite lock --check``; inject a no-op (``lambda: {}``) for hermetic
     tests. A drifted lock (``lock.matches is False``) makes ``suite_ok`` False —
     the umbrella must not report a green suite over a red lock.
+
+    Component probes run concurrently (``concurrent.futures``) with a
+    ``probe_deadline`` (default 60 s, capped to 30 s) that bounds how long the
+    collector waits for results. Each report carries ``duration_ms`` so slow
+    probes are visible in the JSON output. The per-probe subprocess timeout
+    remains 30 s (set by ``_default_runner``); ``probe_deadline`` bounds the
+    *collection* window so the umbrella never hangs indefinitely even if an
+    injected runner misbehaves.
 
     When ``verify_restore_dsn`` is provided, the post-restore chain verification
     (``verify_restore``) runs across every project and the result is attached to
@@ -594,19 +632,66 @@ def aggregate(
     an endpoint is treated the same as native. ``memory_provider_config`` is
     injectable for testing.
     """
+    t0 = time.monotonic()
     rc: RemoteHealthChecker = (
         remote_checker if remote_checker is not None else _default_remote_check
     )
-    reports = [
-        _check_one(
-            c,
-            installed=installed,
-            runner=runner,
-            remote_checker=rc,
-            shared_endpoints=shared_endpoints,
-        )
-        for c in components
-    ]
+
+    collection_timeout = min(30.0, probe_deadline)
+    reports: list[ComponentReport] = []
+    collected_idents: set[str] = set()
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(len(components), 8)
+    ) as pool:
+        futures = {
+            pool.submit(
+                _check_one_timed,
+                c,
+                installed=installed,
+                runner=runner,
+                remote_checker=rc,
+                shared_endpoints=shared_endpoints,
+            ): c
+            for c in components
+        }
+        try:
+            for future in concurrent.futures.as_completed(
+                futures, timeout=collection_timeout
+            ):
+                comp = futures[future]
+                try:
+                    report = future.result(timeout=0)
+                    reports.append(report)
+                    collected_idents.add(comp.ident)
+                except Exception as exc:
+                    reports.append(
+                        ComponentReport(
+                            component=comp.ident,
+                            tier=comp.tier,
+                            status=ComponentStatus.UNREACHABLE,
+                            ok=False,
+                            detail=f"{comp.doctor_cmd[0]} doctor raised: {exc}",
+                        )
+                    )
+                    collected_idents.add(comp.ident)
+        except TimeoutError:
+            pass
+        for future, comp in futures.items():
+            if comp.ident not in collected_idents:
+                reports.append(
+                    ComponentReport(
+                        component=comp.ident,
+                        tier=comp.tier,
+                        status=ComponentStatus.UNREACHABLE,
+                        ok=False,
+                        detail=f"{comp.doctor_cmd[0]} doctor exceeded probe deadline",
+                    )
+                )
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    reports.sort(key=lambda r: next(
+        (i for i, c in enumerate(components) if c.ident == r.component), 0
+    ))
 
     mp_config = (
         memory_provider_config
@@ -621,25 +706,28 @@ def aggregate(
             mp_config=mp_config,
         )
 
-    current_provider_extension = lock.read_provider_extension(
-        engine=mp_config.engine,
-        runner=version_runner if version_runner is not None else lock._default_runner,
-        installed=version_installed if version_installed is not None else lock._default_installed,
-    )
+    current_provider_extension: lock.ProviderExtension | None = None
+    lock_result = lock.LockDriftResult(matches=None, note="")
+    if lock_checks:
+        current_provider_extension = lock.read_provider_extension(
+            engine=mp_config.engine,
+            runner=version_runner if version_runner is not None else lock._default_runner,
+            installed=version_installed if version_installed is not None else lock._default_installed,
+        )
 
-    rprobe: RevisionProbe = (
-        revision_probe if revision_probe is not None else lock.read_component_revisions
-    )
-    lock_result = _check_lock_drift(
-        reports,
-        lock_path=lock_path if lock_path is not None else lock.DEFAULT_LOCK_PATH,
-        version_runner=version_runner if version_runner is not None else lock._default_runner,
-        version_installed=version_installed
-        if version_installed is not None
-        else lock._default_installed,
-        revision_probe=rprobe,
-        current_provider_extension=current_provider_extension,
-    )
+        rprobe: RevisionProbe = (
+            revision_probe if revision_probe is not None else lock.read_component_revisions
+        )
+        lock_result = _check_lock_drift(
+            reports,
+            lock_path=lock_path if lock_path is not None else lock.DEFAULT_LOCK_PATH,
+            version_runner=version_runner if version_runner is not None else lock._default_runner,
+            version_installed=version_installed
+            if version_installed is not None
+            else lock._default_installed,
+            revision_probe=rprobe,
+            current_provider_extension=current_provider_extension,
+        )
     post_restore: verify_restore.VerifyRestoreResult | None = None
     if verify_restore_dsn is not None:
         post_restore = verify_restore.verify_restore(
@@ -693,6 +781,7 @@ def aggregate(
         profile_classification=profile_classification,
         memory_provider=memory_provider,
         codex_health=codex_health,
+        duration_ms=round((time.monotonic() - t0) * 1000, 1),
     )
 
 
@@ -703,7 +792,8 @@ def format_text(report: SuiteReport) -> str:
         tag = f"[{c.tier.value.upper()}]"
         ver = f" v{c.version}" if c.version else ""
         detail = f"  {c.detail}" if c.detail else ""
-        lines.append(f"  {c.component:<22} {tag:<10} {c.status.value:<15}{ver}{detail}")
+        timing = f"  ({c.duration_ms:.0f}ms)" if c.duration_ms is not None else ""
+        lines.append(f"  {c.component:<22} {tag:<10} {c.status.value:<15}{ver}{detail}{timing}")
     lines.append("")
     lines.append(lock.format_drift_text(report.lock))
     if report.post_restore is not None:
@@ -742,5 +832,6 @@ def format_text(report: SuiteReport) -> str:
     if report.codex_health is not None:
         lines.append("")
         lines.append(format_codex_health_text(report.codex_health))
-    lines.append(f"suite: {'OK' if report.suite_ok else 'NOT OK'}")
+    total = f"  ({report.duration_ms:.0f}ms)" if report.duration_ms is not None else ""
+    lines.append(f"suite: {'OK' if report.suite_ok else 'NOT OK'}{total}")
     return "\n".join(lines)

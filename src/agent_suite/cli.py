@@ -339,6 +339,15 @@ def _build_parser() -> argparse.ArgumentParser:
     inventory.add_argument(
         "--json", action="store_true", help="emit the inventory as JSON to stdout"
     )
+    inventory.add_argument(
+        "--record",
+        action="store_true",
+        help="write the inventory to data/candidate-inventory.json (read-only by default)",
+    )
+    inventory.add_argument(
+        "--output",
+        help="write the inventory JSON to this path (implies --record)",
+    )
     return parser
 
 
@@ -419,7 +428,12 @@ def main(argv: list[str] | None = None) -> int:
                 write_lock_file,
             )
 
-            report = aggregate()
+            report = aggregate(
+                key_watch_checks=False,
+                memory_provider_checks=False,
+                codex_health_checks=False,
+                lock_checks=False,
+            )
             component_versions: dict[str, str | None] = {
                 r.component: r.version for r in report.components
             }
@@ -1039,8 +1053,6 @@ def main(argv: list[str] | None = None) -> int:
                     print(_json.dumps(build_result.to_dict(), indent=2, default=str))
                 else:
                     print(format_marketplace_build_text(build_result))
-                if build_result.dry_run and build_result.ok:
-                    return 2
                 return 0 if build_result.ok else 1
 
             if args.action == "verify":
@@ -1091,8 +1103,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(_json.dumps(cp_result.to_dict(), indent=2, default=str))
             else:
                 print(format_install_text(cp_result))
-            if cp_result.dry_run:
-                return 2
             return 0 if cp_result.ok else 1
         case Command.INVENTORY:
             import json as _json
@@ -1103,13 +1113,14 @@ def main(argv: list[str] | None = None) -> int:
                 write_inventory_file,
             )
 
-            # Shared-service endpoints from suite.env / process env, mirroring
-            # the doctor dispatch (Plan 004 WI-1.6): a shared-service component
-            # is probed by endpoint when not installed locally.
             shared_endpoints = _shared_endpoints_from_env()
             inv = collect_inventory(shared_endpoints=shared_endpoints or None)
-            # Both modes write the proof artifact (WI-0.2 proof_artifact).
-            write_inventory_file(inv)
+            if args.output:
+                from pathlib import Path
+
+                write_inventory_file(inv, path=Path(args.output))
+            elif args.record:
+                write_inventory_file(inv)
             if getattr(args, "json", False):
                 print(_json.dumps(inv.to_dict(), indent=2, default=str))
             else:
