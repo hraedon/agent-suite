@@ -81,3 +81,23 @@ codex plugin marketplace remove agent-suite-local --json
 
 The release marketplace name remains `agent-suite`; a local proof should use a
 different name so it cannot masquerade as the release source.
+
+## Make umbrella health use the intentional marketplace
+
+Plugin identity is qualified as `name@marketplace`. Consequently, the suite
+doctor defaults to the release marketplace and does not accept a same-name
+plugin from a local source as satisfying the release pin. For a dogfood profile,
+declare the intentional source in the per-user `suite.env`:
+
+```text
+AGENT_SUITE_CODEX_MARKETPLACE=agent-suite-local
+```
+
+The equivalent one-shot check is:
+
+```text
+agent-suite doctor --codex-marketplace agent-suite-local --json
+```
+
+This changes only which qualified marketplace identity is checked. Versions,
+enabled state, and required plugin IDs remain pinned and fail closed.
