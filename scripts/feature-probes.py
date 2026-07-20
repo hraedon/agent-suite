@@ -28,6 +28,7 @@ import argparse
 import importlib
 import importlib.metadata
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -41,7 +42,9 @@ from typing import Any, assert_never
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = REPO_ROOT / "data" / "v1-feature-matrix.json"
 DOCS_PATH = REPO_ROOT / "docs" / "v1-feature-matrix.md"
-SIBLINGS_ROOT = Path("/projects")
+SIBLINGS_ROOT = Path(
+    os.environ.get("AGENT_SUITE_SIBLINGS_ROOT", "/projects")
+)
 
 
 class ProbeResult(Enum):
@@ -1784,10 +1787,15 @@ def apply_probes(matrix_data: dict[str, Any]) -> dict[str, Any]:
 
     Updates each row's ``status`` and ``proof`` based on the probe result.
     Sets ``status_source``, ``generated_at``, and ``observed_revisions``.
+
+    Also records ``_hand_assessed_keys`` (internal, stripped before
+    serialization) listing rows whose probes returned HAND_ASSESSED — used
+    by ``--check --strict`` to fail on un-verifiable rows.
     """
     probed_count = 0
     hand_assessed_count = 0
     unprobed_count = 0
+    hand_assessed_keys: list[tuple[str, str, str]] = []
 
     for row in matrix_data["rows"]:
         key = (row["journey"], row["component"], row["surface"])
@@ -1810,6 +1818,7 @@ def apply_probes(matrix_data: dict[str, Any]) -> dict[str, Any]:
                 # status. This keeps the committed JSON stable across
                 # environments (CI without siblings vs local dev with siblings).
                 hand_assessed_count += 1
+                hand_assessed_keys.append(key)
             case other:
                 assert_never(other)
         probed_count += 1
@@ -1821,6 +1830,7 @@ def apply_probes(matrix_data: dict[str, Any]) -> dict[str, Any]:
     else:
         matrix_data["status_source"] = "hand-assessed"
 
+    matrix_data["_hand_assessed_keys"] = hand_assessed_keys
     matrix_data["generated_at"] = datetime.now(timezone.utc).isoformat().replace(
         "+00:00", "Z"
     )
@@ -1908,6 +1918,12 @@ def main(argv: list[str] | None = None) -> int:
         "--check", action="store_true", help="Validate and exit non-zero on drift"
     )
     parser.add_argument(
+        "--strict", action="store_true",
+        help="With --check: fail if any probe returned HAND_ASSESSED "
+             "(status_source != probe-emitted). Use in CI with sibling "
+             "checkouts to prevent false-greens (Sol round-3 finding #1).",
+    )
+    parser.add_argument(
         "--stdout", action="store_true", help="Print Markdown to stdout"
     )
     args = parser.parse_args(argv)
@@ -1923,22 +1939,56 @@ def main(argv: list[str] | None = None) -> int:
             (r["journey"], r["component"], r["surface"]): r["status"]
             for r in matrix_data["rows"]
         }
+        pre_proofs: dict[tuple[str, str, str], str] = {
+            (r["journey"], r["component"], r["surface"]): r["proof"]
+            for r in matrix_data["rows"]
+        }
         probed = apply_probes(matrix_data)
         drift_found = False
         for row in probed["rows"]:
             key = (row["journey"], row["component"], row["surface"])
-            old = pre_statuses.get(key)
-            if old is not None and old != row["status"]:
+            old_status = pre_statuses.get(key)
+            old_proof = pre_proofs.get(key)
+            if old_status is not None and old_status != row["status"]:
                 print(
-                    f"DRIFT: {key} status changed: {old} -> {row['status']}",
+                    f"DRIFT: {key} status changed: {old_status} -> {row['status']}",
                     file=sys.stderr,
                 )
                 drift_found = True
+            if old_proof is not None and old_proof != row["proof"]:
+                print(
+                    f"DRIFT: {key} proof changed:\n  was: {old_proof}\n  now: {row['proof']}",
+                    file=sys.stderr,
+                )
+                drift_found = True
+
+        hand_assessed_keys: list[tuple[str, str, str]] = probed.get(
+            "_hand_assessed_keys", []
+        )
+        if hand_assessed_keys:
+            print(
+                f"HAND_ASSESSED: {len(hand_assessed_keys)} probe(s) could not "
+                f"determine status (sibling component not available):",
+                file=sys.stderr,
+            )
+            for key in hand_assessed_keys:
+                print(f"  {key}", file=sys.stderr)
+            if args.strict:
+                print(
+                    "STRICT: failing because status_source is "
+                    f"'{probed['status_source']}' — every row must be "
+                    "reproduced by a named probe (Plan 015 WI-0.1 AC). "
+                    "Run with sibling checkouts installed.",
+                    file=sys.stderr,
+                )
+                return 1
+
         if drift_found:
             return 1
         return 0
 
     matrix_data = apply_probes(matrix_data)
+    matrix_data.pop("_hand_assessed_keys", None)
 
     markdown = _matrix_to_markdown(matrix_data)
     if args.stdout:
