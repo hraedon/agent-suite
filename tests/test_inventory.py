@@ -675,16 +675,15 @@ def test_collect_inventory_malformed_lock(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_cli_inventory_json(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """`agent-suite inventory --json` prints JSON and writes the artifact."""
+    """`agent-suite inventory --json --record` prints JSON and writes the artifact."""
     from agent_suite.cli import main
 
     _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
     monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
-    # Redirect the artifact to tmp_path so the test doesn't clobber the real one.
     monkeypatch.setattr(inventory, "_default_inventory_path", lambda: tmp_path / "candidate-inventory.json")
 
-    rc = main(["inventory", "--json"])
+    rc = main(["inventory", "--json", "--record"])
     captured = capsys.readouterr()
     assert rc == 0
     data = json.loads(captured.out)
@@ -695,7 +694,7 @@ def test_cli_inventory_json(capsys: pytest.CaptureFixture[str], monkeypatch: pyt
 
 
 def test_cli_inventory_text(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """`agent-suite inventory` (text mode) prints a readable summary + writes artifact."""
+    """`agent-suite inventory --record` (text mode) prints a readable summary + writes artifact."""
     from agent_suite.cli import main
 
     _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
@@ -703,12 +702,30 @@ def test_cli_inventory_text(capsys: pytest.CaptureFixture[str], monkeypatch: pyt
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
     monkeypatch.setattr(inventory, "_default_inventory_path", lambda: tmp_path / "candidate-inventory.json")
 
-    rc = main(["inventory"])
+    rc = main(["inventory", "--record"])
     captured = capsys.readouterr()
     assert rc == 0
     assert "agent-suite candidate inventory" in captured.out
     assert "components:" in captured.out
     assert (tmp_path / "candidate-inventory.json").is_file()
+
+
+def test_cli_inventory_read_only_by_default(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`agent-suite inventory` without --record does not write the artifact."""
+    from agent_suite.cli import main
+
+    _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
+    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
+    monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
+    monkeypatch.setattr(inventory, "_default_inventory_path", lambda: tmp_path / "candidate-inventory.json")
+
+    rc = main(["inventory", "--json"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert json.loads(captured.out)
+    assert not (tmp_path / "candidate-inventory.json").exists()
 
 
 # ---------------------------------------------------------------------------

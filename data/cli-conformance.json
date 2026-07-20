@@ -9,7 +9,7 @@
       "result": "pass",
       "evidence": "tests/test_cli_conformance.py in agent-suite CI (lint-and-test job)",
       "recorded": "2026-07-20",
-      "notes": "Wheel lane (P1) not yet wired. dry-run exit-2 convention (bootstrap/codex-plugins) conflicts with the usage-error taxonomy; tracked for adjudication in agent-suite WI-021."
+      "notes": "Wheel lane (P1) not yet wired. dry-run exit-2 convention resolved: codex-plugins dry-run now exits 0 (plan display is success, not a usage error)."
     }
   }
 }

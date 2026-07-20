@@ -268,8 +268,7 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
         elif command is Command.RESTORE:
             assert main([command.value, "--dir", "/tmp/test-backup", "--dry-run"]) == 0
         elif command is Command.CODEX_PLUGINS:
-            # dry-run install is hermetic (never shells codex) and exits 2
-            assert main([command.value, "install", "--dry-run"]) == 2
+            assert main([command.value, "install", "--dry-run"]) == 0
         elif command is Command.INVENTORY:
             # Redirect the artifact write so the test doesn't clobber the
             # committed data/candidate-inventory.json with stub output.
@@ -287,7 +286,7 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_codex_plugin_profiles_are_accepted() -> None:
     for profile in ("core", "credentialed", "full"):
-        assert main(["codex-plugins", "install", "--profile", profile, "--dry-run"]) == 2
+        assert main(["codex-plugins", "install", "--profile", profile, "--dry-run"]) == 0
 
 
 def test_codex_health_applies_marketplace_override(

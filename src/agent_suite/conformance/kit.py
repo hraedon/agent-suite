@@ -78,21 +78,34 @@ class BrokenPipeCase:
     env: Mapping[str, str] = field(default_factory=dict)
 
 
+CASE_TIMEOUT: float = 60.0
+
+
 def _run(
     argv: tuple[str, ...],
     env: Mapping[str, str],
     unset_env: tuple[str, ...] = (),
+    timeout: float = CASE_TIMEOUT,
 ) -> subprocess.CompletedProcess[str]:
     merged = {**os.environ, "PYTHONIOENCODING": "utf-8", **env}
     for name in unset_env:
         merged.pop(name, None)
-    return subprocess.run(
-        list(argv),
-        capture_output=True,
-        text=True,
-        check=False,
-        env=merged,
-    )
+    try:
+        return subprocess.run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=merged,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=list(argv),
+            returncode=124,
+            stdout="",
+            stderr=f"conformance: timed out after {timeout}s",
+        )
 
 
 def run_success_case(case: SuccessCase) -> list[str]:
