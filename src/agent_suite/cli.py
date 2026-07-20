@@ -62,6 +62,13 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["A", "B", "C"],
         help="classify the installation against a deployment profile (Plan 008 §3)",
     )
+    doctor.add_argument(
+        "--codex-marketplace",
+        help=(
+            "qualified marketplace for Codex plugin health "
+            "(or AGENT_SUITE_CODEX_MARKETPLACE; default: release marketplace)"
+        ),
+    )
     lock = sub.add_parser(
         Command.LOCK.value, help="generate / check the SUITE.lock compatibility manifest"
     )
@@ -408,6 +415,10 @@ def main(argv: list[str] | None = None) -> int:
                 profile=profile,
                 shared_endpoints=shared_endpoints or None,
                 memory_provider_config=MemoryProviderConfig.from_env(),
+                codex_marketplace=(
+                    getattr(args, "codex_marketplace", None)
+                    or os.environ.get("AGENT_SUITE_CODEX_MARKETPLACE")
+                ),
             )
             if getattr(args, "json", False):
                 print(_json.dumps(report.to_dict(), indent=2, default=str))

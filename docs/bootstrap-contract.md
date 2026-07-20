@@ -100,6 +100,12 @@ a failed post-restore check makes `suite_ok` false; when `--verify-restore` is n
 passed, `post_restore` is `null`. `--verify-restore` requires a DSN (`--restore-dsn`
 or `REGISTA_DSN`) — the command errors if neither is provided.
 
+Codex plugin health preserves qualified `name@marketplace` identity. The
+release marketplace is checked by default; a dogfood deployment may select its
+intentional local source with `--codex-marketplace` or
+`AGENT_SUITE_CODEX_MARKETPLACE`. A same-name plugin from any other marketplace
+never satisfies the pin.
+
 ## 4. The compatibility lock (`SUITE.lock`)
 
 A committed manifest pinning the known-good set:

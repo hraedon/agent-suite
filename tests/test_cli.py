@@ -311,6 +311,35 @@ def test_codex_health_applies_marketplace_override(
     assert all(entry.marketplace == "local-proof" for entry in catalog)
 
 
+def test_doctor_passes_codex_marketplace_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_aggregate(**kwargs: object) -> doctor_mod.SuiteReport:
+        seen.update(kwargs)
+        return doctor_mod.SuiteReport(suite_ok=True, components=[])
+
+    monkeypatch.setattr(doctor_mod, "aggregate", fake_aggregate)
+    assert main(["doctor", "--codex-marketplace", "local-proof"]) == 0
+    assert seen["codex_marketplace"] == "local-proof"
+
+
+def test_doctor_reads_codex_marketplace_from_suite_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_aggregate(**kwargs: object) -> doctor_mod.SuiteReport:
+        seen.update(kwargs)
+        return doctor_mod.SuiteReport(suite_ok=True, components=[])
+
+    monkeypatch.setattr(doctor_mod, "aggregate", fake_aggregate)
+    monkeypatch.setenv("AGENT_SUITE_CODEX_MARKETPLACE", "local-env")
+    assert main(["doctor"]) == 0
+    assert seen["codex_marketplace"] == "local-env"
+
+
 def test_codex_marketplace_build_requires_explicit_output() -> None:
     assert main(["codex-plugins", "build-marketplace"]) == 2
 

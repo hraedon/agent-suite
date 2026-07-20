@@ -32,7 +32,7 @@ from typing import Protocol, assert_never
 from agent_suite import key_watch
 from agent_suite import lock
 from agent_suite import verify_restore
-from agent_suite.codex_catalog import CodexPluginId
+from agent_suite.codex_catalog import CODEX_PLUGIN_CATALOG, CodexPluginId, with_marketplace
 from agent_suite.codex_health import CodexHealthReport, check_codex_health, format_codex_health_text
 from agent_suite.components import COMPONENTS, Component, Locality, Tier
 from agent_suite.config import MemoryProviderConfig
@@ -580,6 +580,7 @@ def aggregate(
     memory_provider_config: MemoryProviderConfig | None = None,
     memory_provider_checks: bool = True,
     codex_health_checks: bool = True,
+    codex_marketplace: str | None = None,
     lock_checks: bool = True,
     probe_deadline: float = DEFAULT_GLOBAL_DEADLINE,
 ) -> SuiteReport:
@@ -631,6 +632,10 @@ def aggregate(
     set but doctor reports not-ok) makes ``suite_ok`` False. Hindsight without
     an endpoint is treated the same as native. ``memory_provider_config`` is
     injectable for testing.
+
+    ``codex_marketplace`` overrides the release marketplace identity used for
+    Codex plugin health. This preserves qualified ``name@marketplace`` pinning
+    while allowing a local dogfood marketplace to be checked honestly.
     """
     t0 = time.monotonic()
     rc: RemoteHealthChecker = (
@@ -765,9 +770,15 @@ def aggregate(
 
     codex_health: CodexHealthReport | None = None
     if codex_health_checks:
+        codex_catalog = (
+            with_marketplace(CODEX_PLUGIN_CATALOG, codex_marketplace)
+            if codex_marketplace is not None
+            else CODEX_PLUGIN_CATALOG
+        )
         codex_health = check_codex_health(
             runner=runner,
             installed=installed,
+            catalog=codex_catalog,
             required_plugin_ids=frozenset({CodexPluginId.AGENT_NOTES, CodexPluginId.CAIRN}),
         )
 

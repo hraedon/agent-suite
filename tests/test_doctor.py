@@ -891,6 +891,57 @@ def test_codex_health_section_in_doctor_output() -> None:
     assert "agent-notes" in text
 
 
+def test_codex_health_uses_explicit_marketplace_override() -> None:
+    """A dogfood marketplace remains qualified and can satisfy doctor health."""
+    from agent_suite.codex_catalog import CodexPluginId
+    from agent_suite.codex_health import CodexPluginHealthStatus
+
+    spine = _component_by_cli("regista")
+    plugin_list_stdout = json.dumps({
+        "installed": [
+            {
+                "pluginId": "agent-notes@agent-suite-local",
+                "name": "agent-notes",
+                "marketplaceName": "agent-suite-local",
+                "version": "1.0.0",
+                "enabled": True,
+            },
+            {
+                "pluginId": "cairn@agent-suite-local",
+                "name": "cairn",
+                "marketplaceName": "agent-suite-local",
+                "version": "0.1.0",
+                "enabled": True,
+            },
+        ],
+        "available": [],
+    })
+
+    class CodexRunner:
+        def __call__(self, cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+            if cmd[:3] == ("codex", "plugin", "list"):
+                return _completed(stdout=plugin_list_stdout)
+            return _completed(stdout='{"ok": true}')
+
+    report = aggregate(
+        installed=lambda name: name in {"codex", "regista"},
+        runner=CodexRunner(),
+        components=(spine,),
+        lock_path=Path(tempfile.mktemp()),
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+        memory_provider_checks=False,
+        codex_health_checks=True,
+        codex_marketplace="agent-suite-local",
+    )
+
+    assert report.codex_health is not None
+    by_id = {plugin.plugin_id: plugin for plugin in report.codex_health.plugins}
+    assert by_id[CodexPluginId.AGENT_NOTES].status is CodexPluginHealthStatus.INSTALLED_ENABLED
+    assert by_id[CodexPluginId.CAIRN].status is CodexPluginHealthStatus.INSTALLED_ENABLED
+    assert report.codex_health.ready is True
+
+
 def test_codex_health_absent_when_checks_disabled() -> None:
     """aggregate() with codex_health_checks=False omits codex health."""
     spine = _component_by_cli("regista")
