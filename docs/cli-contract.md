@@ -33,6 +33,17 @@ Partial success must pick a side: a batch verb that fails any item
 exits nonzero and reports the split in the error envelope's `partial`
 field (§3). "Some succeeded" is not exit 0.
 
+**Dry-run is success (WI-021, ratified 2026-07-20).** A `--dry-run` that
+successfully computes and prints its plan exits `0` — it ran correctly and
+acted on nothing, which is the contract for `0`. "Nothing was applied" is
+carried by the plan's *output* (which states it would act and did not) and by
+the flag the caller passed, never by a distinct exit code. A verb that
+genuinely needs to fail loudly when a caller forgot `--apply` (e.g. a
+production `bootstrap` gated in CI) uses the same documented `--exit-code`
+opt-in as the doctor row above; it is per-verb and off by default, so no
+sibling is required to implement it. A dry-run that *fails to compute its plan*
+is an ordinary error and exits `1`.
+
 ## 3. Error envelope (P0)
 
 Under `--json`, every error path emits this envelope as the single
