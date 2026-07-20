@@ -62,19 +62,6 @@ ERROR_CASES = [
         env=_HERMETIC_ENV,
     ),
     ErrorCase(
-        name="dual-control-store-path-unwritable",
-        argv=(
-            *_CLI,
-            "dual-control",
-            "list",
-            "--store-path",
-            "/nonexistent/dual-control.json",
-            "--json",
-        ),
-        expect_code="STORE_UNAVAILABLE",
-        env=_HERMETIC_ENV,
-    ),
-    ErrorCase(
         name="doctor-verify-restore-no-dsn-human",
         argv=(*_CLI, "doctor", "--verify-restore"),
         json_mode=False,
@@ -104,6 +91,31 @@ def test_success_conformance(case: SuccessCase) -> None:
 
 @pytest.mark.parametrize("case", ERROR_CASES, ids=lambda c: c.name)
 def test_error_conformance(case: ErrorCase) -> None:
+    assert run_error_case(case) == []
+
+
+def test_dual_control_store_unwritable_conformance(tmp_path: Path) -> None:
+    """Store-directory failure maps to STORE_UNAVAILABLE, not a traceback.
+
+    The unwritable path is a child of a regular *file* so directory
+    creation fails on every platform (a bare ``/nonexistent`` is happily
+    creatable as ``C:\\nonexistent`` on Windows runners).
+    """
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    case = ErrorCase(
+        name="dual-control-store-path-unwritable",
+        argv=(
+            *_CLI,
+            "dual-control",
+            "list",
+            "--store-path",
+            str(blocker / "sub" / "dual-control.json"),
+            "--json",
+        ),
+        expect_code="STORE_UNAVAILABLE",
+        env=_HERMETIC_ENV,
+    )
     assert run_error_case(case) == []
 
 
