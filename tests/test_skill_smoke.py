@@ -114,6 +114,37 @@ def _assert_json_success(proc: subprocess.CompletedProcess[str], label: str) -> 
         )
 
 
+def _assert_json_honest_exit(
+    proc: subprocess.CompletedProcess[str], label: str
+) -> dict:
+    """Assert pure-JSON stdout + an HONEST exit (0 iff the doc reports ok).
+
+    For read-only health verbs whose exit legitimately depends on state: the
+    contract is a well-formed document whose exit code agrees with its ``ok``
+    field, not that the state is healthy.
+    """
+    if proc.returncode == 124:
+        pytest.fail(f"{label}: timed out")
+    assert "Traceback" not in proc.stderr, (
+        f"{label}: traceback; stderr: {proc.stderr[-500:]!r}"
+    )
+    stdout = proc.stdout.strip()
+    assert stdout, f"{label}: empty stdout on a JSON path"
+    try:
+        doc = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        pytest.fail(
+            f"{label}: stdout is not a single JSON document ({exc}); "
+            f"first 300 bytes: {stdout[:300]!r}"
+        )
+    ok = doc.get("ok")
+    assert isinstance(ok, bool), f"{label}: missing/invalid 'ok' bool"
+    assert (proc.returncode == 0) == ok, (
+        f"{label}: dishonest exit — returncode {proc.returncode} vs ok={ok}"
+    )
+    return doc
+
+
 def _assert_error(proc: subprocess.CompletedProcess[str], label: str) -> dict:
     """Assert nonzero exit + envelope on stdout (contract §2 + §3)."""
     if proc.returncode == 124:
@@ -276,7 +307,13 @@ class TestReadOnlyVerbs:
 
     def test_doctor_json(self, smoke_project: dict[str, str]) -> None:
         proc = _run_cli(("agent-notes", "doctor", "--json"), smoke_project)
-        _assert_json_success(proc, "doctor --json")
+        # doctor is a read-only HEALTH verb: the contract is a well-formed
+        # JSON document with an HONEST exit (0 iff ok), not "the project is
+        # healthy". A fresh ephemeral smoke project legitimately reports
+        # unhealthy for un-provisioned optionals (skills_installed /
+        # harness_wired), so asserting exit 0 would test provisioning, not the
+        # CLI contract (and would force a global install-harness side effect).
+        _assert_json_honest_exit(proc, "doctor --json")
 
     def test_workspace_list_json(self, smoke_project: dict[str, str]) -> None:
         proc = _run_cli(("agent-notes", "workspace", "list", "--json"), smoke_project)
