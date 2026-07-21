@@ -115,16 +115,26 @@ def _assert_json_success(proc: subprocess.CompletedProcess[str], label: str) -> 
 
 
 def _assert_json_honest_exit(
-    proc: subprocess.CompletedProcess[str], label: str
+    proc: subprocess.CompletedProcess[str],
+    label: str,
+    allowed_exits: tuple[int, ...] = (0, 1),
 ) -> dict:
     """Assert pure-JSON stdout + an HONEST exit (0 iff the doc reports ok).
 
     For read-only health verbs whose exit legitimately depends on state: the
     contract is a well-formed document whose exit code agrees with its ``ok``
     field, not that the state is healthy.
+
+    Exit must be one of ``allowed_exits`` — a crash/signal exit (negative on
+    POSIX, e.g. -11 SIGSEGV) or timeout is NOT an honest health report even if a
+    partial JSON doc happens to parse with ``ok:false``.
     """
     if proc.returncode == 124:
         pytest.fail(f"{label}: timed out")
+    assert proc.returncode in allowed_exits, (
+        f"{label}: exit {proc.returncode} not in {allowed_exits} "
+        f"(crash/signal?); stderr: {proc.stderr[-500:]!r}"
+    )
     assert "Traceback" not in proc.stderr, (
         f"{label}: traceback; stderr: {proc.stderr[-500:]!r}"
     )
@@ -284,6 +294,8 @@ def smoke_project() -> Generator[dict[str, str], None, None]:
             if _REQUIRE:
                 pytest.fail("agent-notes init failed in CI")
     elif _REQUIRE:
+        if not _regista_available():
+            pytest.fail("INTEROP_REQUIRE_FACES=1 but regista is not importable")
         pytest.fail(
             "CI requires a regista store DSN distinct from the agent-notes "
             "domain DSN (set AGENT_NOTES_SMOKE_REGISTA_DSN); got "
@@ -313,7 +325,13 @@ class TestReadOnlyVerbs:
         # unhealthy for un-provisioned optionals (skills_installed /
         # harness_wired), so asserting exit 0 would test provisioning, not the
         # CLI contract (and would force a global install-harness side effect).
-        _assert_json_honest_exit(proc, "doctor --json")
+        doc = _assert_json_honest_exit(proc, "doctor --json")
+        # ...but a gutted doctor that always reports ok:false with no checks
+        # must still fail: require a non-empty checks array so the honest-exit
+        # relaxation can't silently accept a hollowed-out health report.
+        assert doc.get("checks"), (
+            f"doctor --json: empty/absent 'checks' array — {doc!r}"
+        )
 
     def test_workspace_list_json(self, smoke_project: dict[str, str]) -> None:
         proc = _run_cli(("agent-notes", "workspace", "list", "--json"), smoke_project)

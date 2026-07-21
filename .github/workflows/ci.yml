@@ -139,8 +139,15 @@ jobs:
           #                                the fly by regista.create_project
           psql "$INTEROP_DSN" -c "CREATE DATABASE agent_notes_smoke;" || true
           psql "$INTEROP_DSN" -c "CREATE DATABASE agent_notes_smoke_regista;" || true
-          git clone --quiet --depth 1 "https://github.com/hraedon/agent-notes.git" /tmp/an-src
-          git -C /tmp/an-src checkout "$AGENT_NOTES_SHA" --quiet 2>/dev/null || true
+          # Fetch the EXACT pinned SHA (depth 1) and fail loudly on a bad pin.
+          # A `git clone --depth 1` only fetches the default-branch tip, so a
+          # `checkout $SHA || true` would silently no-op when the pin isn't the
+          # tip and apply main's schema instead — defeating the lock. Fetching
+          # the SHA directly makes an unreachable/wrong pin a hard error.
+          git init --quiet /tmp/an-src
+          git -C /tmp/an-src remote add origin https://github.com/hraedon/agent-notes.git
+          git -C /tmp/an-src fetch --quiet --depth 1 origin "$AGENT_NOTES_SHA"
+          git -C /tmp/an-src checkout --quiet "$AGENT_NOTES_SHA"
           SMOKE_DSN="postgresql://interop:interop_pw@localhost:5432/agent_notes_smoke"
           for f in /tmp/an-src/schema/*.sql; do
             psql "$SMOKE_DSN" -f "$f" 2>&1 | grep -v "^CREATE\|^ALTER\|^INSERT\|^DROP\|^SET\|^--" || true
