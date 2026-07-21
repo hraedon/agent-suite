@@ -114,6 +114,47 @@ def _assert_json_success(proc: subprocess.CompletedProcess[str], label: str) -> 
         )
 
 
+def _assert_json_honest_exit(
+    proc: subprocess.CompletedProcess[str],
+    label: str,
+    allowed_exits: tuple[int, ...] = (0, 1),
+) -> dict:
+    """Assert pure-JSON stdout + an HONEST exit (0 iff the doc reports ok).
+
+    For read-only health verbs whose exit legitimately depends on state: the
+    contract is a well-formed document whose exit code agrees with its ``ok``
+    field, not that the state is healthy.
+
+    Exit must be one of ``allowed_exits`` — a crash/signal exit (negative on
+    POSIX, e.g. -11 SIGSEGV) or timeout is NOT an honest health report even if a
+    partial JSON doc happens to parse with ``ok:false``.
+    """
+    if proc.returncode == 124:
+        pytest.fail(f"{label}: timed out")
+    assert proc.returncode in allowed_exits, (
+        f"{label}: exit {proc.returncode} not in {allowed_exits} "
+        f"(crash/signal?); stderr: {proc.stderr[-500:]!r}"
+    )
+    assert "Traceback" not in proc.stderr, (
+        f"{label}: traceback; stderr: {proc.stderr[-500:]!r}"
+    )
+    stdout = proc.stdout.strip()
+    assert stdout, f"{label}: empty stdout on a JSON path"
+    try:
+        doc = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        pytest.fail(
+            f"{label}: stdout is not a single JSON document ({exc}); "
+            f"first 300 bytes: {stdout[:300]!r}"
+        )
+    ok = doc.get("ok")
+    assert isinstance(ok, bool), f"{label}: missing/invalid 'ok' bool"
+    assert (proc.returncode == 0) == ok, (
+        f"{label}: dishonest exit — returncode {proc.returncode} vs ok={ok}"
+    )
+    return doc
+
+
 def _assert_error(proc: subprocess.CompletedProcess[str], label: str) -> dict:
     """Assert nonzero exit + envelope on stdout (contract §2 + §3)."""
     if proc.returncode == 124:
@@ -151,9 +192,18 @@ _EXISTING_PROJECT = "/projects/agent-notes"
 def smoke_project() -> Generator[dict[str, str], None, None]:
     """Provide an agent-notes project for smoke tests.
 
-    In CI (fresh Postgres): creates an ephemeral project with full isolation.
-    Locally: falls back to the existing registered project when the DB schema
-    doesn't support fresh project creation (older production schema).
+    agent-notes uses **two** Postgres DSNs by contract (agent-notes
+    ``core/config.py``): ``AGENT_NOTES_DSN`` is the native domain store (its own
+    ``public.projects``/``workspaces``/``memories``), and a *separate* regista
+    DSN backs the optional regista face (per-project event schemas + regista's
+    own ``public.projects`` catalog). The two ``public.projects`` tables are
+    different shapes, so they MUST live in different databases — pointing both
+    at one DB shadows regista's catalog (``schema_name`` column absent) and
+    ephemeral project creation fails. See ``AGENT_NOTES_SMOKE_REGISTA_DSN``.
+
+    In CI (fresh Postgres, both DSNs distinct): creates an ephemeral regista
+    project in the regista store with full isolation. Locally: falls back to
+    the existing registered project when a separate regista DSN is unavailable.
     """
     if _should_skip():
         pytest.skip(_SKIP_REASON)
@@ -168,9 +218,17 @@ def smoke_project() -> Generator[dict[str, str], None, None]:
             pytest.fail("AGENT_NOTES_SMOKE_DSN (or INTEROP_DSN) not set in CI")
         pytest.skip("AGENT_NOTES_SMOKE_DSN (or INTEROP_DSN) not set")
 
+    # The regista face store — a DISTINCT database from the agent-notes domain
+    # DSN (the two-DSN contract above). Falls back to INTEROP_DSN, which is a
+    # pure regista store (no agent-notes schema applied to it).
+    regista_dsn = (
+        os.environ.get("AGENT_NOTES_SMOKE_REGISTA_DSN")
+        or os.environ.get("INTEROP_DSN", "")
+    )
+
     env = {"AGENT_NOTES_DSN": dsn}
 
-    if _regista_available():
+    if _regista_available() and regista_dsn and regista_dsn != dsn:
         import regista
         from regista.testing import drop_project_schema
 
@@ -194,7 +252,10 @@ def smoke_project() -> Generator[dict[str, str], None, None]:
         _generate_hmac_key(key_path)
 
         try:
-            sub = regista.Regista.create_project(dsn, project_name, str(key_path))
+            # Create the regista project in the regista STORE (not the domain
+            # DSN). project_name == regista_project_name("skill-smoke-<slug>")
+            # so the face resolves the same schema from --path.
+            sub = regista.Regista.create_project(regista_dsn, project_name, str(key_path))
             sub.register_workflow(regista.canonical_workflow_yaml())
             sub.close()
         except Exception:
@@ -209,14 +270,37 @@ def smoke_project() -> Generator[dict[str, str], None, None]:
                 env,
             )
             if init_proc.returncode == 0:
-                yield {"path": str(project_dir), "dsn": dsn, **env}
-                drop_project_schema(dsn, project_name)
+                # Verbs run with BOTH DSNs + the writes gate on, so mutating
+                # verbs route through the regista face into the store schema.
+                # Pin the CANONICAL (highest-precedence) vars, not just the
+                # legacy aliases — agent-notes config resolves REGISTA_DSN /
+                # REGISTA_KEY_PATH ahead of the AGENT_NOTES_REGISTA_* aliases,
+                # so a leaked production REGISTA_DSN in the operator's shell
+                # would otherwise redirect these subprocess writes at prod.
+                smoke_env = {
+                    **env,
+                    "REGISTA_DSN": regista_dsn,
+                    "AGENT_NOTES_REGISTA_DSN": regista_dsn,
+                    "AGENT_NOTES_REGISTA_WRITES": "1",
+                    "REGISTA_KEY_PATH": str(key_path),
+                    "AGENT_NOTES_REGISTA_HMAC_KEY_PATH": str(key_path),
+                }
+                yield {"path": str(project_dir), "dsn": dsn, **smoke_env}
+                drop_project_schema(regista_dsn, project_name)
                 shutil.rmtree(project_dir, ignore_errors=True)
                 return
-            drop_project_schema(dsn, project_name)
+            drop_project_schema(regista_dsn, project_name)
             shutil.rmtree(project_dir, ignore_errors=True)
             if _REQUIRE:
                 pytest.fail("agent-notes init failed in CI")
+    elif _REQUIRE:
+        if not _regista_available():
+            pytest.fail("INTEROP_REQUIRE_FACES=1 but regista is not importable")
+        pytest.fail(
+            "CI requires a regista store DSN distinct from the agent-notes "
+            "domain DSN (set AGENT_NOTES_SMOKE_REGISTA_DSN); got "
+            f"regista_dsn={regista_dsn!r} domain_dsn={dsn!r}"
+        )
 
     if not Path(_EXISTING_PROJECT).is_dir():
         pytest.skip("No fallback project available")
@@ -235,7 +319,19 @@ class TestReadOnlyVerbs:
 
     def test_doctor_json(self, smoke_project: dict[str, str]) -> None:
         proc = _run_cli(("agent-notes", "doctor", "--json"), smoke_project)
-        _assert_json_success(proc, "doctor --json")
+        # doctor is a read-only HEALTH verb: the contract is a well-formed
+        # JSON document with an HONEST exit (0 iff ok), not "the project is
+        # healthy". A fresh ephemeral smoke project legitimately reports
+        # unhealthy for un-provisioned optionals (skills_installed /
+        # harness_wired), so asserting exit 0 would test provisioning, not the
+        # CLI contract (and would force a global install-harness side effect).
+        doc = _assert_json_honest_exit(proc, "doctor --json")
+        # ...but a gutted doctor that always reports ok:false with no checks
+        # must still fail: require a non-empty checks array so the honest-exit
+        # relaxation can't silently accept a hollowed-out health report.
+        assert doc.get("checks"), (
+            f"doctor --json: empty/absent 'checks' array — {doc!r}"
+        )
 
     def test_workspace_list_json(self, smoke_project: dict[str, str]) -> None:
         proc = _run_cli(("agent-notes", "workspace", "list", "--json"), smoke_project)

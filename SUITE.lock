@@ -16,7 +16,7 @@ revision = "9610aef6c0d223bc33157b200711953700ce747d"
 [components.agent-notes]
 repo = "hraedon/agent-notes"
 version = "1.0.0"
-revision = "496914709de3bac1b0a039919b6777d38111a230"
+revision = "be6ae6b17060f0c3b346a95994aaaf56b228ad21"
 
 [components.agent-provenance]
 repo = "hraedon/agent-provenance"
