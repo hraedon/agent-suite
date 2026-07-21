@@ -26,6 +26,10 @@ operator docs — nothing else. See `README.md` for the charter and
    taxonomy, the common error envelope, grammar conventions. The conformance kit
    lives at `src/agent_suite/conformance/`; per-component results in
    `data/cli-conformance.json`.
+5. **Isolate before you edit concurrently.** If another agent (or a human) may
+   touch this repo at the same time, work in your own `git worktree` — never
+   share a working tree. `scripts/agent-worktree <repo> <task-slug>` is the paved
+   path; see `docs/agent-worktrees.md` (Plan 019 B0).
 
 ## Hard rules
 

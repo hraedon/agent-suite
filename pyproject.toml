@@ -13,7 +13,7 @@ dependencies = []  # stdlib-only core
 Repository = "https://github.com/YOUR-ORG/agent-suite"
 
 [project.optional-dependencies]
-dev = ["ruff", "mypy", "pytest"]
+dev = ["ruff", "mypy", "pytest", "build", "hatchling"]  # build+hatchling: conformance wheel build-test
 vault = ["hvac"]                     # HashiCorp Vault secret backend (edge only)
 azure = ["azure-identity", "azure-keyvault-secrets", "PyJWT[crypto]"]  # Azure Key Vault + Entra (edge only)
 windows = ["pywin32; sys_platform == 'win32'"]        # DPAPI / Credential Manager (edge only)

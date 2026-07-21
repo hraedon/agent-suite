@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# agent-worktree — give an agent its own isolated worktree for a suite repo.
+#
+# Concurrent agents must not share a working tree: an uncommitted edit in one
+# session is invisible to another, and a `git add -A`/checkout in the second
+# clobbers the first's work. This helper makes per-agent `git worktree`s the
+# default, not an ad-hoc rescue (Plan 019 B0).
+#
+# Usage:
+#   scripts/agent-worktree <repo> [<name>] [--base <ref>] [--branch <name>]
+#
+#   <repo>    suite member directory name (resolved under $PROJECTS_ROOT,
+#             default /projects) or an absolute path to a git repo.
+#   <name>    a short slug identifying the agent/task (default: $AGENT_NAME or
+#             $USER). Names the worktree dir and, unless --branch is given, the
+#             branch (agent/<name>).
+#   --base    ref to branch from (default: the repo's origin/main, else main).
+#   --branch  explicit branch name to create/attach (overrides agent/<name>).
+#
+# Layout (matches the existing convention):
+#   $WORKTREE_ROOT/<name>/<repo>   (default $WORKTREE_ROOT=/projects/.worktrees)
+#
+# Idempotent: if the worktree already exists it prints its path and exits 0.
+# On success the LAST line of stdout is the worktree path, so callers can:
+#   cd "$(scripts/agent-worktree regista my-task | tail -1)"
+set -euo pipefail
+
+PROJECTS_ROOT="${PROJECTS_ROOT:-/projects}"
+WORKTREE_ROOT="${WORKTREE_ROOT:-$PROJECTS_ROOT/.worktrees}"
+
+die() { echo "agent-worktree: $*" >&2; exit 1; }
+log() { echo "agent-worktree: $*" >&2; }  # diagnostics to stderr; path to stdout
+
+repo=""
+name="${AGENT_NAME:-${USER:-agent}}"
+base=""
+branch=""
+
+# ---- parse args (positional repo, positional name, then flags) --------------
+positional=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base)   base="${2:-}";   [[ -n "$base" ]]   || die "--base needs a ref"; shift 2 ;;
+    --branch) branch="${2:-}"; [[ -n "$branch" ]] || die "--branch needs a name"; shift 2 ;;
+    --base=*)   base="${1#--base=}" ;   shift ;;
+    --branch=*) branch="${1#--branch=}"; shift ;;
+    -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) die "unknown flag: $1" ;;
+    *) positional+=("$1"); shift ;;
+  esac
+done
+[[ ${#positional[@]} -ge 1 ]] || die "usage: agent-worktree <repo> [<name>] [--base ref] [--branch name]"
+repo="${positional[0]}"
+[[ ${#positional[@]} -ge 2 ]] && name="${positional[1]}"
+[[ ${#positional[@]} -le 2 ]] || die "too many positional args"
+
+# ---- resolve the source repo ------------------------------------------------
+if [[ "$repo" == /* || "$repo" == .* ]]; then
+  src="$repo"
+else
+  src="$PROJECTS_ROOT/$repo"
+fi
+[[ -d "$src" ]] || die "no such directory: $src"
+src="$(git -C "$src" rev-parse --show-toplevel 2>/dev/null)" \
+  || die "$src is not inside a git repository"
+repo_name="$(basename "$src")"
+
+# sanitize the slug for use in paths/branches
+slug="$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^-*//;s/-*$//')"
+[[ -n "$slug" ]] || die "empty <name> after sanitizing '$name'"
+[[ -n "$branch" ]] || branch="agent/$slug"
+
+wt="$WORKTREE_ROOT/$slug/$repo_name"
+
+# ---- idempotent: already registered? ----------------------------------------
+if git -C "$src" worktree list --porcelain | grep -qxF "worktree $wt"; then
+  log "worktree already exists (branch: $(git -C "$wt" rev-parse --abbrev-ref HEAD))"
+  echo "$wt"
+  exit 0
+fi
+[[ ! -e "$wt" ]] || die "path exists but is not a registered worktree: $wt"
+
+# ---- pick the base ref ------------------------------------------------------
+if [[ -z "$base" ]]; then
+  if git -C "$src" show-ref --verify --quiet refs/remotes/origin/main; then
+    base="origin/main"
+  elif git -C "$src" show-ref --verify --quiet refs/heads/main; then
+    base="main"
+  else
+    base="HEAD"
+  fi
+fi
+git -C "$src" rev-parse --verify --quiet "$base^{commit}" >/dev/null \
+  || die "base ref not found: $base"
+
+mkdir -p "$WORKTREE_ROOT/$slug"
+
+# ---- create (attach existing branch, else create from base) -----------------
+if git -C "$src" show-ref --verify --quiet "refs/heads/$branch"; then
+  log "attaching existing branch '$branch'"
+  git -C "$src" worktree add "$wt" "$branch" >&2
+else
+  log "creating branch '$branch' from '$base'"
+  git -C "$src" worktree add -b "$branch" "$wt" "$base" >&2
+fi
+
+# ---- wire this worktree's git hooks (identifier gate travels with it) --------
+if [[ -x "$wt/scripts/install-git-hooks.sh" ]]; then
+  ( cd "$wt" && ./scripts/install-git-hooks.sh ) >&2 || \
+    log "warning: install-git-hooks.sh failed in $wt (pre-commit gate not wired)"
+fi
+
+log "ready: $repo_name @ $branch"
+log "next:  cd $wt"
+echo "$wt"
