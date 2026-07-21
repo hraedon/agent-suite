@@ -49,7 +49,7 @@ jobs:
         run: pytest tests/test_architecture.py -q
 
       - name: Lint (ruff)
-        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py
+        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check-lock-agreement.py
 
       - name: Type check (mypy)
         run: mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py
@@ -86,9 +86,9 @@ jobs:
       # immutable revisions, not moving @main branches. Update these SHAs when
       # the candidate lock advances; do not revert to @main.
       REGISTA_SHA: 9718b941939884fee94c260f19efe3e4040c456b
-      AGENT_NOTES_SHA: be6ae6b17060f0c3b346a95994aaaf56b228ad21
-      DOSSIER_SHA: a4a60567abb69c5081b638ad82bfbd26df824b62
-      CAIRN_SHA: e29236c971b54f8d60824bef498cc71211f1ee7d
+      AGENT_NOTES_SHA: 0bb9edb03d66e71031129bdd4faf28526904e17b
+      DOSSIER_SHA: ed7828d715c3bcd257b625f059ccbed14cf9d815
+      CAIRN_SHA: bded8b1f4dcdc36f8991f290e3e9b6a77ed3a9b7
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # actions/checkout@v4
@@ -196,6 +196,16 @@ jobs:
               print(f'  {name} @ {rev[:8]}')
           "
 
+      # Cross-repo lock-agreement (Plan 019 B2-generalize): every member's
+      # face-local SUITE.lock [spine] must equal the umbrella
+      # [components.regista]. The siblings are checked out at the umbrella-pinned
+      # revisions above, so this reads each one's vendored [spine] and fails on
+      # drift. Runs before the installs so a spine disagreement surfaces first.
+      - name: Check cross-repo lock agreement
+        env:
+          AGENT_SUITE_SIBLINGS_ROOT: /tmp/siblings
+        run: python3 scripts/check-lock-agreement.py
+
       - name: Install regista (spine)
         run: pip install /tmp/siblings/regista
 
@@ -247,7 +257,7 @@ jobs:
         run: python3 scripts/validate-contracts.py --check
 
       - name: Lint (ruff)
-        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py
+        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check-lock-agreement.py
 
       - name: Type check (mypy)
         run: mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py

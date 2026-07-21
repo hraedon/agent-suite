@@ -11,17 +11,17 @@ regista_envelope_version = 5
 [components.agent-capability-broker]
 repo = "hraedon/agent-capability-broker"
 version = "0.1.0"
-revision = "9610aef6c0d223bc33157b200711953700ce747d"
+revision = "35287e8cacc25e296ba47dd72ecdc33b11cc68fd"
 
 [components.agent-notes]
 repo = "hraedon/agent-notes"
 version = "1.0.0"
-revision = "be6ae6b17060f0c3b346a95994aaaf56b228ad21"
+revision = "0bb9edb03d66e71031129bdd4faf28526904e17b"
 
 [components.agent-provenance]
 repo = "hraedon/agent-provenance"
 version = "0.1.0"
-revision = "e29236c971b54f8d60824bef498cc71211f1ee7d"
+revision = "bded8b1f4dcdc36f8991f290e3e9b6a77ed3a9b7"
 
 [components.agent-wake]
 repo = "hraedon/agent-wake"
@@ -31,7 +31,7 @@ revision = "90d83803e0824be132dfa531c07daa364a753966"
 [components.dossier]
 repo = "hraedon/dossier"
 version = "0.0.1"
-revision = "a4a60567abb69c5081b638ad82bfbd26df824b62"
+revision = "ed7828d715c3bcd257b625f059ccbed14cf9d815"
 
 [components.regista]
 repo = "hraedon/regista"
