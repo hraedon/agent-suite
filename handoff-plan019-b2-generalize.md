@@ -54,17 +54,24 @@ while the umbrella lock said `0.5.3`). The remaining members have the same drift
 - Proves the port pattern on the least-entangled member.
 
 ### dossier — the hard one (multi-artifact alignment)
-dossier has **THREE** places that pin regista, all at the stale `0.5.1`, that must
-be aligned to `0.5.3` (sha `9718b94`) as ONE coherent unit — this is exactly why
-the B3 retrofit (PR #4) *deferred* the pin bump (bumping only CI test pins would
-create test-vs-image skew):
+dossier's regista pinning is spread across several artifacts that must be aligned
+to `0.5.3` (sha `9718b94`) as ONE coherent unit — this is why the B3 retrofit
+(PR #4) *deferred* the pin bump (bumping only CI test pins would create
+test-vs-image skew). On **`origin/main`** the state is:
 1. `.github/workflows/ci.yml` — two `pip install "regista-hraedon==0.5.1"` steps
-   (main test job + windows job).
-2. `Dockerfile` — `ARG REGISTA_VERSION=0.5.1` **plus** an inline `python3 -c`
-   monkeypatch that rewrites `importlib.metadata.version("regista")` →
-   `"regista-hraedon"`. That patch is **only needed for regista < 0.5.2**; 0.5.3
-   already has the dual-name lookup, so bumping to 0.5.3 makes the monkeypatch
-   **dead code — remove it.**
+   (main test job + windows job) → bump to `0.5.3`.
+2. `Dockerfile` — **git+SHA** install (`ARG REGISTA_REF=dd22197`,
+   `pip install "regista @ git+…@${REGISTA_REF}"`). It *works* today, but the
+   intended direction is a **PyPI switch** (install `regista-hraedon==<version>`),
+   which already exists on the **`origin/deploy/k8s-and-pypi`** branch — except
+   that branch's version carries a `python3 -c` monkeypatch (for regista < 0.5.2's
+   broken `importlib.metadata.version("regista")` lookup) written as an `if/else`
+   one-liner = **SyntaxError**. Since 0.5.3 has the dual-name fix, adopt the PyPI
+   switch **without** the monkeypatch: `pip install "regista-hraedon==0.5.3"`,
+   nothing more. Also fix a latent mismatch: the image job greps
+   `ARG REGISTA_VERSION=` from the Dockerfile while origin/main declares
+   `ARG REGISTA_REF=` (the build-arg is silently ignored, default SHA used) —
+   unify on one ARG name.
 3. `SUITE.lock` — a **face-local lock in a DIFFERENT shape**: YAML `regista_ref`
    (container-focused: `regista.ref` SHA + `container` image), *not* the TOML
    `[spine]` shape agent-notes uses. **Decision needed:** either (a) convert
@@ -73,15 +80,20 @@ create test-vs-image skew):
    and teach `dev-install.py`/`suite_lock.py` to read `regista.ref`/a version from
    it. (a) is cleaner long-term; (b) is less churn. The image job reads this file,
    so whichever is chosen, the image build must stay green.
-- **⚠️ LANDMINE:** dossier's **local `main` carries an unpushed stray commit
-  `88d14a1`** ("chore: rename distribution to dossier-hraedon") with a **broken
-  Dockerfile** (an `if/else` one-liner inside a `python3 -c` string = SyntaxError).
-  It is **NOT on origin/main.** During the B3 retrofit my branch inherited it and
-  the PR's `image` job failed; I fixed it by rebasing `--onto origin/main`.
-  **Branch all B2 work FROM `origin/main`** (use `scripts/agent-worktree`), never
-  from dossier's local `main`. Separately decide what to do with `88d14a1` — the
-  rename may be wanted, but it needs its Dockerfile fixed before it's pushable, and
-  it collides with the regista-pin/Dockerfile work here.
+- **`88d14a1` / `origin/deploy/k8s-and-pypi` — status (2026-07-21, resolved):**
+  this was NOT a "broken stray commit" (my earlier framing was wrong) — it is the
+  **owner's own real work**: an 18-file branch with the PyPI rename **and** a full
+  k8s deployment set (`deploy/k8s/*`, `scripts/gen-k8s-secret.py`, plan 023). Per
+  the owner's Option-B decision it was **split**: the branch is now **pushed to
+  origin** (`deploy/k8s-and-pypi`, no longer local-only); the name reconciliation
+  landed as **dossier PR #5** (`[project].name` → `dossier-hraedon`, already on
+  `origin/main`); the **k8s manifests** are their own future reviewed PR (plan
+  023); and the **Dockerfile PyPI switch + regista-pin cleanup above is this B2
+  pass's job** — cherry-pick the good Dockerfile intent from
+  `origin/deploy/k8s-and-pypi`, drop the monkeypatch, pin `0.5.3`. Still: **branch
+  B2 work from `origin/main`** (use `scripts/agent-worktree`), and treat
+  `deploy/k8s-and-pypi` as a reference for the Dockerfile/k8s intent, not a base to
+  merge wholesale.
 
 ### acb (agent-capability-broker) — DECISION: cross-repo-check only
 - acb's **CI does not install or pin regista at all** (it installs `.[dev]` and
@@ -133,9 +145,10 @@ bump them to the post-merge tips as part of the B2-generalize lock work (mind
 
 ## Discipline / landmines checklist
 
-- **Branch from `origin/main`, not local `main`** — dossier's local main has the
-  broken stray `88d14a1`; agent-suite's local main was behind origin (synced on
-  branch `docs/handoff-b2-generalize`). Use `scripts/agent-worktree` (B0).
+- **Branch from `origin/main`, not local `main`** — dossier's k8s/publish work
+  lives on `origin/deploy/k8s-and-pypi` (now pushed; the rename half already landed
+  as PR #5), so a stale local `main` can still drag in unmerged pieces; agent-suite's
+  local main was behind origin at handoff time. Use `scripts/agent-worktree` (B0).
 - **Validate on CI early** — the dossier `image` failure only surfaced at PR CI,
   not locally. Push and watch, especially the Docker build job.
 - **Kit needs py ≥ 3.12** — any member CI still on 3.11 must bump (cairn already
