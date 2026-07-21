@@ -42,3 +42,12 @@ shape.
 Built from the single source of truth at `src/agent_suite/conformance/` in the
 agent-suite repository. `version` here equals `agent_suite.conformance.KIT_VERSION`;
 a guard test fails CI if they diverge.
+
+**Namespace caveat.** This wheel ships `agent_suite/conformance/` with no
+`agent_suite/__init__.py`, so `agent_suite` resolves as a PEP 420 namespace. That
+holds only where nothing else puts a *regular* `agent_suite` package (one with an
+`__init__.py`) on `sys.path` — a regular package shadows namespace portions. In
+practice consumers (regista, agent-notes) never install agent-suite, so this is
+safe; but do not co-install this wheel with an editable/regular `agent-suite` and
+expect `agent_suite.conformance` to come from the wheel — it will be shadowed by
+the regular package. Develop the kit from the agent-suite source tree instead.

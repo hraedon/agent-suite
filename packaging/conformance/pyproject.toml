@@ -36,6 +36,10 @@ build-backend = "hatchling.build"
 force-include = { "../../src/agent_suite/conformance" = "agent_suite/conformance" }
 # force-include alone defines the wheel contents; no auto-detected packages.
 bypass-selection = true
+# Keep byte-caches out of the published artifact (explicit intent; the build
+# test asserts the wheel is pyc-free).
+exclude = ["**/__pycache__", "**/*.py[cod]"]
 
 [tool.hatch.build.targets.sdist]
 force-include = { "../../src/agent_suite/conformance" = "agent_suite/conformance", "README.md" = "README.md" }
+exclude = ["**/__pycache__", "**/*.py[cod]"]
