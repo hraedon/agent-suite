@@ -86,7 +86,7 @@ jobs:
       # immutable revisions, not moving @main branches. Update these SHAs when
       # the candidate lock advances; do not revert to @main.
       REGISTA_SHA: 9718b941939884fee94c260f19efe3e4040c456b
-      AGENT_NOTES_SHA: 496914709de3bac1b0a039919b6777d38111a230
+      AGENT_NOTES_SHA: be6ae6b17060f0c3b346a95994aaaf56b228ad21
       DOSSIER_SHA: a4a60567abb69c5081b638ad82bfbd26df824b62
       CAIRN_SHA: e29236c971b54f8d60824bef498cc71211f1ee7d
 
@@ -129,18 +129,35 @@ jobs:
 
       - name: Set up agent-notes schema (skill-smoke prerequisite)
         run: |
+          # agent-notes uses TWO stores (agent-notes core/config.py two-DSN
+          # contract): the domain DB (its own public.projects/workspaces) and a
+          # SEPARATE regista store (regista's public.projects catalog + per-
+          # project event schemas). The two public.projects shapes collide in
+          # one DB, so the smoke suite needs two databases.
+          #   - agent_notes_smoke:         domain schema applied below
+          #   - agent_notes_smoke_regista: pure regista store, provisioned on
+          #                                the fly by regista.create_project
           psql "$INTEROP_DSN" -c "CREATE DATABASE agent_notes_smoke;" || true
-          git clone --quiet --depth 1 "https://github.com/hraedon/agent-notes.git" /tmp/an-src
-          git -C /tmp/an-src checkout "$AGENT_NOTES_SHA" --quiet 2>/dev/null || true
+          psql "$INTEROP_DSN" -c "CREATE DATABASE agent_notes_smoke_regista;" || true
+          # Fetch the EXACT pinned SHA (depth 1) and fail loudly on a bad pin.
+          # A `git clone --depth 1` only fetches the default-branch tip, so a
+          # `checkout $SHA || true` would silently no-op when the pin isn't the
+          # tip and apply main's schema instead — defeating the lock. Fetching
+          # the SHA directly makes an unreachable/wrong pin a hard error.
+          git init --quiet /tmp/an-src
+          git -C /tmp/an-src remote add origin https://github.com/hraedon/agent-notes.git
+          git -C /tmp/an-src fetch --quiet --depth 1 origin "$AGENT_NOTES_SHA"
+          git -C /tmp/an-src checkout --quiet "$AGENT_NOTES_SHA"
           SMOKE_DSN="postgresql://interop:interop_pw@localhost:5432/agent_notes_smoke"
           for f in /tmp/an-src/schema/*.sql; do
             psql "$SMOKE_DSN" -f "$f" 2>&1 | grep -v "^CREATE\|^ALTER\|^INSERT\|^DROP\|^SET\|^--" || true
           done
-          echo "agent-notes schema applied to agent_notes_smoke"
+          echo "agent-notes domain schema applied to agent_notes_smoke"
 
       - name: Run interop + tamper + restore-drill + adversarial-corpus + skill-smoke tests
         env:
           AGENT_NOTES_SMOKE_DSN: postgresql://interop:interop_pw@localhost:5432/agent_notes_smoke
+          AGENT_NOTES_SMOKE_REGISTA_DSN: postgresql://interop:interop_pw@localhost:5432/agent_notes_smoke_regista
         run: pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py tests/test_adversarial_corpus.py tests/test_skill_smoke.py -v --tb=short
 
   # Plan 015 WI-0.1 — strict feature-probe verification with all sibling
