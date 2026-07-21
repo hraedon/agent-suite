@@ -19,16 +19,28 @@ invariants the kit encodes (`agent_suite.conformance.kit`):
   (`{"error": {"code": …}}`) on stdout in `--json` mode, with no secret leakage.
 - **§4 robustness** — no Python traceback on any error path or on a broken stdout pipe.
 
-Probes were read-only (help, an unknown verb, `doctor --json`, and — via source
-inspection — the operational error paths), so nothing mutated a config or store.
+**Method caveat (honest scoping):** §1/§2 were determined **empirically** (real
+subprocess probes: help, an unknown verb, `doctor --json`). **§3 was determined
+statically, by source inspection** — none of the three has an envelope helper or
+an `{"error":{…}}` emitter anywhere in its CLI package — because triggering a real
+operational failure (a failed verify/export/reconcile) requires a live backend
+(regista/Postgres/keys), which this read-only pass deliberately did not stand up.
+So the §3 column is a **well-grounded inference, not a failed `ErrorCase` run**;
+each fix PR converts it to an empirical pass by adding the kit's `ErrorCase`.
+**§4** was not measured at all here (marked `?`); it is verified path-by-path
+during each fix. **§6 (manifest discovery)** is a **P1** contract item and is
+**out of scope** for this P0-focused pass. Probes were read-only, so nothing
+mutated a config or store.
 
 ## Findings
 
+§1/§2 = empirical; §3 = static inference; §4 = `?` (unmeasured, deferred to the fix).
+
 | Component (repo) | CLI framework | §1/§2 (usage 2, JSON success) | §3 error envelope | §4 traceback/pipe | CI Python | regista in CI |
 | --- | --- | --- | --- | --- | --- | --- |
-| **cairn** (agent-provenance) | click | ✓ (`doctor --json` clean; unknown verb → 2) | ✗ none — errors are click's human `Error: …` on stderr, no envelope | to verify per-path | **3.11** (off the 3.13/3.14 policy) | **`==0.5.1`** (drift vs SUITE.lock 0.5.3) |
-| **acb** (agent-capability-broker) | argparse | ✓ (`doctor --json` clean; unknown verb → 2) | ✗ none | to verify per-path | 3.12/3.13/3.14 ✓ | none / clean |
-| **dossier** | argparse | ✓ (unknown verb → 2) | ✗ none (the envelope-shaped code in `app.py` is the FastAPI web app's HTTP errors — a different surface from the CLI) | to verify per-path | 3.12/3.13/3.14 ✓ | **`==0.5.1`** (drift) |
+| **cairn** (agent-provenance) | click | ✓ (`doctor --json` clean; unknown verb → 2) | ✗ none — errors are click's human `Error: …` on stderr, no envelope *(static)* | ? verify per-path | **3.11** (off the 3.13/3.14 policy) | **`==0.5.1`** (drift vs SUITE.lock 0.5.3) |
+| **acb** (agent-capability-broker) | argparse | ✓ (`doctor --json` clean; unknown verb → 2) | ✗ none *(static)* | ? verify per-path | 3.12/3.13/3.14 ✓ | none / clean |
+| **dossier** | argparse | ✓ (unknown verb → 2) | ✗ none *(static)* — the envelope-shaped code in `app.py` is the FastAPI web app's HTTP errors, a different surface from the CLI | ? verify per-path | 3.12/3.13/3.14 ✓ | **`==0.5.1`** (drift) |
 | **agent-wake** | — | — | — | — | — | — |
 
 **The shared gap is §3 only.** All three CLI components already satisfy §1/§2 —
