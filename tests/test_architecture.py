@@ -34,6 +34,7 @@ _CORE_MODULES = (
     "harness_install",
     "release_artifacts",
     "inventory",
+    "release_manifest",
 )
 _FORBIDDEN_PREFIXES = (
     "hvac",  # Vault

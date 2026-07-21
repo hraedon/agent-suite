@@ -34,6 +34,7 @@ class Command(Enum):
     RESTORE = "restore"
     CODEX_PLUGINS = "codex-plugins"
     INVENTORY = "inventory"
+    RELEASE_MANIFEST = "release-manifest"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -355,6 +356,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output",
         help="write the inventory JSON to this path (implies --record)",
     )
+    release_manifest = sub.add_parser(
+        Command.RELEASE_MANIFEST.value,
+        help="build/verify the immutable release manifest (Sol Gate 0 / Workstream 2)",
+    )
+    release_manifest_sub = release_manifest.add_subparsers(
+        dest="release_manifest_action", required=True
+    )
+    rm_build = release_manifest_sub.add_parser(
+        "build", help="build a release manifest from the current SUITE.lock"
+    )
+    rm_build.add_argument("--tag", required=True, help="release tag (e.g. v1.0.0-rc1)")
+    rm_build.add_argument("--wheels-dir", help="directory containing built wheels")
+    rm_build.add_argument("--sources-dir", help="directory containing source archives")
+    rm_build.add_argument("--json", action="store_true", help="emit the manifest as JSON")
+    rm_verify = release_manifest_sub.add_parser(
+        "verify", help="verify a manifest's wheel hashes against local wheels"
+    )
+    rm_verify.add_argument("manifest", help="path to the release-manifest.json file")
+    rm_verify.add_argument("--wheels-dir", help="directory containing built wheels")
+    rm_verify.add_argument("--json", action="store_true", help="emit the result as JSON")
     return parser
 
 
@@ -1137,6 +1158,169 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(_fmt_inv(inv))
             return 0
+        case Command.RELEASE_MANIFEST:
+            import json as _json
+            import sys
+
+            from agent_suite.release_manifest import (
+                ReleaseManifestSubcommand,
+                build_manifest,
+                collect_source_artifacts,
+                collect_wheel_artifacts,
+                deserialize_manifest,
+                format_build_text,
+                format_verify_text,
+                verify_manifest_against_wheels,
+            )
+
+            sub = ReleaseManifestSubcommand(args.release_manifest_action)
+            match sub:
+                case ReleaseManifestSubcommand.BUILD:
+                    from pathlib import Path
+
+                    from agent_suite.lock import DEFAULT_LOCK_PATH, load_lock_file
+
+                    if not DEFAULT_LOCK_PATH.is_file():
+                        print(
+                            f"release-manifest build: SUITE.lock not found at "
+                            f"{DEFAULT_LOCK_PATH}",
+                            file=sys.stderr,
+                        )
+                        return 1
+                    try:
+                        lock_text = DEFAULT_LOCK_PATH.read_text(encoding="utf-8")
+                        lock_obj = load_lock_file(DEFAULT_LOCK_PATH)
+                    except (OSError, ValueError) as exc:
+                        print(
+                            f"release-manifest build: cannot read SUITE.lock: {exc}",
+                            file=sys.stderr,
+                        )
+                        return 1
+                    if lock_obj is None:
+                        print(
+                            "release-manifest build: SUITE.lock is unreadable",
+                            file=sys.stderr,
+                        )
+                        return 1
+
+                    # Resolve the umbrella tag SHA: try the tag, then HEAD, then "".
+                    umbrella_tag_sha = ""
+                    import subprocess
+
+                    for cmd in (
+                        ("git", "rev-list", "-n", "1", args.tag),
+                        ("git", "rev-parse", "HEAD"),
+                    ):
+                        try:
+                            result = subprocess.run(
+                                cmd, capture_output=True, text=True, timeout=10
+                            )
+                            if result.returncode == 0:
+                                sha = result.stdout.strip()
+                                from agent_suite.lock import _is_valid_sha
+
+                                if _is_valid_sha(sha):
+                                    umbrella_tag_sha = sha
+                                    break
+                        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                            pass
+
+                    wheel_hashes = None
+                    if args.wheels_dir:
+                        wheel_dir = Path(args.wheels_dir)
+                        if not wheel_dir.is_dir():
+                            print(
+                                f"release-manifest build: --wheels-dir {wheel_dir} "
+                                "is not a directory",
+                                file=sys.stderr,
+                            )
+                            return 1
+                        wheel_hashes = collect_wheel_artifacts(wheel_dir, lock_obj)
+
+                    source_hashes = None
+                    if args.sources_dir:
+                        src_dir = Path(args.sources_dir)
+                        if not src_dir.is_dir():
+                            print(
+                                f"release-manifest build: --sources-dir {src_dir} "
+                                "is not a directory",
+                                file=sys.stderr,
+                            )
+                            return 1
+                        source_hashes = collect_source_artifacts(src_dir, lock_obj)
+
+                    try:
+                        manifest = build_manifest(
+                            lock=lock_obj,
+                            lock_text=lock_text,
+                            release_tag=args.tag,
+                            umbrella_tag_sha=umbrella_tag_sha,
+                            wheel_hashes=wheel_hashes,
+                            source_archive_hashes=source_hashes,
+                        )
+                    except ValueError as exc:
+                        print(f"release-manifest build: {exc}", file=sys.stderr)
+                        return 1
+
+                    if getattr(args, "json", False):
+                        print(_json.dumps(manifest.to_dict(), indent=2, default=str))
+                    else:
+                        print(format_build_text(manifest))
+                    return 0
+                case ReleaseManifestSubcommand.VERIFY:
+                    from pathlib import Path
+
+                    manifest_path = Path(args.manifest)
+                    if not manifest_path.is_file():
+                        print(
+                            f"release-manifest verify: manifest file not found: "
+                            f"{manifest_path}",
+                            file=sys.stderr,
+                        )
+                        return 1
+                    try:
+                        manifest_text = manifest_path.read_text(encoding="utf-8")
+                        manifest = deserialize_manifest(manifest_text)
+                    except (OSError, ValueError, _json.JSONDecodeError) as exc:
+                        print(
+                            f"release-manifest verify: cannot load manifest: {exc}",
+                            file=sys.stderr,
+                        )
+                        return 1
+
+                    if args.wheels_dir:
+                        wheel_dir = Path(args.wheels_dir)
+                        if not wheel_dir.is_dir():
+                            print(
+                                f"release-manifest verify: --wheels-dir {wheel_dir} "
+                                "is not a directory",
+                                file=sys.stderr,
+                            )
+                            return 1
+                        manifest_verify_result = verify_manifest_against_wheels(
+                            manifest, wheel_dir
+                        )
+                    else:
+                        from agent_suite.release_manifest import ManifestVerifyResult
+
+                        manifest_verify_result = ManifestVerifyResult(
+                            ok=True,
+                            release_tag=manifest.release_tag,
+                            mismatches=[],
+                            note="no --wheels-dir provided; skipped wheel verification",
+                        )
+
+                    if getattr(args, "json", False):
+                        print(
+                            _json.dumps(
+                                manifest_verify_result.to_dict(), indent=2, default=str
+                            )
+                        )
+                    else:
+                        print(format_verify_text(manifest_verify_result))
+                    return 0 if manifest_verify_result.ok else 1
+                case other:
+                    assert_never(other)
     assert_never(command)
 
 

@@ -280,6 +280,10 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
                 lambda: Path("/tmp/test-candidate-inventory.json"),
             )
             assert main([command.value]) == 0
+        elif command is Command.RELEASE_MANIFEST:
+            # build requires SUITE.lock; _stub_lock patches load_lock_file
+            # to return None, so the build exits 1 (lock unreadable).
+            assert main([command.value, "build", "--tag", "v0.0.0-test"]) == 1
         else:
             assert main([command.value]) == 0
 
