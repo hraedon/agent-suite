@@ -42,11 +42,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import assert_never
+from typing import TYPE_CHECKING, assert_never
 
 from agent_suite import doctor
 from agent_suite import lock
 from agent_suite.components import COMPONENTS, Component
+
+if TYPE_CHECKING:
+    from agent_suite.release_manifest import ReleaseManifest
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +236,55 @@ class Summary:
 
 
 @dataclass(frozen=True)
+class ConstituentBinding:
+    """One constituent's binding between an inventory and a release manifest.
+
+    ``pinned_revision_matches`` is True when the manifest's
+    ``pinned_revision`` equals the inventory's ``installed_revision``.
+    ``package_version_matches`` is True when the manifest's
+    ``package_version`` equals the inventory's ``installed_version``.
+    ``constituent_present`` is True when the constituent appears in the
+    inventory at all (it may be absent if the component is not installed).
+    """
+
+    ident: str
+    pinned_revision_matches: bool
+    package_version_matches: bool
+    constituent_present: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "ident": self.ident,
+            "pinned_revision_matches": self.pinned_revision_matches,
+            "package_version_matches": self.package_version_matches,
+            "constituent_present": self.constituent_present,
+        }
+
+
+@dataclass(frozen=True)
+class InventoryManifestBinding:
+    """The outcome of binding an estate inventory to a release manifest.
+
+    ``fully_bound`` is True iff every manifest constituent is present in
+    the inventory AND both the pinned revision and package version match.
+    A constituent that is absent from the inventory or has a divergent
+    version/revision makes ``fully_bound`` False — the operator's estate
+    does not match the published candidate.
+    """
+
+    release_tag: str
+    bindings: tuple[ConstituentBinding, ...]
+    fully_bound: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "release_tag": self.release_tag,
+            "bindings": [b.to_dict() for b in self.bindings],
+            "fully_bound": self.fully_bound,
+        }
+
+
+@dataclass(frozen=True)
 class Inventory:
     release: str
     lock_file: LockFileStatus
@@ -254,6 +306,65 @@ class Inventory:
             "summary": self.summary.to_dict(),
             "generated_at": self.generated_at,
         }
+
+    def bind_to_manifest(self, manifest: ReleaseManifest) -> InventoryManifestBinding:
+        """Bind this operator's estate inventory to a published release manifest.
+
+        Returns per-constituent: ``pinned_revision_matches`` (constituent's
+        ``pinned_revision`` == ``installed_revision``),
+        ``package_version_matches`` (constituent's ``package_version`` ==
+        ``installed_version``), ``constituent_present`` (constituent exists
+        in the inventory at all).
+
+        ``fully_bound`` is True iff every manifest constituent is present
+        in the inventory AND both the pinned revision and the package
+        version match for each. This is the signal an operator uses to
+        confirm their estate matches a published release candidate.
+        """
+        # Map component ident → inventory entry for O(1) lookup.
+        inv_by_ident: dict[str, ComponentInventory] = {
+            c.ident: c for c in self.components
+        }
+        bindings: list[ConstituentBinding] = []
+        for constituent in manifest.constituents:
+            inv_entry = inv_by_ident.get(constituent.ident)
+            if inv_entry is None:
+                bindings.append(
+                    ConstituentBinding(
+                        ident=constituent.ident,
+                        pinned_revision_matches=False,
+                        package_version_matches=False,
+                        constituent_present=False,
+                    )
+                )
+                continue
+            pinned_rev_matches = (
+                inv_entry.installed_revision is not None
+                and constituent.pinned_revision == inv_entry.installed_revision
+            )
+            pkg_matches = (
+                inv_entry.installed_version is not None
+                and constituent.package_version == inv_entry.installed_version
+            )
+            bindings.append(
+                ConstituentBinding(
+                    ident=constituent.ident,
+                    pinned_revision_matches=pinned_rev_matches,
+                    package_version_matches=pkg_matches,
+                    constituent_present=True,
+                )
+            )
+        fully_bound = all(
+            b.constituent_present
+            and b.pinned_revision_matches
+            and b.package_version_matches
+            for b in bindings
+        )
+        return InventoryManifestBinding(
+            release_tag=manifest.release_tag,
+            bindings=tuple(bindings),
+            fully_bound=fully_bound,
+        )
 
 
 # ---------------------------------------------------------------------------

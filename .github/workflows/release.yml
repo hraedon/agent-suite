@@ -1,20 +1,37 @@
-name: Release inventory artifact
+name: Release artifacts
 
-# Generates `data/candidate-inventory.json` as a release-time artifact on tag
-# push and attaches it to the GitHub release. The inventory is a current-state
-# read of the operator's checkouts + suite.env, so a committed snapshot in the
-# main branch would always be self-stale (committing it changes the umbrella
-# HEAD it just snapshotted — see Sol round-2/3 finding #2). Generating it in CI
-# against the tagged release revision is the canonical path.
+# Generates two release-time artifacts on tag push and attaches them to the
+# GitHub release:
 #
-# Sol round-3 finding #2: the release workflow must produce proof of a clean,
-# tested source candidate, not just deployment metadata. Sibling components are
-# checked out at SUITE.lock-pinned revisions, the feature-probe strict check
-# must pass, and source_tree_converged must be true before the inventory is
-# attached to the release.
+# 1. ``data/candidate-inventory.json`` — the operator-specific live estate
+#    state (current-state read of checkouts + suite.env). A committed
+#    snapshot in the main branch would always be self-stale (committing it
+#    changes the umbrella HEAD it just snapshotted — see Sol round-2/3
+#    finding #2). Generating it in CI against the tagged release revision
+#    is the canonical path.
 #
-# Triggers only on tag pushes matching `v*`. The artifact is uploaded to the
-# release; the main branch never carries it.
+#    Sol round-3 finding #2: the release workflow must produce proof of a
+#    clean, tested source candidate, not just deployment metadata. Sibling
+#    components are checked out at SUITE.lock-pinned revisions, the
+#    feature-probe strict check must pass, and source_tree_converged must
+#    be true before the inventory is attached to the release.
+#
+# 2. ``release-manifest.json`` — the immutable release-time description of
+#    the published candidate (Sol Gate 0 / Workstream 2). Records the
+#    umbrella tag SHA, all six constituent SHAs, package versions, wheel
+#    hashes, and the lock identity. The manifest is distinct from the
+#    inventory: the manifest describes what was published; the inventory
+#    describes what the operator's estate looks like right now. The two
+#    bind via ``Inventory.bind_to_manifest``.
+#
+#    The wheel-build step is NOT yet wired in CI — the manifest's
+#    ``wheel_sha256`` and ``source_archive_sha256`` fields honestly
+#    record empty strings ("not provided"). A future work item will add
+#    the wheel-build step; the manifest schema is forward-compatible
+#    (empty strings are explicit "not provided", not "failed to compute").
+#
+# Triggers only on tag pushes matching ``v*``. Both artifacts are uploaded
+# to the release; the main branch never carries them.
 
 on:
   push:
@@ -25,7 +42,7 @@ permissions:
   contents: write
 
 jobs:
-  publish-inventory:
+  publish-artifacts:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -98,7 +115,22 @@ jobs:
           print('source_tree_converged: true')
           "
 
-      - name: Attach inventory to release
+      # The release manifest is the immutable release-time description of the
+      # published candidate. It records the umbrella tag SHA (resolved from
+      # the git tag that triggered this run), all six constituent SHAs from
+      # SUITE.lock, the regista version quad, and the lock identity. Wheel
+      # hashes are empty strings today (no wheel-build step); a future WI
+      # will add the build and populate these fields.
+      - name: Build release manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          agent-suite release-manifest build --tag "$RELEASE_TAG" --json > out/release-manifest.json
+          cat out/release-manifest.json
+
+      - name: Attach artifacts to release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # softprops/action-gh-release@v2
         with:
-          files: out/candidate-inventory.json
+          files: |
+            out/candidate-inventory.json
+            out/release-manifest.json
