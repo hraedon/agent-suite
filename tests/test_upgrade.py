@@ -261,7 +261,7 @@ def test_upgrade_dry_run_does_not_act(tmp_path: Path) -> None:
     lock = _lock({"regista": "0.4.0"})
     lock_text = serialize_lock(lock)
     lock_path = tmp_path / "SUITE.lock"
-    lock_path.write_text(lock_text)
+    lock_path.write_text(lock_text, encoding="utf-8")
 
     result = run_upgrade(
         dry_run=True,
@@ -271,6 +271,7 @@ def test_upgrade_dry_run_does_not_act(tmp_path: Path) -> None:
         components=(regista,),
         lock_path=lock_path,
         provenance_probe=lambda comp: _runtime(comp, version="0.3.0"),
+        provider_probe=lambda **_: None,
     )
     assert result.ok is True
     assert result.dry_run is True
@@ -314,7 +315,9 @@ def test_repair_uses_exact_owner_and_leaves_lock_unchanged(
 ) -> None:
     regista = component_by_ident("regista")
     lock_path = tmp_path / "SUITE.lock"
-    lock_path.write_text(serialize_lock(_lock({"regista": "0.5.3"})))
+    lock_path.write_text(
+        serialize_lock(_lock({"regista": "0.5.3"})), encoding="utf-8"
+    )
     original = lock_path.read_bytes()
     before = _runtime(regista, version="0.5.1", mode=InstallMode.PIP_USER)
     before = RuntimeProvenance(**{**before.__dict__, "pep668": True})
@@ -340,6 +343,7 @@ def test_repair_uses_exact_owner_and_leaves_lock_unchanged(
         installed=lambda _: True,
         components=(regista,),
         provenance_probe=probe,
+        provider_probe=lambda **_: None,
     )
 
     assert result.ok is True
@@ -362,7 +366,9 @@ def test_repair_uses_exact_owner_and_leaves_lock_unchanged(
 def test_repair_refuses_editable_before_any_mutation(tmp_path: Path) -> None:
     regista = component_by_ident("regista")
     lock_path = tmp_path / "SUITE.lock"
-    lock_path.write_text(serialize_lock(_lock({"regista": "0.5.3"})))
+    lock_path.write_text(
+        serialize_lock(_lock({"regista": "0.5.3"})), encoding="utf-8"
+    )
     runner = StubRunner({})
 
     result = run_upgrade(
@@ -374,6 +380,7 @@ def test_repair_refuses_editable_before_any_mutation(tmp_path: Path) -> None:
         provenance_probe=lambda comp: _runtime(
             comp, version="0.5.1", mode=InstallMode.EDITABLE
         ),
+        provider_probe=lambda **_: None,
     )
 
     assert result.ok is False
@@ -384,7 +391,9 @@ def test_repair_refuses_editable_before_any_mutation(tmp_path: Path) -> None:
 def test_post_install_mismatch_rolls_back_captured_version(tmp_path: Path) -> None:
     regista = component_by_ident("regista")
     lock_path = tmp_path / "SUITE.lock"
-    lock_path.write_text(serialize_lock(_lock({"regista": "0.5.3"})))
+    lock_path.write_text(
+        serialize_lock(_lock({"regista": "0.5.3"})), encoding="utf-8"
+    )
     before = _runtime(regista, version="0.5.1")
     wrong = RuntimeProvenance(**{**before.__dict__, "version": "9.9.9"})
     restored = RuntimeProvenance(**{**before.__dict__, "version": "0.5.1"})
@@ -400,6 +409,7 @@ def test_post_install_mismatch_rolls_back_captured_version(tmp_path: Path) -> No
         installed=lambda _: True,
         components=(regista,),
         provenance_probe=probe,
+        provider_probe=lambda **_: None,
     )
 
     assert result.ok is False
@@ -426,7 +436,8 @@ def test_advancement_refuses_unselected_component_drift(tmp_path: Path) -> None:
                     "dossier": ComponentPin(dossier.repo, "0.0.1"),
                 },
             )
-        )
+        ),
+        encoding="utf-8",
     )
 
     result = run_upgrade(
@@ -438,6 +449,7 @@ def test_advancement_refuses_unselected_component_drift(tmp_path: Path) -> None:
         provenance_probe=lambda comp: _runtime(
             comp, version="0.5.3" if comp.ident == "regista" else "0.0.2"
         ),
+        provider_probe=lambda **_: None,
     )
 
     assert result.ok is False
@@ -456,7 +468,8 @@ def test_advancement_refuses_revision_only_drift(tmp_path: Path) -> None:
                     "regista": ComponentPin(regista.repo, "0.5.3", "a" * 40),
                 },
             )
-        )
+        ),
+        encoding="utf-8",
     )
     record = RuntimeProvenance(
         **{**_runtime(regista, version="0.5.3").__dict__, "revision": "b" * 40}
@@ -469,6 +482,7 @@ def test_advancement_refuses_revision_only_drift(tmp_path: Path) -> None:
         installed=lambda _: True,
         components=(regista,),
         provenance_probe=lambda _: record,
+        provider_probe=lambda **_: None,
     )
 
     assert result.ok is False
@@ -485,7 +499,8 @@ def test_service_execstart_must_match_visible_cli_before_repair(tmp_path: Path) 
                 regista_quad=None,
                 components={"dossier": ComponentPin(dossier.repo, "0.0.2")},
             )
-        )
+        ),
+        encoding="utf-8",
     )
     runner = StubRunner({
         ("systemctl", "show"): _completed(
@@ -500,6 +515,7 @@ def test_service_execstart_must_match_visible_cli_before_repair(tmp_path: Path) 
         installed=lambda _: True,
         components=(dossier,),
         provenance_probe=lambda comp: _runtime(comp, version="0.0.1"),
+        provider_probe=lambda **_: None,
     )
 
     assert result.ok is False
@@ -519,7 +535,8 @@ def test_final_lock_write_failure_rolls_back_advancement(
                 regista_quad=None,
                 components={"regista": ComponentPin(regista.repo, "0.5.3")},
             )
-        )
+        ),
+        encoding="utf-8",
     )
     original = lock_path.read_bytes()
     before = _runtime(regista, version="0.5.3")
@@ -566,6 +583,7 @@ def test_final_lock_write_failure_rolls_back_advancement(
         installed=lambda _: True,
         components=(regista,),
         provenance_probe=probe,
+        provider_probe=lambda **_: None,
     )
 
     assert result.ok is False
