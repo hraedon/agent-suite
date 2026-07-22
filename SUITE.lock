@@ -31,7 +31,7 @@ revision = "90d83803e0824be132dfa531c07daa364a753966"
 [components.dossier]
 repo = "hraedon/dossier"
 version = "0.0.1"
-revision = "ed7828d715c3bcd257b625f059ccbed14cf9d815"
+revision = "4e09ec50162b494d150905c604e2d81a6bd9cf8e"
 
 [components.regista]
 repo = "hraedon/regista"
@@ -43,4 +43,3 @@ provider_name = "hindsight"
 protocol_version = "1.0"
 deployment_mode = "remote"
 support_level = "supported"
-
