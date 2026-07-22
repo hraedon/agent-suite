@@ -210,11 +210,11 @@ def test_doctor_default_revision_probe_is_the_real_lock_probe() -> None:
 
     This is what makes the CLI ``doctor`` command probe revisions the same way
     ``lock --check`` does, with no explicit wiring at the call site. The
-    default must be :func:`agent_suite.lock.read_component_revisions` (not a
-    no-op) so the two commands agree against real checkouts.
+    default must be the installed-runtime provenance probe (not a no-op) so
+    the two commands agree against the artifacts that own the visible CLIs.
     """
     import agent_suite.doctor as doctor_mod
-    import agent_suite.lock as lock_mod
+    import agent_suite.runtime_provenance as provenance_mod
 
     # aggregate's param defaults to None (resolved inside to the real probe).
     agg_sig = inspect.signature(doctor_mod.aggregate)
@@ -222,7 +222,10 @@ def test_doctor_default_revision_probe_is_the_real_lock_probe() -> None:
 
     # _check_lock_drift's param defaults directly to the real probe.
     cld_sig = inspect.signature(doctor_mod._check_lock_drift)
-    assert cld_sig.parameters["revision_probe"].default is lock_mod.read_component_revisions
+    assert (
+        cld_sig.parameters["revision_probe"].default
+        is provenance_mod.read_runtime_revisions
+    )
 
 
 def test_lock_check_memory_provider_drift_uses_current_provider() -> None:

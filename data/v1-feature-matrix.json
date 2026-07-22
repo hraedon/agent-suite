@@ -1,14 +1,14 @@
 {
   "version": "v1",
-  "generated_at": "2026-07-19T12:24:41.717955Z",
+  "generated_at": "2026-07-22T16:04:44.815349Z",
   "status_source": "probe-emitted",
   "observed_revisions": {
-    "agent-suite": "bafbb3f",
-    "regista": "0.5.1",
-    "agent-notes": "1.0.0",
-    "dossier": "0.0.1",
-    "agent-provenance": "0.1.0",
-    "agent-capability-broker": "0.1.0",
+    "agent-suite": "921c2e7",
+    "regista": "9718b94",
+    "agent-notes": "0bb9edb",
+    "dossier": "4e09ec5",
+    "agent-provenance": "bded8b1",
+    "agent-capability-broker": "35287e8",
     "agent-wake": "90d8380"
   },
   "profiles": [
@@ -605,11 +605,11 @@
       "component": "agent-suite",
       "surface": "upgrade / rollback / forward-recovery gates",
       "profile": "A",
-      "status": "pass",
-      "dependency": "Plan 008 WI-3.4, Plan 009 WI-4.2",
-      "proof": "probe: _probe_upgrade_rollback_forward -> pass; evidence: upgrade.run_upgrade/run_rollback/run_forward_recovery exposed; tests/test_upgrade.py present",
+      "status": "partial",
+      "dependency": "Forward recovery retired pending shared transaction engine",
+      "proof": "probe: _probe_upgrade_rollback_forward -> partial; evidence: upgrade/rollback transaction engine present and tested; legacy forward recovery is explicitly retired fail-closed",
       "excluded": "\u2014",
-      "notes": "Staged upgrade with interop gate, rollback across schema boundaries refused, forward-recovery completes partial upgrades.",
+      "notes": "Upgrade and rollback are installation-aware transactions; legacy forward recovery is explicitly retired fail-closed.",
       "owning_wi": "",
       "release_status": "in_qualification"
     },
@@ -628,9 +628,15 @@
     }
   ],
   "wi_assignment_summary": {
-    "profile_b_non_pass_count": 8,
+    "profile_b_non_pass_count": 9,
     "assigned_count": 8,
-    "unassigned": [],
+    "unassigned": [
+      [
+        "GJ-9",
+        "agent-suite",
+        "upgrade / rollback / forward-recovery gates"
+      ]
+    ],
     "wi_ids": [
       "WI-010",
       "WI-011",

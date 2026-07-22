@@ -164,11 +164,21 @@ wheels, production installs) also omit it. When present, it is the full git SHA
 what makes the lock a *reproducible candidate definition* rather than a version
 hint: a version can be republished, but a SHA cannot.
 
+`agent-suite lock` refuses to combine an installed version with a different
+candidate checkout version. This prevents internally false pins such as a
+runtime `0.5.1` paired with the SHA of a `0.5.3` checkout.
+
 **The both-sides-have-SHA gate:** `check_drift` reports `REVISION_MISMATCH` only
 when *both* the locked pin and the current state carry a SHA. A version-only lock
 cannot detect revision drift by design; a current state where the SHA is
 unprobeable (a wheel install with no source checkout) does not false-positive
 against a locked revision.
+
+Runtime drift checks inspect the exact interpreter that owns the visible CLI
+and its PEP 610 metadata. They never substitute a similarly named checkout
+under `/projects`. Clean editable installs and Git direct-URL installs can carry
+an attributable revision; ordinary wheels remain version-only. For a shared
+remote service, a local client checkout is never used as server provenance.
 
 **Failure mode:** an operator who generates a lock in CI-from-wheels gets a
 version-only lock — same-version rebuilds at a different SHA are undetectable.
