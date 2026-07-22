@@ -453,7 +453,8 @@ def main(argv: list[str] | None = None) -> int:
                 check_drift,
                 generate_lock,
                 load_lock_file,
-                read_component_revisions,
+                read_candidate_revisions,
+                read_candidate_versions,
                 read_provider_extension,
                 read_regista_quad,
                 serialize_lock,
@@ -469,10 +470,20 @@ def main(argv: list[str] | None = None) -> int:
             component_versions: dict[str, str | None] = {
                 r.component: r.version for r in report.components
             }
-            component_revisions = read_component_revisions()
             current_quad = read_regista_quad()
 
             if args.check:
+                from agent_suite.runtime_provenance import read_runtime_revisions
+
+                try:
+                    component_revisions = read_runtime_revisions()
+                except RuntimeError as exc:
+                    return emit_error(
+                        "RUNTIME_PROVENANCE_UNKNOWN",
+                        "lock --check could not attribute installed runtime revisions",
+                        detail=str(exc),
+                        json_mode=getattr(args, "json", False),
+                    )
                 try:
                     existing = load_lock_file()
                 except ValueError as exc:
@@ -510,6 +521,26 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 from agent_suite.config import memory_provider_config
 
+                candidate_versions = read_candidate_versions()
+                mismatches = [
+                    ident
+                    for ident, candidate_version in candidate_versions.items()
+                    if candidate_version is not None
+                    and component_versions.get(ident) != candidate_version
+                ]
+                if mismatches:
+                    detail = ", ".join(
+                        f"{ident}: runtime={component_versions.get(ident) or 'absent'}, "
+                        f"candidate={candidate_versions[ident]}"
+                        for ident in mismatches
+                    )
+                    return emit_error(
+                        "LOCK_PROVENANCE_MISMATCH",
+                        "refused to pair runtime versions with different candidate revisions",
+                        detail=detail,
+                        json_mode=getattr(args, "json", False),
+                    )
+                component_revisions = read_candidate_revisions()
                 mp_engine = str(memory_provider_config()["engine"])
                 lock = generate_lock(
                     component_versions=component_versions,
@@ -586,7 +617,6 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if vr_result.ok else 1
         case Command.UPGRADE:
             from agent_suite.upgrade import (
-                format_advancement_text,
                 format_rollback_text,
                 format_upgrade_text,
                 run_rollback,
@@ -635,10 +665,7 @@ def main(argv: list[str] | None = None) -> int:
 
                 print(_json.dumps(up_result.to_dict(), indent=2, default=str))
             elif args.check:
-                from agent_suite.upgrade import check_advancements
-
-                adv_report = check_advancements(component=args.component)
-                print(format_advancement_text(adv_report))
+                print(format_upgrade_text(up_result))
             else:
                 print(format_upgrade_text(up_result))
             return 0 if up_result.ok else 1

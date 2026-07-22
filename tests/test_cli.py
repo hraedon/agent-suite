@@ -26,6 +26,8 @@ def _stub_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(lock_mod, "read_regista_quad", lambda **kw: None)
     monkeypatch.setattr(lock_mod, "write_lock_file", lambda lock, path=None: None)
     monkeypatch.setattr(lock_mod, "load_lock_file", lambda path=None: None)
+    monkeypatch.setattr(lock_mod, "read_candidate_versions", lambda **kw: {})
+    monkeypatch.setattr(lock_mod, "read_candidate_revisions", lambda **kw: {})
 
 
 def _stub_aggregate(

@@ -335,12 +335,12 @@ def _default_search_roots() -> tuple[Path, ...]:
     return (Path("/projects").resolve(),)
 
 
-def read_component_revisions(
+def read_candidate_revisions(
     components: tuple[Component, ...] = COMPONENTS,
     *,
     search_roots: tuple[Path, ...] | None = None,
 ) -> dict[str, str | None]:
-    """Probe each component's local source checkout for its current git SHA.
+    """Probe each candidate source checkout for its current git SHA.
 
     The compatibility lock is only a *reproducible candidate definition* when
     it pins the exact git revision each component was built from. The version
@@ -367,6 +367,69 @@ def read_component_revisions(
     return revisions
 
 
+def read_candidate_versions(
+    components: tuple[Component, ...] = COMPONENTS,
+    *,
+    search_roots: tuple[Path, ...] | None = None,
+) -> dict[str, str | None]:
+    """Read declared versions from the exact candidate checkout family.
+
+    This companion to :func:`read_candidate_revisions` prevents lock authoring
+    from pairing a runtime-reported version with an unrelated checkout SHA.
+    Root and one-level-nested ``pyproject.toml`` files are considered (the
+    latter covers repositories such as agent-wake's daemon package), and the
+    declared project name must match a component distribution alias.
+    """
+    roots = search_roots if search_roots is not None else _default_search_roots()
+    versions: dict[str, str | None] = {}
+    for comp in components:
+        basename = comp.repo.split("/", 1)[-1] if "/" in comp.repo else comp.repo
+        version: str | None = None
+        for root in roots:
+            checkout = root / basename
+            if not checkout.is_dir():
+                continue
+            pyprojects = (checkout / "pyproject.toml", *checkout.glob("*/pyproject.toml"))
+            aliases = {name.lower().replace("_", "-") for name in comp.distribution_names}
+            for pyproject in pyprojects:
+                if not pyproject.is_file():
+                    continue
+                try:
+                    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+                except (OSError, RuntimeError, tomllib.TOMLDecodeError):
+                    continue
+                project = data.get("project")
+                if not isinstance(project, dict):
+                    continue
+                name = project.get("name")
+                declared = project.get("version")
+                if (
+                    isinstance(name, str)
+                    and name.lower().replace("_", "-") in aliases
+                    and isinstance(declared, str)
+                ):
+                    version = declared
+                    break
+            break
+        versions[comp.ident] = version
+    return versions
+
+
+def read_component_revisions(
+    components: tuple[Component, ...] = COMPONENTS,
+    *,
+    search_roots: tuple[Path, ...] | None = None,
+) -> dict[str, str | None]:
+    """Compatibility alias for candidate revision discovery.
+
+    Runtime drift checks must use
+    :func:`agent_suite.runtime_provenance.read_runtime_revisions` instead.
+    Keeping this wrapper avoids breaking callers while making its candidate-only
+    semantics explicit at every in-tree call site.
+    """
+    return read_candidate_revisions(components=components, search_roots=search_roots)
+
+
 def _probe_revision(
     repo: str,
     search_roots: tuple[Path, ...],
@@ -388,6 +451,12 @@ def _probe_revision(
         if not git_dir.exists():
             continue
         try:
+            status = subprocess.run(
+                ("git", "-C", str(candidate), "status", "--porcelain"),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
             result = subprocess.run(
                 ("git", "-C", str(candidate), "rev-parse", "HEAD"),
                 capture_output=True,
@@ -396,7 +465,7 @@ def _probe_revision(
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             return None
-        if result.returncode != 0:
+        if status.returncode != 0 or status.stdout.strip() or result.returncode != 0:
             return None
         sha = result.stdout.strip()
         # L-3: a full git SHA is 40 hex chars (sha-1) or 64 (sha-256); enforce
