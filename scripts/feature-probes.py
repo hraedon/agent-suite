@@ -312,6 +312,18 @@ def _probe_upgrade_rollback_forward() -> ProbeOutcome:
         return ProbeOutcome(ProbeResult.PARTIAL, "upgrade.run_forward_recovery missing")
     if not _probe_test_exists("test_upgrade.py"):
         return ProbeOutcome(ProbeResult.PARTIAL, "tests/test_upgrade.py missing")
+    try:
+        upgrade_source = (
+            REPO_ROOT / "src" / "agent_suite" / "upgrade.py"
+        ).read_text(encoding="utf-8")
+    except OSError:
+        upgrade_source = ""
+    if "forward recovery is retired" in upgrade_source:
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "upgrade/rollback transaction engine present and tested; legacy "
+            "forward recovery is explicitly retired fail-closed",
+        )
     return ProbeOutcome(
         ProbeResult.PASS,
         "upgrade.run_upgrade/run_rollback/run_forward_recovery exposed; "

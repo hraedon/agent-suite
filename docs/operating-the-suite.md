@@ -1,6 +1,6 @@
 # Operating the suite — upgrades, rollback, scheduled protection, alerting
 
-**Status:** Runbook 2026-07-09 (Plan 005)
+**Status:** Runbook 2026-07-22 (Plan 005, runtime-provenance revision)
 **Purpose:** How to operate the suite after deployment: advance the
 compatibility lock, roll back, run scheduled backups with verify-restore,
 and receive alerts when the suite is unhealthy. This is the difference
@@ -13,9 +13,10 @@ lock format, and doctor umbrella that this runbook builds on.
 
 ## 1. Upgrades (WI-1.1)
 
-An upgrade is a **lock transition, and it's evidence.** The old lock
-transitions to a new lock, gated by the interop proof, recorded like any
-other auditable change.
+The command has two deliberately separate modes. If the runtime differs from
+the current lock, it performs an exact **reconciliation** to that lock and does
+not rewrite it. Only a runtime that already matches may perform an **advancement**
+to a new lock, gated by the interop proof and recorded as evidence.
 
 ### 1.1 Check for available advancements (read-only)
 
@@ -38,8 +39,9 @@ agent-suite upgrade --check --component regista
 agent-suite upgrade --dry-run
 ```
 
-Prints the planned actions (pipx upgrade, docker pull, service restart)
-without acting. Confirm the plan before running for real.
+The dry run reads the lock, detects the installation that owns each visible
+CLI, and prints exact versioned commands without acting. Confirm the package,
+interpreter/manager, target version, and any service restart before running.
 
 ### 1.3 Run the upgrade
 
@@ -48,20 +50,34 @@ agent-suite upgrade
 ```
 
 This:
-1. Loads the current `SUITE.lock` (the source of truth for what's deployed).
-2. Applies per-component upgrades (pipx upgrade / docker pull).
-3. Restarts any OS service (dossier, agent-notes) after its component is upgraded.
-4. Runs the **interop gate** — `doctor` (aggregated health) + `lock --check`
-   (version match). A green local gate is necessary but not sufficient.
-5. On green: regenerates `SUITE.lock` from the new versions and writes it.
-6. On red: **rolls back** every upgraded component to its previously-pinned
-   version and leaves the lock untouched.
+
+1. Loads the current `SUITE.lock` and probes the interpreter and distribution
+   that own each selected visible CLI.
+2. Refuses editable, system, absent, ambiguous, and unknown installations
+   before any mutation. Managed user-pip, venv, pipx, and uv-tool installs are
+   supported.
+3. If any selected version drifts from the lock, installs only those exact
+   locked versions. It does not mix repairs with newer-version advancement.
+4. Otherwise resolves exact advancement targets and applies them through each
+   installation's detected manager.
+5. Revalidates provenance immediately before mutation, verifies every installed
+   version afterward, and restarts a declared service where applicable.
+6. Runs the interop gate against the existing lock for repair, or a temporary
+   candidate lock for advancement.
+7. On failure, rolls back only the mutation journal, in reverse order, to the
+   versions captured before the transaction and verifies the restoration.
+8. A successful repair leaves `SUITE.lock` byte-for-byte unchanged. A successful
+   advancement writes the candidate lock.
 
 To upgrade one component:
 
 ```bash
 agent-suite upgrade --component regista
 ```
+
+Component filtering is the normal way to reconcile a managed wheel while other
+suite faces are intentionally installed editable for development. A whole-suite
+operation fails closed if any component it would mutate is not manager-owned.
 
 ### 1.4 The interop gate
 
