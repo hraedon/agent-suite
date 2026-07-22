@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, assert_never
 from agent_suite import doctor
 from agent_suite import lock
 from agent_suite.components import COMPONENTS, Component
+from agent_suite.runtime_provenance import read_runtime_revisions
 
 if TYPE_CHECKING:
     from agent_suite.release_manifest import ReleaseManifest
@@ -929,7 +930,7 @@ def collect_inventory(
         r.component: r.version for r in report.components
     }
 
-    component_revisions = lock.read_component_revisions(components=components)
+    component_revisions = read_runtime_revisions(components=components, strict=False)
     current_quad = lock.read_regista_quad(runner=v_runner, installed=v_installed)
 
     # Best-effort plan statuses and deployed versions for every constituent.

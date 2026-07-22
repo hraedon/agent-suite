@@ -31,6 +31,7 @@ from typing import Protocol, assert_never
 
 from agent_suite import key_watch
 from agent_suite import lock
+from agent_suite import runtime_provenance
 from agent_suite import verify_restore
 from agent_suite.codex_catalog import CODEX_PLUGIN_CATALOG, CodexPluginId, with_marketplace
 from agent_suite.codex_health import CodexHealthReport, check_codex_health, format_codex_health_text
@@ -77,14 +78,12 @@ class Installed(Protocol):
 
 
 class RevisionProbe(Protocol):
-    """Probe each component's current git revision (HEAD SHA).
+    """Probe source revisions attributable to deployed component artifacts.
 
     Returns a map of component ident → full git SHA (or ``None`` when the
-    local source checkout is absent or not a git repo). Defaults to
-    :func:`agent_suite.lock.read_component_revisions` so the doctor's
-    lock-drift check sees the same revisions ``agent-suite lock --check``
-    sees — closing the false-green where the umbrella reported a green lock
-    while the lock command detected revision drift.
+    installed artifact has no trustworthy PEP 610 revision). Defaults to
+    :func:`agent_suite.runtime_provenance.read_runtime_revisions`; unrelated
+    candidate workspaces never participate in deployed-health decisions.
     """
 
     def __call__(self) -> dict[str, str | None]: ...
@@ -207,7 +206,7 @@ def _check_lock_drift(
     lock_path: Path = lock.DEFAULT_LOCK_PATH,
     version_runner: lock.VersionRunner = lock._default_runner,
     version_installed: lock.Installed = lock._default_installed,
-    revision_probe: RevisionProbe = lock.read_component_revisions,
+    revision_probe: RevisionProbe = runtime_provenance.read_runtime_revisions,
     current_provider_extension: lock.ProviderExtension | None = None,
 ) -> lock.LockDriftResult:
     """Compare installed component versions against SUITE.lock.
@@ -215,10 +214,10 @@ def _check_lock_drift(
     Uses the regista quad from ``regista version --json`` (not the doctor
     output, which lacks the full quad) so the schema/workflow/envelope versions
     are checked too — not just the library version. Probes each component's
-    local git checkout for its current SHA via ``revision_probe`` (defaulting
-    to :func:`agent_suite.lock.read_component_revisions`) so revision drift is
-    detected here exactly as it is by ``agent-suite lock --check`` — the two
-    commands must agree on whether the lock is healthy.
+    installed artifact for an attributable SHA via ``revision_probe``
+    (defaulting to
+    :func:`agent_suite.runtime_provenance.read_runtime_revisions`) so revision
+    drift is based on executed code rather than a nearby development checkout.
 
     A malformed lock file is a named state (``matches=False``), not a crash —
     the doctor is read-only and must never traceback.
@@ -236,9 +235,15 @@ def _check_lock_drift(
     # shelling out to git when no lock exists (``check_drift`` short-circuits
     # to ``matches=None`` anyway). This also keeps ``aggregate()`` hermetic
     # for callers that have no lock file (the common test fixture).
-    component_revisions: dict[str, str | None] = (
-        revision_probe() if existing is not None else {}
-    )
+    try:
+        component_revisions: dict[str, str | None] = (
+            revision_probe() if existing is not None else {}
+        )
+    except Exception as exc:  # the doctor must fail closed, never traceback
+        return lock.LockDriftResult(
+            matches=False,
+            note=f"runtime revision provenance probe failed: {type(exc).__name__}",
+        )
     return lock.check_drift(
         existing,
         current_quad=current_quad,
@@ -590,10 +595,10 @@ def aggregate(
     stubbed component doctors with no real binaries on PATH (no live infra in CI).
     `lock_path`, `version_runner`, and `version_installed` control the lock-drift
     check (also injectable for the same reason). `revision_probe` (defaulting to
-    :func:`agent_suite.lock.read_component_revisions`) supplies the current git
-    SHAs so revision drift is detected here exactly as it is by
-    ``agent-suite lock --check``; inject a no-op (``lambda: {}``) for hermetic
-    tests. A drifted lock (``lock.matches is False``) makes ``suite_ok`` False —
+    :func:`agent_suite.runtime_provenance.read_runtime_revisions`) supplies only
+    revisions attributable to installed artifacts; inject a no-op
+    (``lambda: {}``) for hermetic tests. A drifted lock
+    (``lock.matches is False``) makes ``suite_ok`` False —
     the umbrella must not report a green suite over a red lock.
 
     Component probes run concurrently (``concurrent.futures``) with a
@@ -721,7 +726,9 @@ def aggregate(
         )
 
         rprobe: RevisionProbe = (
-            revision_probe if revision_probe is not None else lock.read_component_revisions
+            revision_probe
+            if revision_probe is not None
+            else runtime_provenance.read_runtime_revisions
         )
         lock_result = _check_lock_drift(
             reports,

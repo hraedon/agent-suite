@@ -657,11 +657,11 @@ def _matrix_rows() -> list[MatrixRow]:
             component="agent-suite",
             surface="upgrade / rollback / forward-recovery gates",
             profile="A",
-            status=_status_label(Status.PASS),
-            dependency="Plan 008 WI-3.4, Plan 009 WI-4.2",
-            proof="src/agent_suite/upgrade.py (run_upgrade, run_rollback, run_forward_recovery); tests/test_upgrade.py; probe: _probe_upgrade_rollback_forward -> pass",
+            status=_status_label(Status.PARTIAL),
+            dependency="Forward recovery retired pending shared transaction engine",
+            proof="src/agent_suite/upgrade.py (run_upgrade, run_rollback, fail-closed run_forward_recovery); tests/test_upgrade.py; probe: _probe_upgrade_rollback_forward -> partial",
             excluded="—",
-            notes="Staged upgrade with interop gate, rollback across schema boundaries refused, forward-recovery completes partial upgrades.",
+            notes="Upgrade and rollback are installation-aware transactions; legacy forward recovery is explicitly retired fail-closed.",
         ),
         MatrixRow(
             journey="GJ-9",
@@ -792,7 +792,7 @@ def _matrix_to_markdown(matrix: Matrix) -> str:
     lines.append("# v1 Feature Matrix (Plan 009 WI-0.1)")
     lines.append("")
     lines.append(f"**Version:** {matrix.version}  ")
-    lines.append(f"**Generated:** {matrix.generated_at}  ")
+    lines.append(f"**Generated:** {matrix.generated_at}")
     lines.append(f"**Status source:** {matrix.status_source}")
     lines.append("**Status values:** pass / partial / blocked / absent")
     lines.append("")
