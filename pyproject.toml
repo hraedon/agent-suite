@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "YOUR-ORG" }]
 keywords = ["agent-suite", "orchestration", "bootstrap", "health-check", "deployment"]
-dependencies = []  # stdlib-only core
+dependencies = ["agent-suite-conformance>=1.0.0"]
 
 [project.urls]
 Repository = "https://github.com/YOUR-ORG/agent-suite"
