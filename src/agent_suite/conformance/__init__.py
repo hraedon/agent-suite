@@ -1,33 +1,26 @@
-"""CLI contract v1 conformance kit (Plan 018 WI-2).
+"""CLI contract v1 conformance kit — re-export layer (Plan 019 B1).
 
-One centrally versioned package, owned by agent-suite, consumed pinned by
-every component — never copied, so there is exactly one kit to drift from
-(the identifier-gate distribution model applied to conformance).
-
-``KIT_VERSION`` identifies the kit in recorded conformance results
-(``data/cli-conformance.json``); ``CLI_CONTRACT_VERSION`` is the contract
-revision the kit enforces (``docs/cli-contract.md``).
+The canonical source is the standalone ``agent-suite-conformance`` package.
+This module re-exports it so agent-suite's own code and tests can keep using
+``from agent_suite.conformance import ...`` without change.
 """
 
-from agent_suite.conformance.envelope import (
-    build_envelope,
-    emit_error,
-    validate_envelope,
-)
-from agent_suite.conformance.kit import (
+from agent_suite_conformance import (
+    CLI_CONTRACT_VERSION,
+    KIT_VERSION,
     BrokenPipeCase,
     ErrorCase,
     Framing,
     SuccessCase,
     UsageCase,
+    build_envelope,
+    emit_error,
     run_broken_pipe_case,
     run_error_case,
     run_success_case,
     run_usage_case,
+    validate_envelope,
 )
-
-KIT_VERSION = "1.0.0"
-CLI_CONTRACT_VERSION = 1
 
 __all__ = [
     "KIT_VERSION",
