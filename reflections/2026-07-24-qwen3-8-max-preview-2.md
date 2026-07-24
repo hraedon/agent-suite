@@ -6,6 +6,23 @@ project: agent-suite
 
 # Session Reflection — 2026-07-24 (B3 completion + the skip-bug)
 
+> **CORRECTION (later this session):** The central claim below — a "family-wide
+> silent-skip bug" fixed by switching imports to `agent_suite_conformance` — was
+> **wrong** and has been reverted. The published `agent-suite-conformance==1.0.0`
+> wheel ships the kit at `agent_suite/conformance/` as a PEP-420 namespace, so the
+> correct import (which the family already used) is `agent_suite.conformance`. My
+> "fix" would have made the family gates skip in CI. The real bug was different:
+> the B1 commit (`a30a1d7`) created a contradictory parallel package
+> `packages/agent-suite-conformance/` (top-level `agent_suite_conformance`) and
+> turned the source-of-truth `src/agent_suite/conformance/` into a shim importing
+> `agent_suite_conformance` — which the published wheel never provides, breaking
+> `agent_suite.cli` import and turning agent-suite CI red. The fix was to revert
+> that restructuring: restore `src/agent_suite/conformance/` as the real kit,
+> delete the parallel package, and drop the self-dependency from pyproject. The
+> sibling import-change commits were reverted (unpushed); agent-wake's adoption
+> stands but imports `agent_suite.conformance`. Treat the "skip-bug" framing
+> below as superseded.
+
 **Work summary:** Completed Plan 018 P2 / Plan 019 B3 by adopting the conformance kit in agent-wake (the last component), and — more importantly — discovered and fixed a family-wide bug where cairn/acb/dossier's conformance gates were silently *skipping* in CI because they imported the wrong module name. Five repos committed: agent-wake (new adoption), cairn/acb/dossier (import fix), agent-suite (conformance records). Verified live on mvmhermes01.
 
 ---
