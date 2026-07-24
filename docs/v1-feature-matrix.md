@@ -1,7 +1,7 @@
 # v1 Feature Matrix (Plan 009 WI-0.1)
 
 **Version:** v1  
-**Generated:** 2026-07-24T18:12:58.593728Z
+**Generated:** 2026-07-24T18:19:46.200674Z
 **Status source:** probe-emitted
 **Status values:** pass / partial / blocked / absent
 
@@ -9,13 +9,13 @@ This matrix is emitted by named probes; every row's status is mechanically deter
 
 ## Observed revisions
 
-- **agent-suite**: ca4aca2
+- **agent-suite**: e2b4519
 - **regista**: 44eb8ff
-- **agent-notes**: c8e456c
-- **dossier**: 05953c4
+- **agent-notes**: 1927a07
+- **dossier**: 7a2ca23
 - **agent-provenance**: bded8b1
 - **agent-capability-broker**: 737fe93
-- **agent-wake**: 0ac382d
+- **agent-wake**: 0a5929e
 
 ## Golden journeys
 
@@ -37,7 +37,7 @@ This matrix is emitted by named probes; every row's status is mechanically deter
 | GJ-1 | A | agent-suite | project onboarding and harness selection | pass | Plan 009 WI-1.3, Plan 009 WI-4.1 | probe: _probe_onboard_harness -> pass; evidence: src/agent_suite/onboard.py present; onboard.run_onboard exposed; tests/test_onboard.py present | — | Suite-level onboard: spec → provision → sign event-zero → wire harness. |
 | GJ-1 | A | regista | project / schema provisioning | pass | — | probe: _probe_regista_provisioning -> pass; evidence: Regista.create_project=present; regista/_provision.py=present; regista/_migrations.py=present; tests/test_provision.py=present | Multi-region active/active replication | PostgreSQL schema + roles created idempotently. |
 | GJ-1 | A | regista | workflow registration and discovery | pass | — | probe: _probe_regista_workflow_registration -> pass; evidence: Regista.register_workflow=present; Regista.register_workflow_file=present; regista/_workflow.py=present; tests/test_canonical_workflow.py=present | General saga / workflow execution engine | Canonical workflow is versioned and stored per project. |
-| GJ-1 | A | agent-notes | project discovery from cwd and per-user identity | partial | agent-notes WI-013 | probe: _probe_agent_notes_project_discovery -> partial; evidence: agent_notes/core/face_factory.py=present; face_factory importable=yes; agent_notes/cli/workspace.py=present; db.resolve_project (path -> project)=present; cwd discovery=missing; actor.resolve_principal_id=present; tests/test_project_discovery.py=missing; the project is resolved from env, not discovered from cwd | — | Per-project RegistaFace exists but write-through is gated. |
+| GJ-1 | A | agent-notes | project discovery from cwd and per-user identity | pass | agent-notes WI-013 | probe: _probe_agent_notes_project_discovery -> pass; evidence: agent_notes/core/face_factory.py=present; face_factory importable=yes; agent_notes/cli/workspace.py=present; db.resolve_project (path -> project)=present; cwd discovery=present; actor.resolve_principal_id=present; tests/test_project_discovery.py=present; project discovered from cwd with per-user identity resolution | — | Per-project RegistaFace exists but write-through is gated. |
 | GJ-1 | B | dossier | authenticated project switcher | partial | dossier WI-017 | probe: _probe_dossier_project_switcher -> partial; evidence: dossier/authz.py=present; dossier/app.py=present; route /p/{project}=present; route /login=present; tests/test_auth.py=present; authz defaults to flat-open per dossier WI-017 | — | Authz implementation exists but defaults to flat-open. |
 | GJ-1 | A | regista | principal enrollment, rotation, revocation, delegation | pass | — | probe: _probe_regista_principal_lifecycle -> pass; evidence: PrincipalLifecycle=present; prepare_enrollment=present; prepare_rotation=present; prepare_revocation=present; regista/_principal_keys.py=present; regista/principal_lifecycle.py=present; tests/test_enroll_principal.py=present | — | Asymmetric principal key registry with validity windows and revocation. |
 | GJ-1 | A | agent-suite | identity lifecycle / onboarding / offboarding | pass | Plan 009 WI-1.3, Plan 009 WI-2.2 | probe: _probe_identity_lifecycle -> pass; evidence: bootstrap.run_bootstrap present; bootstrap._step_user_onboarding wired to identity.run_user_onboarding; identity.run_user_offboarding exposed; CLI 'offboard' registered; tests/test_identity.py present | — | Per-user onboarding step exists but reports 'not yet implemented'; offboarding absent. |

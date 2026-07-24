@@ -1,15 +1,15 @@
 {
   "version": "v1",
-  "generated_at": "2026-07-24T18:12:58.593728Z",
+  "generated_at": "2026-07-24T18:19:46.200674Z",
   "status_source": "probe-emitted",
   "observed_revisions": {
-    "agent-suite": "ca4aca2",
+    "agent-suite": "e2b4519",
     "regista": "44eb8ff",
-    "agent-notes": "c8e456c",
-    "dossier": "05953c4",
+    "agent-notes": "1927a07",
+    "dossier": "7a2ca23",
     "agent-provenance": "bded8b1",
     "agent-capability-broker": "737fe93",
-    "agent-wake": "0ac382d"
+    "agent-wake": "0a5929e"
   },
   "profiles": [
     "A",
@@ -85,9 +85,9 @@
       "component": "agent-notes",
       "surface": "project discovery from cwd and per-user identity",
       "profile": "A",
-      "status": "partial",
+      "status": "pass",
       "dependency": "agent-notes WI-013",
-      "proof": "probe: _probe_agent_notes_project_discovery -> partial; evidence: agent_notes/core/face_factory.py=present; face_factory importable=yes; agent_notes/cli/workspace.py=present; db.resolve_project (path -> project)=present; cwd discovery=missing; actor.resolve_principal_id=present; tests/test_project_discovery.py=missing; the project is resolved from env, not discovered from cwd",
+      "proof": "probe: _probe_agent_notes_project_discovery -> pass; evidence: agent_notes/core/face_factory.py=present; face_factory importable=yes; agent_notes/cli/workspace.py=present; db.resolve_project (path -> project)=present; cwd discovery=present; actor.resolve_principal_id=present; tests/test_project_discovery.py=present; project discovered from cwd with per-user identity resolution",
       "excluded": "\u2014",
       "notes": "Per-project RegistaFace exists but write-through is gated.",
       "owning_wi": "WI-010",
@@ -628,8 +628,8 @@
     }
   ],
   "wi_assignment_summary": {
-    "profile_b_non_pass_count": 7,
-    "assigned_count": 6,
+    "profile_b_non_pass_count": 6,
+    "assigned_count": 5,
     "unassigned": [
       [
         "GJ-9",
@@ -638,7 +638,6 @@
       ]
     ],
     "wi_ids": [
-      "WI-010",
       "WI-011",
       "WI-014",
       "WI-015",
