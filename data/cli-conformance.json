@@ -28,6 +28,42 @@
       "evidence": "tests/test_cli_conformance.py in agent-notes CI (check job, py3.13/3.14); agent-notes PR #10",
       "recorded": "2026-07-20",
       "notes": "Clean adoption — no CLI fixes required; the earlier P0 envelope conversion already held. Keeps decision-52 exit codes (2/3/4); kit checks version-independent contract invariants."
+    },
+    "agent-provenance": {
+      "kit_version": "1.0.0",
+      "cli_contract_version": 1,
+      "lane": "source-checkout",
+      "result": "pass",
+      "evidence": "tests/test_cli_conformance.py (ErrorCase verify-malformed-keys, UsageCase, BrokenPipeCase)",
+      "recorded": "2026-07-24",
+      "notes": "B3 retrofit landed the cli_entry envelope boundary earlier, but the test imported agent_suite.conformance (the umbrella re-export shim, not installed here) so it SILENTLY SKIPPED in CI — the gate was never actually enforced. Fixed the import to the real module agent_suite_conformance; the gate now runs and passes (verified locally; console script must be freshly generated to point at cli_entry, as pip install -e does in CI)."
+    },
+    "agent-capability-broker": {
+      "kit_version": "1.0.0",
+      "cli_contract_version": 1,
+      "lane": "source-checkout",
+      "result": "pass",
+      "evidence": "tests/test_cli_conformance.py (SuccessCase shims-json, ErrorCase doctor-missing-manifest, UsageCase, BrokenPipeCase)",
+      "recorded": "2026-07-24",
+      "notes": "Same silent-skip bug as cairn: test imported agent_suite.conformance instead of the installed agent_suite_conformance, so the gate skipped in CI. Import fixed; the read-only doctor envelope path + framework guarantees now genuinely enforced (4 cases pass). Act-path exit-code reclassification still deferred (load-bearing install-harness --dry-run=2)."
+    },
+    "dossier": {
+      "kit_version": "1.0.0",
+      "cli_contract_version": 1,
+      "lane": "source-checkout",
+      "result": "pass",
+      "evidence": "tests/test_cli_conformance.py (ErrorCase bad-suite-config, UsageCase, BrokenPipeCase)",
+      "recorded": "2026-07-24",
+      "notes": "Same silent-skip bug: test imported agent_suite.conformance instead of agent_suite_conformance. Import fixed; gate now runs and passes (3 cases) on py3.13."
+    },
+    "agent-wake": {
+      "kit_version": "1.0.0",
+      "cli_contract_version": 1,
+      "lane": "source-checkout",
+      "result": "pass",
+      "evidence": "daemon/tests/test_cli_conformance.py (ErrorCase secrets-list-missing-config, UsageCase, BrokenPipeCase)",
+      "recorded": "2026-07-24",
+      "notes": "New adoption (the last component, completing Plan 018 P2 / Plan 019 B3). Added a top-level cli envelope/no-traceback boundary (emit_error + ConfigError->CONFIG_ERROR, Exception->INTERNAL_ERROR, BrokenPipeError swallowed) and a --json flag on 'secrets list'; _load_raw_config now raises ConfigError instead of sys.exit(1). Imports the real module agent_suite_conformance (not the umbrella shim) so the gate genuinely runs. Kit requires py>=3.12 so the dev dep is conditional (python_version>='3.12'); the daemon still supports 3.11 at runtime and the gate runs on the 3.12 CI lane. install-harness --dry-run=2 left untouched (load-bearing). agent-wake has no regista dependency, so it is correctly no-spine in the cross-repo lock-agreement check."
     }
   }
 }
