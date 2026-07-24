@@ -13,7 +13,7 @@ dependencies = []  # stdlib-only core
 Repository = "https://github.com/YOUR-ORG/agent-suite"
 
 [project.optional-dependencies]
-dev = ["ruff", "mypy", "pytest", "build", "hatchling"]  # build+hatchling: conformance wheel build-test
+dev = ["ruff>=0.5,<0.16", "mypy", "pytest", "build", "hatchling"]  # build+hatchling: conformance wheel build-test; ruff<0.16: 0.16 expanded the default rule set (isort/TRY/BLE/PLW/UP/SIM), flagging 300+ pre-existing lines — adopt deliberately, not via an unpinned bump
 vault = ["hvac"]                     # HashiCorp Vault secret backend (edge only)
 azure = ["azure-identity", "azure-keyvault-secrets", "PyJWT[crypto]"]  # Azure Key Vault + Entra (edge only)
 windows = ["pywin32; sys_platform == 'win32'"]        # DPAPI / Credential Manager (edge only)
