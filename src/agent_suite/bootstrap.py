@@ -22,8 +22,10 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Protocol, assert_never
 
+from agent_suite import identity
 from agent_suite.harness import (
     HarnessTarget,
     expand_harness_target,
@@ -550,17 +552,43 @@ def _step_user_onboarding(
             StepStatus.SKIPPED,
             "no --user specified; skipping per-user onboarding",
         )
-    if dry_run:
-        return StepResult(
-            StepKind.USER_ONBOARDING,
-            StepStatus.PENDING,
-            f"would write per-user overlay for {user}",
-        )
+    result = identity.run_user_onboarding(
+        principal=user,
+        overlay_path=Path(config_path) if config_path else None,
+        dry_run=dry_run,
+        runner=runner,
+        installed=installed,
+    )
+    detail = "; ".join(f"{s.name}: {s.detail}" for s in result.steps)
     return StepResult(
         StepKind.USER_ONBOARDING,
-        StepStatus.SKIPPED,
-        "user onboarding not yet implemented (Plan 001 WI-3.3)",
+        _step_status_for(result.outcome),
+        detail,
     )
+
+
+def _step_status_for(outcome: identity.IdentityOutcome) -> StepStatus:
+    """Map an identity outcome onto a bootstrap step status.
+
+    ``MANUAL`` has no bootstrap equivalent — onboarding never produces it —
+    but it is mapped rather than dropped so adding a step that can return it
+    cannot silently degrade to a success.
+    """
+    match outcome:
+        case identity.IdentityOutcome.DONE:
+            return StepStatus.DONE
+        case identity.IdentityOutcome.ALREADY_DONE:
+            return StepStatus.ALREADY_DONE
+        case identity.IdentityOutcome.PENDING:
+            return StepStatus.PENDING
+        case identity.IdentityOutcome.MANUAL:
+            return StepStatus.REFUSED
+        case identity.IdentityOutcome.REFUSED:
+            return StepStatus.REFUSED
+        case identity.IdentityOutcome.FAILED:
+            return StepStatus.FAILED
+        case other:
+            assert_never(other)
 
 
 # ---------------------------------------------------------------------------

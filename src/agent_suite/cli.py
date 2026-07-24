@@ -21,6 +21,7 @@ class Command(Enum):
     LOCK = "lock"
     BOOTSTRAP = "bootstrap"
     ONBOARD = "onboard"
+    OFFBOARD = "offboard"
     VERIFY_RESTORE = "verify-restore"
     UPGRADE = "upgrade"
     SCHEDULE = "schedule"
@@ -112,6 +113,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--principal", help="principal ID for provisioning (default: suite-service)"
     )
     onboard.add_argument("--json", action="store_true", help="emit the result as JSON")
+    offboard = sub.add_parser(
+        Command.OFFBOARD.value,
+        help="offboard a principal: revoke their signing keys and remove their overlay",
+    )
+    offboard.add_argument("--user", required=True, help="principal ID to offboard")
+    offboard.add_argument(
+        "--reason", default="offboarded", help="revocation reason recorded in regista"
+    )
+    offboard.add_argument(
+        "--config", help="path to the per-user suite.env overlay to remove"
+    )
+    offboard.add_argument(
+        "--keep-overlay",
+        action="store_true",
+        help="revoke the keys but leave the per-user overlay in place",
+    )
+    offboard.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
+    offboard.add_argument("--json", action="store_true", help="emit the result as JSON")
     verify_restore = sub.add_parser(
         Command.VERIFY_RESTORE.value,
         help="verify a restored store is cryptographically intact (post-restore check)",
@@ -1024,6 +1043,25 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(_fmt_ev(ev_result))
             return 0 if ev_result.ok else 1
+        case Command.OFFBOARD:
+            from pathlib import Path
+
+            from agent_suite.identity import format_result, run_user_offboarding
+
+            off_result = run_user_offboarding(
+                principal=args.user,
+                reason=args.reason,
+                overlay_path=Path(args.config) if args.config else None,
+                keep_overlay=args.keep_overlay,
+                dry_run=args.dry_run,
+            )
+            if getattr(args, "json", False):
+                import json as _json
+
+                print(_json.dumps(off_result.to_dict(), indent=2, default=str))
+            else:
+                print(format_result(off_result))
+            return 0 if off_result.ok else 1
         case Command.BACKUP:
             from pathlib import Path
 

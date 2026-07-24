@@ -264,10 +264,32 @@ def _probe_identity_lifecycle() -> ProbeOutcome:
             ProbeResult.PARTIAL,
             "bootstrap._step_user_onboarding missing (no per-user onboarding step)",
         )
+    if not _probe_module_exists("identity.py"):
+        return ProbeOutcome(ProbeResult.PARTIAL, "src/agent_suite/identity.py absent")
+    for fn in ("run_user_onboarding", "run_user_offboarding"):
+        if not _probe_has_function("identity", fn):
+            return ProbeOutcome(ProbeResult.PARTIAL, f"identity.{fn} missing")
+    if not _probe_cli_command("offboard"):
+        return ProbeOutcome(ProbeResult.PARTIAL, "CLI command 'offboard' missing")
+    if not _probe_test_exists("test_identity.py"):
+        return ProbeOutcome(ProbeResult.PARTIAL, "tests/test_identity.py missing")
+    try:
+        bootstrap_source = (
+            REPO_ROOT / "src" / "agent_suite" / "bootstrap.py"
+        ).read_text(encoding="utf-8")
+    except OSError:
+        bootstrap_source = ""
+    if "not yet implemented" in bootstrap_source:
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "identity module present but a bootstrap step still reports "
+            "'not yet implemented'",
+        )
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
-        "bootstrap.run_bootstrap present; bootstrap._step_user_onboarding present; "
-        "offboarding step absent (step reports 'not yet implemented')",
+        ProbeResult.PASS,
+        "bootstrap.run_bootstrap present; bootstrap._step_user_onboarding wired to "
+        "identity.run_user_onboarding; identity.run_user_offboarding exposed; "
+        "CLI 'offboard' registered; tests/test_identity.py present",
     )
 
 

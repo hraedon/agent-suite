@@ -255,6 +255,10 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
             assert main([command.value, "list"]) == 0
         elif command is Command.ONBOARD:
             assert main([command.value, "project-slug"]) == 0
+        elif command is Command.OFFBOARD:
+            # regista is absent under test, so the leaver path fails honestly
+            # rather than reporting a principal it never revoked.
+            assert main([command.value, "--user", "someone", "--dry-run"]) == 1
         elif command is Command.PREFLIGHT:
             assert main([command.value]) == 1
         elif command is Command.SETUP_INSTALL:

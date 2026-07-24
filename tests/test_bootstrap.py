@@ -86,6 +86,12 @@ _ALREADY_INSTALL = _completed(
 )
 _OK_PRINCIPAL = _completed(stdout='{"principal_id": "suite-service", "key_id": "k1"}')
 _ALREADY_PRINCIPAL = _completed(returncode=1, stderr="already exists")
+_OK_ENROLL = _completed(
+    stdout=(
+        '{"principal_id": "human-1", "key_id": "k1", "scheme": "ed25519", '
+        '"already_existed": false, "secret_backend": "file"}'
+    )
+)
 _ALREADY_PROVISIONED = _completed(
     stdout='[{"project": "test", "schema_created": false}]'
 )
@@ -404,11 +410,13 @@ def test_tier2_missing_cli_skipped_not_failed() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_user_onboarding_runs_when_specified() -> None:
+def test_user_onboarding_runs_when_specified(tmp_path) -> None:
+    overlay = tmp_path / "suite.env"
     runner = _MultiCmdRunner({
         ("regista", "doctor"): _OK_DOCTOR,
         ("regista", "provision"): _OK_PROVISION,
         ("regista", "provision-principal"): _OK_PRINCIPAL,
+        ("regista", "principal", "enroll"): _OK_ENROLL,
         ("regista", "secrets"): _completed(stdout="ok"),
         ("agent-notes",): _OK_INSTALL,
         ("cairn",): _OK_INSTALL,
@@ -419,6 +427,7 @@ def test_user_onboarding_runs_when_specified() -> None:
         project="test-proj",
         dsn="postgresql://test:test@localhost/test",
         user="human-1",
+        config_path=str(overlay),
         runner=runner,
         installed=_installed_all,
     )
@@ -426,8 +435,8 @@ def test_user_onboarding_runs_when_specified() -> None:
     user_step = next(
         s for s in result.steps if s.step is StepKind.USER_ONBOARDING
     )
-    assert user_step.status is StepStatus.SKIPPED
-    assert "not yet implemented" in user_step.detail
+    assert user_step.status is StepStatus.DONE
+    assert "REGISTA_PRINCIPAL_ID=human-1" in overlay.read_text()
 
 
 def test_user_onboarding_skipped_when_not_specified() -> None:

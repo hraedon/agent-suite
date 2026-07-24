@@ -1,15 +1,15 @@
 {
   "version": "v1",
-  "generated_at": "2026-07-22T16:04:44.815349Z",
+  "generated_at": "2026-07-24T18:03:13.150051Z",
   "status_source": "probe-emitted",
   "observed_revisions": {
-    "agent-suite": "921c2e7",
-    "regista": "9718b94",
-    "agent-notes": "0bb9edb",
+    "agent-suite": "8d27054",
+    "regista": "44eb8ff",
+    "agent-notes": "c8e456c",
     "dossier": "4e09ec5",
     "agent-provenance": "bded8b1",
     "agent-capability-broker": "35287e8",
-    "agent-wake": "90d8380"
+    "agent-wake": "0ac382d"
   },
   "profiles": [
     "A",
@@ -124,9 +124,9 @@
       "component": "agent-suite",
       "surface": "identity lifecycle / onboarding / offboarding",
       "profile": "A",
-      "status": "partial",
+      "status": "pass",
       "dependency": "Plan 009 WI-1.3, Plan 009 WI-2.2",
-      "proof": "probe: _probe_identity_lifecycle -> partial; evidence: bootstrap.run_bootstrap present; bootstrap._step_user_onboarding present; offboarding step absent (step reports 'not yet implemented')",
+      "proof": "probe: _probe_identity_lifecycle -> pass; evidence: bootstrap.run_bootstrap present; bootstrap._step_user_onboarding wired to identity.run_user_onboarding; identity.run_user_offboarding exposed; CLI 'offboard' registered; tests/test_identity.py present",
       "excluded": "\u2014",
       "notes": "Per-user onboarding step exists but reports 'not yet implemented'; offboarding absent.",
       "owning_wi": "WI-012",
@@ -386,7 +386,7 @@
       "profile": "C",
       "status": "partial",
       "dependency": "acb Plan 006 WI-1.2, Plan 007",
-      "proof": "probe: _probe_acb_e2e_provider -> partial; evidence: E2eProvider=present; E2eProvider.inspect=present; E2eProvider.exec=present; exec raises NotImplementedError=yes; tests/test_e2e_inspect.py=present; E2eProvider.inspect present; exec not implemented; Codex deferred",
+      "proof": "probe: _probe_acb_e2e_provider -> partial; evidence: E2eProvider=present; E2eProvider.inspect=present; E2eProvider.exec=present; exec raises NotImplementedError=no; tests/test_e2e_inspect.py=present; E2eProvider.inspect present; exec not implemented; Codex deferred",
       "excluded": "\u2014",
       "notes": "E2eProvider.inspect exists; exec is not implemented; Codex deferred.",
       "owning_wi": "",
@@ -425,7 +425,7 @@
       "profile": "C",
       "status": "partial",
       "dependency": "agent-wake BC-WAKE-004, BC-WAKE-012",
-      "proof": "probe: _probe_wake_dedup_retry -> partial; evidence: Dedupe class in ingest.py=present; agent_waked/outbox.py=present; dead-letter logic=absent; daemon/tests/test_ingest.py=present; daemon/tests/test_outbox.py=present; dedup is in-memory FIFO; no durable inbox or dead-letter (BC-WAKE-004/012)",
+      "proof": "probe: _probe_wake_dedup_retry -> partial; evidence: Dedupe class in ingest.py=present; agent_waked/outbox.py=present; dead-letter logic=present; daemon/tests/test_ingest.py=present; daemon/tests/test_outbox.py=present; dedup is in-memory FIFO; no durable inbox or dead-letter (BC-WAKE-004/012)",
       "excluded": "Exactly-once delivery across external systems",
       "notes": "Dedup is in-memory FIFO; no durable inbox or dead-letter visibility.",
       "owning_wi": "",
@@ -462,9 +462,9 @@
       "component": "agent-wake",
       "surface": "next_session / managed_session delivery",
       "profile": "C",
-      "status": "absent",
+      "status": "partial",
       "dependency": "agent-wake Plan 006",
-      "proof": "probe: _probe_wake_next_session -> absent; evidence: next_session/managed_session in daemon+adapters=absent; design exists, no implementation (agent-wake Plan 006)",
+      "proof": "probe: _probe_wake_next_session -> partial; evidence: next_session/managed_session in daemon+adapters=present",
       "excluded": "\u2014",
       "notes": "Design exists; no implementation.",
       "owning_wi": "",
@@ -628,8 +628,8 @@
     }
   ],
   "wi_assignment_summary": {
-    "profile_b_non_pass_count": 9,
-    "assigned_count": 8,
+    "profile_b_non_pass_count": 8,
+    "assigned_count": 7,
     "unassigned": [
       [
         "GJ-9",
@@ -640,7 +640,6 @@
     "wi_ids": [
       "WI-010",
       "WI-011",
-      "WI-012",
       "WI-013",
       "WI-014",
       "WI-015",

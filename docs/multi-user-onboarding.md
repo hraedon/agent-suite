@@ -130,17 +130,44 @@ When a human leaves, revoke their principal within the SLA defined in
 [key-operations.md](key-operations.md) §Leaver process. The system admin runs:
 
 ```bash
-regista principal revoke <principal_id>
+agent-suite offboard --user <principal_id> --reason leaver
 ```
 
-This windows out the principal's key (`valid_to` is set to the revocation
-timestamp — see regista Plan 026 WI-3.1). Events the key signed *before* the
-revocation stay valid; events *after* are flagged by `regista verify` as
-`unregistered-signer` (see the [threat model](key-custody-threat-model.md) §T5).
+This is the mirror of `bootstrap --user`. It:
 
-The revoked principal's key should also be deleted from the secret backend to
-prevent further fetches (the key is windowed out in the registry regardless,
-but removing it from the backend closes the fetch path).
+1. Lists the principal's **active** keys and revokes each one
+   (`regista principal revoke`), which windows the key out (`valid_to` is set
+   to the revocation timestamp — see regista Plan 026 WI-3.1). Events the key
+   signed *before* the revocation stay valid; events *after* are flagged by
+   `regista verify` as `unregistered-signer` (see the
+   [threat model](key-custody-threat-model.md) §T5).
+2. Reports the secret-backend refs holding the private keys.
+3. Removes the leaver's per-user overlay (`--keep-overlay` to skip).
+
+Use `--dry-run` first: it lists exactly which keys would be revoked and
+touches nothing.
+
+### The one manual step
+
+regista's secret providers implement `resolve` but **no delete**, so the suite
+cannot remove the private key from the backend for you. Revocation windows the
+key out of the registry regardless — but the fetch path stays open until the
+key is gone from the backend, so `offboard` reports the refs and exits with
+`manual_action_required`:
+
+```
+offboard alice: manual_action_required
+  revoke_keys      done                   revoked 1 key(s): key-1
+  secret_backend   manual_action_required revocation windows the key out of the
+                                          registry; the private key needs removing
+                                          from the secret backend to close the fetch
+                                          path: vault:secret/agent-suite/principals/alice#key
+  user_overlay     done                   overlay removed at /home/alice/.config/agent-suite/suite.env
+```
+
+A nonzero exit is the honest answer here: offboarding is not finished until an
+operator removes those refs (see the relevant [secrets runbook](secrets-vault.md)).
+Automation must not read a `manual_action_required` offboarding as complete.
 
 ## 7. Verify
 
