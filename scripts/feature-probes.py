@@ -651,18 +651,42 @@ def _probe_agent_notes_project_discovery() -> ProbeOutcome:
     has_cli_workspace = _sibling_module_file_exists(
         "agent-notes", "agent_notes/cli/workspace.py"
     )
+    # The row is "project discovery *from cwd*" plus per-user identity, so
+    # probe those two things rather than the state of write-through.
+    has_resolve_project = _sibling_has_attr("agent_notes.core.db", "resolve_project")
+    has_cwd_discovery = _sibling_has_attr(
+        "agent_notes.core.project_discovery", "discover_project"
+    )
+    has_principal = _sibling_has_attr(
+        "agent_notes.core.actor", "resolve_principal_id"
+    )
+    has_test = _sibling_test_exists("agent-notes", "test_project_discovery.py")
     evidence_parts = [
         f"agent_notes/core/face_factory.py={'present' if has_face else 'absent'}",
         f"face_factory importable={'yes' if has_face_mod is not None else 'no'}",
         f"agent_notes/cli/workspace.py={'present' if has_cli_workspace else 'absent'}",
+        f"db.resolve_project (path -> project)={'present' if has_resolve_project else 'missing'}",
+        f"cwd discovery={'present' if has_cwd_discovery else 'missing'}",
+        f"actor.resolve_principal_id={'present' if has_principal else 'missing'}",
+        f"tests/test_project_discovery.py={'present' if has_test else 'missing'}",
     ]
     if not has_face:
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
-    # Face factory exists but write-through is gated (WI-013); partial.
+    if not has_principal:
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts) + "; no per-user identity resolution",
+        )
+    if not (has_cwd_discovery and has_test):
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts)
+            + "; the project is resolved from env, not discovered from cwd",
+        )
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; write-through gated per agent-notes WI-013",
+        + "; project discovered from cwd with per-user identity resolution",
     )
 
 
@@ -743,19 +767,43 @@ def _probe_agent_notes_write_through() -> ProbeOutcome:
     has_reconcile = _sibling_has_attr(
         "agent_notes.cli.outbox", "cmd_outbox_reconcile"
     )
+    # The outbox has to buffer note appends, or an unreachable regista loses
+    # the write rather than deferring it.
+    has_note_capture = _sibling_source_contains(
+        "agent-notes", "agent_notes/core/outbox.py", "def append_note"
+    )
+    has_write_through_test = _sibling_test_exists(
+        "agent-notes", "test_regista_write_through.py"
+    )
+    # The consuming half: dossier reads note entities back out of regista.
+    has_dossier_read = _sibling_has_attr("dossier.knowledge", "list_notes")
     evidence_parts = [
         f"agent_notes/core/note_model.py={'present' if has_note_model else 'absent'}",
         f"agent_notes/core/memory_model.py={'present' if has_memory_model else 'absent'}",
         f"agent_notes/cli/outbox.py={'present' if has_outbox_cli else 'absent'}",
         f"cmd_outbox_reconcile={'present' if has_reconcile else 'missing'}",
+        f"outbox append_note capture={'present' if has_note_capture else 'missing'}",
+        f"tests/test_regista_write_through.py={'present' if has_write_through_test else 'missing'}",
+        f"dossier note read surface={'present' if has_dossier_read else 'missing'}",
     ]
     if not (has_note_model and has_memory_model):
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
-    # Write-through is implemented but gated; dossier has no note read surface.
+    if not (has_outbox_cli and has_reconcile and has_note_capture):
+        return ProbeOutcome(ProbeResult.PARTIAL, "; ".join(evidence_parts))
+    if not has_write_through_test:
+        return ProbeOutcome(ProbeResult.PARTIAL, "; ".join(evidence_parts))
+    if not has_dossier_read:
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts) + "; notes are written but nothing reads them back",
+        )
+    # AGENT_NOTES_REGISTA_WRITES is deployment configuration (it is a declared
+    # suite env var, and the enabled path is what the tests exercise), not an
+    # unfinished feature — so it does not hold this row at partial.
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; write-through implemented but gated (agent-notes WI-013)",
+        + "; enabled by AGENT_NOTES_REGISTA_WRITES=1 (deployment configuration)",
     )
 
 
@@ -1199,6 +1247,23 @@ def _probe_cairn_bundle_export() -> ProbeOutcome:
 # ---------------------------------------------------------------------------
 
 
+def _acb_e2e_exec_is_stub() -> bool:
+    """True while ``E2eProvider.exec`` is still a NotImplementedError stub.
+
+    Three GJ-6 rows hung on this one fact, so it is asked once, here.
+    """
+    try:
+        import inspect as _inspect
+
+        module = _sibling_import("agent_capability_broker.providers")
+        if module is None:
+            return True
+        src = _inspect.getsource(getattr(module, "E2eProvider").exec)
+    except Exception:
+        return True
+    return "NotImplementedError" in src
+
+
 def _probe_acb_core_verbs() -> ProbeOutcome:
     """GJ-6 agent-capability-broker: manifest, reconcile, exec, install-harness."""
     if not _sibling_available("agent-capability-broker", "agent_capability_broker"):
@@ -1237,11 +1302,17 @@ def _probe_acb_core_verbs() -> ProbeOutcome:
     present_cmds = sum([has_doctor_cmd, has_reconcile_cmd, has_exec_cmd, has_install_cmd])
     if present_cmds < 4:
         return ProbeOutcome(ProbeResult.PARTIAL, "; ".join(evidence_parts))
-    # All CLI verbs present; e2e exec raises NotImplementedError.
+    if _acb_e2e_exec_is_stub():
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts)
+            + "; core verbs present; e2e exec is NotImplementedError (acb Plan 006 WI-1.2)",
+        )
+    if not (has_test_doctor and has_test_reconcile):
+        return ProbeOutcome(ProbeResult.PARTIAL, "; ".join(evidence_parts))
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
-        "; ".join(evidence_parts)
-        + "; core verbs present; e2e exec is NotImplementedError (acb Plan 006 WI-1.2)",
+        ProbeResult.PASS,
+        "; ".join(evidence_parts) + "; all four verbs present and e2e exec implemented",
     )
 
 
@@ -1272,11 +1343,18 @@ def _probe_acb_credential_provider() -> ProbeOutcome:
     ]
     if not (has_providers_mod and has_exec_composed):
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
-    # Provider injection works and is unit-tested; full e2e exec is NotImplementedError.
+    if _acb_e2e_exec_is_stub():
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts)
+            + "; provider injection unit-tested; full e2e exec is NotImplementedError",
+        )
+    if not has_test:
+        return ProbeOutcome(ProbeResult.PARTIAL, "; ".join(evidence_parts))
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; provider injection unit-tested; full e2e exec is NotImplementedError",
+        + "; secret-safe injection unit-tested; every provider's exec implemented",
     )
 
 
@@ -1296,40 +1374,42 @@ def _probe_acb_e2e_provider() -> ProbeOutcome:
     has_exec = _sibling_has_method(
         "agent_capability_broker.providers", "E2eProvider", "exec"
     )
-    # Check if exec raises NotImplementedError
-    exec_is_stub = False
-    if has_exec:
-        try:
-            import inspect as _inspect
-
-            src = _inspect.getsource(
-                getattr(
-                    _sibling_import("agent_capability_broker.providers"),
-                    "E2eProvider",
-                ).exec
-            )
-            exec_is_stub = "NotImplementedError" in src
-        except Exception:
-            pass
+    exec_is_stub = _acb_e2e_exec_is_stub() if has_exec else True
     has_test = _sibling_test_exists(
         "agent-capability-broker", "test_e2e_inspect.py"
     )
+    has_exec_test = _sibling_test_exists(
+        "agent-capability-broker", "test_e2e_exec.py"
+    )
+    # Plan 006 WI-1.2 asks for a *recorded live proof*, not just unit tests:
+    # the negative path must be shown to flip doctor, not asserted.
+    has_live_proof = (
+        SIBLINGS_ROOT / "agent-capability-broker" / "scripts" / "e2e_live_proof.py"
+    ).is_file()
+    has_proof_doc = (
+        SIBLINGS_ROOT / "agent-capability-broker" / "docs" / "e2e-live-proof.md"
+    ).is_file()
     evidence_parts = [
         f"E2eProvider={'present' if has_e2e_class else 'missing'}",
         f"E2eProvider.inspect={'present' if has_inspect else 'missing'}",
         f"E2eProvider.exec={'present' if has_exec else 'missing'}",
         f"exec raises NotImplementedError={'yes' if exec_is_stub else 'no'}",
         f"tests/test_e2e_inspect.py={'present' if has_test else 'missing'}",
+        f"tests/test_e2e_exec.py={'present' if has_exec_test else 'missing'}",
+        f"scripts/e2e_live_proof.py={'present' if has_live_proof else 'missing'}",
+        f"docs/e2e-live-proof.md={'present' if has_proof_doc else 'missing'}",
     ]
     if not has_e2e_class:
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
-    if not has_inspect:
+    if not has_inspect or exec_is_stub:
         return ProbeOutcome(ProbeResult.PARTIAL, "; ".join(evidence_parts))
-    # inspect exists; exec is NotImplementedError.
+    if not (has_exec_test and has_live_proof and has_proof_doc):
+        return ProbeOutcome(ProbeResult.PARTIAL, "; ".join(evidence_parts))
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; E2eProvider.inspect present; exec not implemented; Codex deferred",
+        + "; exec implemented and covered by a recorded live browser proof "
+        "(Codex still deferred, per acb Plan 007)",
     )
 
 
@@ -1349,29 +1429,45 @@ def _probe_acb_rogue_detection() -> ProbeOutcome:
     has_inspect_all = _sibling_has_attr(
         "agent_capability_broker.cli", "_inspect_all"
     )
-    # Look for rogue/clobber scanning in the source
-    has_rogue_scan = _sibling_source_contains(
+    # The audit has to scan the *installed* surface, not the manifest — that
+    # is the whole gap. A dedicated module plus a doctor call-site is the
+    # evidence; a bare mention of the word "rogue" in a comment is not.
+    has_surface_mod = _sibling_module_file_exists(
+        "agent-capability-broker", "agent_capability_broker/surface.py"
+    )
+    has_audit_fn = _sibling_has_attr("agent_capability_broker.surface", "audit_surface")
+    has_doctor_wiring = _sibling_source_contains(
         "agent-capability-broker",
         "agent_capability_broker/cli.py",
-        "rogue",
-    ) or _sibling_source_contains(
-        "agent-capability-broker",
-        "agent_capability_broker/cli.py",
-        "clobber",
+        "audit_surface",
+    )
+    has_test = _sibling_test_exists(
+        "agent-capability-broker", "test_surface_audit.py"
     )
     evidence_parts = [
         f"_cmd_doctor={'present' if has_doctor else 'missing'}",
         f"_doctor_checks={'present' if has_doctor_checks else 'missing'}",
         f"_inspect_all={'present' if has_inspect_all else 'missing'}",
-        f"rogue/clobber scan in cli.py={'present' if has_rogue_scan else 'absent'}",
+        f"surface.py={'present' if has_surface_mod else 'absent'}",
+        f"audit_surface={'present' if has_audit_fn else 'missing'}",
+        f"doctor calls audit_surface={'yes' if has_doctor_wiring else 'no'}",
+        f"tests/test_surface_audit.py={'present' if has_test else 'missing'}",
     ]
     if not has_doctor:
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
-    # Doctor only inspects manifest-listed capabilities; no rogue detection.
+    if not (has_surface_mod and has_audit_fn):
+        return ProbeOutcome(
+            ProbeResult.ABSENT,
+            "; ".join(evidence_parts)
+            + "; doctor only inspects manifest-listed capabilities (agent-suite WI-001)",
+        )
+    if not (has_doctor_wiring and has_test):
+        return ProbeOutcome(ProbeResult.PARTIAL, "; ".join(evidence_parts))
     return ProbeOutcome(
-        ProbeResult.ABSENT,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; doctor only inspects manifest-listed capabilities (agent-suite WI-001)",
+        + "; doctor diffs the installed surface against the manifest — rogue "
+        "capabilities warn, clobbered ones fail",
     )
 
 
