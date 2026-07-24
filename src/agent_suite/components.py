@@ -42,7 +42,8 @@ class UpgradeKind(Enum):
     silently unhandled in the upgrade dispatch.
     """
 
-    PIPX = "pipx"  # pip/pipx-installed CLI — upgraded via ``pipx upgrade``
+    PYTHON = "python"  # installer is discovered from the visible CLI at runtime
+    PIPX = "pipx"  # explicit legacy descriptor; most Python tools use PYTHON
     DOCKER = "docker"  # container image — upgraded via ``docker pull``
 
 
@@ -61,8 +62,9 @@ class Component:
     repo: str
     tier: Tier
     doctor_cmd: tuple[str, ...]
-    upgrade_kind: UpgradeKind = UpgradeKind.PIPX
+    upgrade_kind: UpgradeKind = UpgradeKind.PYTHON
     upgrade_package: str = ""
+    distribution_names: tuple[str, ...] = ()
     service_unit: str = ""
     locality: Locality = Locality.PER_BOX
     endpoint_env_var: str = ""
@@ -74,8 +76,9 @@ def _component(
     tier: Tier,
     doctor_cmd: tuple[str, ...],
     *,
-    upgrade_kind: UpgradeKind = UpgradeKind.PIPX,
+    upgrade_kind: UpgradeKind = UpgradeKind.PYTHON,
     upgrade_package: str = "",
+    distribution_names: tuple[str, ...] = (),
     service_unit: str = "",
     locality: Locality = Locality.PER_BOX,
     endpoint_env_var: str = "",
@@ -83,6 +86,8 @@ def _component(
     """Build a Component, defaulting upgrade_package to the CLI name (doctor_cmd[0])."""
     if not upgrade_package:
         upgrade_package = doctor_cmd[0]
+    if not distribution_names:
+        distribution_names = (upgrade_package,)
     return Component(
         ident=ident,
         repo=repo,
@@ -90,6 +95,7 @@ def _component(
         doctor_cmd=doctor_cmd,
         upgrade_kind=upgrade_kind,
         upgrade_package=upgrade_package,
+        distribution_names=distribution_names,
         service_unit=service_unit,
         locality=locality,
         endpoint_env_var=endpoint_env_var,
@@ -97,31 +103,54 @@ def _component(
 
 
 COMPONENTS: tuple[Component, ...] = (
-    _component("regista", "hraedon/regista", Tier.SPINE, ("regista", "doctor", "--json")),
+    _component(
+        "regista",
+        "hraedon/regista",
+        Tier.SPINE,
+        ("regista", "doctor", "--json"),
+        upgrade_package="regista-hraedon",
+        distribution_names=("regista-hraedon", "regista"),
+    ),
     _component(
         "dossier", "hraedon/dossier", Tier.FACE, ("dossier", "doctor", "--json"),
         service_unit="dossier",
+        upgrade_package="dossier-hraedon",
+        distribution_names=("dossier-hraedon", "dossier"),
         locality=Locality.SHARED_SERVICE,
         endpoint_env_var="DOSSIER_URL",
     ),
     _component(
         "agent-notes", "hraedon/agent-notes", Tier.FACE, ("agent-notes", "doctor", "--json"),
         service_unit="agent-notes",
+        upgrade_package="agent-notes-hraedon",
+        distribution_names=("agent-notes-hraedon", "agent-notes"),
     ),
     _component(
         "agent-provenance",
         "hraedon/agent-provenance",
         Tier.FACE,
         ("cairn", "doctor", "--json"),
+        upgrade_package="cairn",
+        distribution_names=("cairn",),
     ),
     _component(
         "agent-capability-broker",
         "hraedon/agent-capability-broker",
         Tier.PLUMBING,
         ("acb", "doctor", "--json"),
+        upgrade_package="agent-capability-broker-hraedon",
+        distribution_names=(
+            "agent-capability-broker-hraedon",
+            "agent-capability-broker",
+        ),
     ),
     _component(
-        "agent-wake", "hraedon/agent-wake", Tier.PLUMBING, ("agent-wake", "doctor", "--json")
+        "agent-wake",
+        "hraedon/agent-wake",
+        Tier.PLUMBING,
+        ("agent-wake", "doctor", "--json"),
+        upgrade_package="agent-waked",
+        distribution_names=("agent-waked",),
     ),
 )
 
@@ -137,6 +166,8 @@ def component_by_ident(ident: str, components: tuple[Component, ...] = COMPONENT
 def upgrade_kind_label(kind: UpgradeKind) -> str:
     """Human-readable label for an UpgradeKind (used in upgrade plan output)."""
     match kind:
+        case UpgradeKind.PYTHON:
+            return "python (detected installer)"
         case UpgradeKind.PIPX:
             return "pipx"
         case UpgradeKind.DOCKER:

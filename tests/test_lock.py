@@ -650,6 +650,92 @@ def test_read_component_revisions_reads_local_checkout_sha(
     assert revisions["fake"] == head
 
 
+def test_candidate_revision_is_omitted_for_dirty_checkout(tmp_path: Path) -> None:
+    import os
+    import subprocess as sp
+
+    from agent_suite.components import _component, Tier
+    from agent_suite.lock import read_candidate_revisions
+
+    checkout = tmp_path / "dirty-tool"
+    checkout.mkdir()
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    sp.run(["git", "init", "-q", str(checkout)], check=True)
+    tracked = checkout / "README"
+    tracked.write_text("clean\n")
+    sp.run(["git", "-C", str(checkout), "add", "."], check=True)
+    sp.run(
+        ["git", "-C", str(checkout), "commit", "-q", "-m", "init"],
+        check=True,
+        env=env,
+    )
+    tracked.write_text("dirty\n")
+    comp = _component(
+        "dirty", "owner/dirty-tool", Tier.FACE, ("dirty", "doctor")
+    )
+
+    assert read_candidate_revisions(
+        components=(comp,), search_roots=(tmp_path,)
+    ) == {"dirty": None}
+
+
+def test_read_candidate_versions_matches_root_and_nested_distributions(
+    tmp_path: Path,
+) -> None:
+    from agent_suite.components import _component, Tier
+    from agent_suite.lock import read_candidate_versions
+
+    root_checkout = tmp_path / "root-tool"
+    root_checkout.mkdir()
+    (root_checkout / "pyproject.toml").write_text(
+        '[project]\nname = "root-canonical"\nversion = "1.2.3"\n'
+    )
+    nested_checkout = tmp_path / "nested-tool"
+    (nested_checkout / "daemon").mkdir(parents=True)
+    (nested_checkout / "daemon" / "pyproject.toml").write_text(
+        '[project]\nname = "nested-canonical"\nversion = "4.5.6"\n'
+    )
+    components = (
+        _component(
+            "root", "owner/root-tool", Tier.FACE, ("root", "doctor"),
+            upgrade_package="root-canonical",
+        ),
+        _component(
+            "nested", "owner/nested-tool", Tier.FACE, ("nested", "doctor"),
+            upgrade_package="nested-canonical",
+        ),
+    )
+
+    assert read_candidate_versions(
+        components=components, search_roots=(tmp_path,)
+    ) == {"root": "1.2.3", "nested": "4.5.6"}
+
+
+def test_read_candidate_versions_ignores_unrelated_distribution(tmp_path: Path) -> None:
+    from agent_suite.components import _component, Tier
+    from agent_suite.lock import read_candidate_versions
+
+    checkout = tmp_path / "tool"
+    checkout.mkdir()
+    (checkout / "pyproject.toml").write_text(
+        '[project]\nname = "different-project"\nversion = "9.9.9"\n'
+    )
+    comp = _component(
+        "tool", "owner/tool", Tier.FACE, ("tool", "doctor"),
+        upgrade_package="tool-canonical",
+    )
+
+    assert read_candidate_versions(
+        components=(comp,), search_roots=(tmp_path,)
+    ) == {"tool": None}
+
+
 def test_serialize_sorts_component_keys() -> None:
     lock = SuiteLock(
         release="1.0.0",

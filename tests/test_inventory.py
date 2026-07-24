@@ -606,7 +606,7 @@ def test_collect_inventory_with_stubs(tmp_path: Path, monkeypatch: pytest.Monkey
     """collect_inventory wires the doctor + lock + revisions into build_inventory."""
     versions = _all_versions("0.5.0")
     _stub_doctor_aggregate(monkeypatch, component_versions=versions)
-    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {c.ident: _SHA_A for c in COMPONENTS})
+    monkeypatch.setattr(inventory, "read_runtime_revisions", lambda **kw: {c.ident: _SHA_A for c in COMPONENTS})
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
 
     lock_path = tmp_path / "SUITE.lock"
@@ -628,7 +628,7 @@ def test_collect_inventory_missing_regista(tmp_path: Path, monkeypatch: pytest.M
     versions = _all_versions("1.0.0")
     versions["regista"] = None
     _stub_doctor_aggregate(monkeypatch, component_versions=versions)
-    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
+    monkeypatch.setattr(inventory, "read_runtime_revisions", lambda **kw: {})
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: None)
 
     lock_path = tmp_path / "SUITE.lock"
@@ -644,7 +644,7 @@ def test_collect_inventory_missing_regista(tmp_path: Path, monkeypatch: pytest.M
 def test_collect_inventory_no_lock_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No lock file → everything NOT_LOCKED, lock_file.present False."""
     _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
-    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
+    monkeypatch.setattr(inventory, "read_runtime_revisions", lambda **kw: {})
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
 
     inv = collect_inventory(lock_path=tmp_path / "nonexistent.lock")
@@ -656,7 +656,7 @@ def test_collect_inventory_no_lock_file(tmp_path: Path, monkeypatch: pytest.Monk
 def test_collect_inventory_malformed_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A malformed lock is reported present + unreadable, components NOT_LOCKED."""
     _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
-    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
+    monkeypatch.setattr(inventory, "read_runtime_revisions", lambda **kw: {})
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
 
     bad = tmp_path / "SUITE.lock"
@@ -679,7 +679,7 @@ def test_cli_inventory_json(capsys: pytest.CaptureFixture[str], monkeypatch: pyt
     from agent_suite.cli import main
 
     _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
-    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
+    monkeypatch.setattr(inventory, "read_runtime_revisions", lambda **kw: {})
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
     monkeypatch.setattr(inventory, "_default_inventory_path", lambda: tmp_path / "candidate-inventory.json")
 
@@ -698,7 +698,7 @@ def test_cli_inventory_text(capsys: pytest.CaptureFixture[str], monkeypatch: pyt
     from agent_suite.cli import main
 
     _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
-    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
+    monkeypatch.setattr(inventory, "read_runtime_revisions", lambda **kw: {})
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
     monkeypatch.setattr(inventory, "_default_inventory_path", lambda: tmp_path / "candidate-inventory.json")
 
@@ -717,7 +717,7 @@ def test_cli_inventory_read_only_by_default(
     from agent_suite.cli import main
 
     _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
-    monkeypatch.setattr(lock, "read_component_revisions", lambda **kw: {})
+    monkeypatch.setattr(inventory, "read_runtime_revisions", lambda **kw: {})
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
     monkeypatch.setattr(inventory, "_default_inventory_path", lambda: tmp_path / "candidate-inventory.json")
 

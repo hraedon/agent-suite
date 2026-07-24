@@ -1,7 +1,7 @@
 # v1 Feature Matrix (Plan 009 WI-0.1)
 
 **Version:** v1  
-**Generated:** 2026-07-19T12:24:41.717955Z  
+**Generated:** 2026-07-22T16:04:44.815349Z
 **Status source:** probe-emitted
 **Status values:** pass / partial / blocked / absent
 
@@ -9,12 +9,12 @@ This matrix is emitted by named probes; every row's status is mechanically deter
 
 ## Observed revisions
 
-- **agent-suite**: bafbb3f
-- **regista**: 0.5.1
-- **agent-notes**: 1.0.0
-- **dossier**: 0.0.1
-- **agent-provenance**: 0.1.0
-- **agent-capability-broker**: 0.1.0
+- **agent-suite**: 921c2e7
+- **regista**: 9718b94
+- **agent-notes**: 0bb9edb
+- **dossier**: 4e09ec5
+- **agent-provenance**: bded8b1
+- **agent-capability-broker**: 35287e8
 - **agent-wake**: 90d8380
 
 ## Golden journeys
@@ -77,5 +77,5 @@ This matrix is emitted by named probes; every row's status is mechanically deter
 | GJ-9 | A | agent-suite | profile-aware doctor aggregation | pass | — | probe: _probe_doctor -> pass; evidence: doctor.aggregate exposed; tests/test_doctor.py present | — | Honest health reporting for required/optional components. |
 | GJ-9 | A | agent-suite | compatibility lock and drift check | pass | — | probe: _probe_lock -> pass; evidence: lock.generate_lock exposed; tests/test_lock.py present | — | SUITE.lock parsing and drift detection implemented. |
 | GJ-9 | A | agent-suite | backup / restore / disaster recovery orchestration | pass | Plan 008 WI-4.1, Plan 009 WI-4.2 | probe: _probe_backup_restore -> pass; evidence: src/agent_suite/backup.py present; run_backup/run_restore exposed; CLI 'backup'+'restore' registered; tests/test_backup.py present | — | Suite-level backup: doctor → pg_dump → verify → evidence export → manifest. |
-| GJ-9 | A | agent-suite | upgrade / rollback / forward-recovery gates | pass | Plan 008 WI-3.4, Plan 009 WI-4.2 | probe: _probe_upgrade_rollback_forward -> pass; evidence: upgrade.run_upgrade/run_rollback/run_forward_recovery exposed; tests/test_upgrade.py present | — | Staged upgrade with interop gate, rollback across schema boundaries refused, forward-recovery completes partial upgrades. |
+| GJ-9 | A | agent-suite | upgrade / rollback / forward-recovery gates | partial | Forward recovery retired pending shared transaction engine | probe: _probe_upgrade_rollback_forward -> partial; evidence: upgrade/rollback transaction engine present and tested; legacy forward recovery is explicitly retired fail-closed | — | Upgrade and rollback are installation-aware transactions; legacy forward recovery is explicitly retired fail-closed. |
 | GJ-9 | A | regista | version / config / secret / doctor contracts | pass | — | probe: _probe_regista_contracts -> pass; evidence: regista/_doctor.py=present; regista/_cli.py=present; CLI 'version'=present; CLI 'doctor'=present; CLI 'config'=present; CLI 'secrets'=present | — | Doctor, version, and config contracts are exposed. |
