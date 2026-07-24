@@ -137,6 +137,34 @@ def _sibling_has_attr(package: str, attr_name: str) -> bool:
     return mod is not None and hasattr(mod, attr_name)
 
 
+def _sibling_param_is_required(
+    package: str, callable_name: str, param_name: str
+) -> bool:
+    """True when ``param_name`` exists on the callable and has no default.
+
+    Used to probe *security postures* that live in a signature: a permissive
+    default (``mode="open"``) lets a call site omit the decision, whereas a
+    required parameter forces every one of them to state it.
+
+    Note the parameter must be *present* — a missing parameter is the
+    pre-change state, not a stricter one, and asking only "does it lack a
+    default" would read the old signature as already hardened.
+    """
+    import inspect
+
+    mod = _sibling_import(package)
+    if mod is None:
+        return False
+    fn = getattr(mod, callable_name, None)
+    if fn is None:
+        return False
+    try:
+        param = inspect.signature(fn).parameters.get(param_name)
+    except (TypeError, ValueError):
+        return False
+    return param is not None and param.default is inspect.Parameter.empty
+
+
 def _sibling_has_method(package: str, class_name: str, method_name: str) -> bool:
     """Check if a sibling package's class exposes a method."""
     mod = _sibling_import(package)
@@ -883,13 +911,29 @@ def _probe_dossier_project_switcher() -> ProbeOutcome:
         f"route /login={'present' if has_login_route else 'missing'}",
         f"tests/test_auth.py={'present' if has_test else 'missing'}",
     ]
+    # WI-017 was about the *default posture*: flat-open as a fallback means an
+    # unconfigured deployment shows every project to every principal. The
+    # evidence that it is fixed is that the permissive default is gone —
+    # `can_read_project` requires the caller to state the mode.
+    has_enforced_default = _sibling_param_is_required(
+        "dossier.authz", "can_read_project", "mode"
+    )
+    has_access_test = _sibling_test_exists("dossier", "test_project_access.py")
+    evidence_parts += [
+        f"can_read_project requires an explicit mode={'yes' if has_enforced_default else 'no'}",
+        f"tests/test_project_access.py={'present' if has_access_test else 'missing'}",
+    ]
     if not (has_authz_mod and has_app_mod and has_project_route):
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
-    # Authz exists but defaults to flat-open (dossier WI-017); partial.
+    if not (has_enforced_default and has_access_test):
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts) + "; authz defaults to flat-open per dossier WI-017",
+        )
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; authz defaults to flat-open per dossier WI-017",
+        + "; deny-by-default with an explicit bootstrap-admin recovery path",
     )
 
 
@@ -1011,6 +1055,16 @@ def _probe_dossier_review_queue() -> ProbeOutcome:
     return ProbeOutcome(ProbeResult.PASS, "; ".join(evidence_parts))
 
 
+def _dossier_assurance_is_delegated() -> bool:
+    """True when dossier asks regista for the assurance level instead of deriving it.
+
+    Two GJ rows hung on this one fact (dossier WI-012), so it is asked once.
+    The evidence is a call into regista's gate rationale from dossier's own
+    assurance module — the module existing proves nothing either way.
+    """
+    return _sibling_source_contains("dossier", "dossier/assurance.py", "gate_rationale")
+
+
 def _probe_dossier_assurance() -> ProbeOutcome:
     """GJ-4 dossier: honest assurance level / independent-review signal."""
     if not _sibling_available("dossier", "dossier"):
@@ -1028,13 +1082,26 @@ def _probe_dossier_assurance() -> ProbeOutcome:
         f"compute_assurance_level={'present' if has_compute else 'missing'}",
         f"tests/test_app.py={'present' if has_test else 'missing'}",
     ]
+    delegated = _dossier_assurance_is_delegated()
+    has_delegation_test = _sibling_test_exists(
+        "dossier", "test_assurance_delegation.py"
+    )
+    evidence_parts += [
+        f"delegates to regista={'yes' if delegated else 'no'}",
+        f"tests/test_assurance_delegation.py={'present' if has_delegation_test else 'missing'}",
+    ]
     if not has_assurance_mod:
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
-    # Computation is home-grown, not delegated to regista (dossier WI-012).
+    if not (delegated and has_delegation_test):
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts)
+            + "; computation home-grown, not delegated to regista (dossier WI-012)",
+        )
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; computation home-grown, not delegated to regista (dossier WI-012)",
+        + "; the level comes from regista's gate rationale, dossier only renders it",
     )
 
 
@@ -1061,15 +1128,34 @@ def _probe_dossier_activity_views() -> ProbeOutcome:
         f"route /feed={'present' if has_feed_route else 'missing'}",
         f"tests/test_app.py={'present' if has_test else 'missing'}",
     ]
+    # The gap in this row was never the views, it was that a human could see a
+    # session's tool trail without seeing whether its chain actually verifies.
+    has_verification = _sibling_has_attr("dossier.provenance", "compute_verification")
+    has_signature_check = _sibling_has_attr(
+        "dossier.provenance", "verify_session_signatures"
+    )
+    rendered = _sibling_source_contains(
+        "dossier", "dossier/templates/session_detail.html", "verification"
+    )
+    evidence_parts += [
+        f"provenance.compute_verification={'present' if has_verification else 'missing'}",
+        f"provenance.verify_session_signatures={'present' if has_signature_check else 'missing'}",
+        f"verdict rendered in session detail={'yes' if rendered else 'no'}",
+    ]
     if not (has_provenance_mod and has_sessions_route):
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
     if not (has_session_detail_route and has_test):
         return ProbeOutcome(ProbeResult.PARTIAL, "; ".join(evidence_parts))
-    # Verification UX is partial (dossier Plan 017/018).
+    if not (has_verification and has_signature_check and rendered):
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts)
+            + "; session list/detail present; verification UX partial (dossier Plan 017/018)",
+        )
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; session list/detail present; verification UX partial (dossier Plan 017/018)",
+        + "; each session carries a real verification verdict with its reasons",
     )
 
 
@@ -1090,13 +1176,30 @@ def _probe_dossier_degraded_capture() -> ProbeOutcome:
         f"compute_assurance_level={'present' if has_compute else 'missing'}",
         f"tests/test_app.py={'present' if has_test else 'missing'}",
     ]
+    delegated = _dossier_assurance_is_delegated()
+    # Honest degradation is the point of this row: an assurance level regista
+    # reports but dossier does not recognise must render as unknown, not be
+    # guessed into the nearest familiar bucket.
+    handles_unknown = _sibling_source_contains(
+        "dossier", "dossier/assurance.py", "which this"
+    ) or _sibling_source_contains("dossier", "dossier/assurance.py", "Do not guess")
+    evidence_parts += [
+        f"delegates to regista={'yes' if delegated else 'no'}",
+        f"unknown level rendered honestly={'yes' if handles_unknown else 'no'}",
+    ]
     if not has_assurance_mod:
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
-    # Assurance no longer fails open (WI-014 fixed); delegation to regista still pending (WI-012).
+    if not (delegated and handles_unknown):
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts)
+            + "; fail-open fixed (WI-014); regista delegation pending (WI-012)",
+        )
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; fail-open fixed (WI-014); regista delegation pending (WI-012)",
+        + "; fail-open fixed (WI-014) and the level is regista's, with unknown "
+        "levels surfaced rather than guessed",
     )
 
 
@@ -1530,6 +1633,17 @@ def _probe_wake_http_ingress() -> ProbeOutcome:
     return ProbeOutcome(ProbeResult.PASS, "; ".join(evidence_parts))
 
 
+def _wake_state_is_durable() -> bool:
+    """True when the daemon persists dedupe/queue state across a restart.
+
+    The BC-WAKE-004/012 class is precisely "in-memory, lost on restart", so
+    two GJ-7 rows turn on this one fact.
+    """
+    return _sibling_module_file_exists(
+        "agent-wake", "agent_waked/store.py", src_prefix=_WAKE_SRC
+    )
+
+
 def _probe_wake_dedup_retry() -> ProbeOutcome:
     """GJ-7 agent-wake: durable dedup / retry / outbox / dead-letter."""
     if not _sibling_available("agent-wake"):
@@ -1557,20 +1671,38 @@ def _probe_wake_dedup_retry() -> ProbeOutcome:
     has_outbox_test = _sibling_test_exists(
         "agent-wake", "test_outbox.py", tests_subdir=_WAKE_TESTS
     )
+    durable = _wake_state_is_durable()
+    # Dead-letter is only real if an operator can see and redrive it; a table
+    # nothing can read is a leak, not a feature.
+    has_operator_surface = _sibling_module_file_exists(
+        "agent-wake", "agent_waked/cli/queue.py", src_prefix=_WAKE_SRC
+    )
+    has_store_test = _sibling_test_exists(
+        "agent-wake", "test_store.py", tests_subdir=_WAKE_TESTS
+    )
     evidence_parts = [
         f"Dedupe class in ingest.py={'present' if has_dedupe else 'missing'}",
         f"agent_waked/outbox.py={'present' if has_outbox else 'absent'}",
         f"dead-letter logic={'present' if has_dead_letter else 'absent'}",
+        f"durable state store={'present' if durable else 'absent'}",
+        f"dead-letter/pending CLI={'present' if has_operator_surface else 'missing'}",
         f"daemon/tests/test_ingest.py={'present' if has_test else 'missing'}",
         f"daemon/tests/test_outbox.py={'present' if has_outbox_test else 'missing'}",
+        f"daemon/tests/test_store.py={'present' if has_store_test else 'missing'}",
     ]
     if not (has_ingest and has_dedupe):
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
-    # Dedup is in-memory FIFO; no durable inbox or dead-letter visibility.
+    if not (durable and has_dead_letter and has_operator_surface and has_store_test):
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts)
+            + "; dedup is in-memory FIFO; no durable inbox or dead-letter (BC-WAKE-004/012)",
+        )
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; dedup is in-memory FIFO; no durable inbox or dead-letter (BC-WAKE-004/012)",
+        + "; dedup and the queue survive restart; dead-lettered events are "
+        "listable and redrivable",
     )
 
 
@@ -1608,6 +1740,14 @@ def _probe_wake_live_wake() -> ProbeOutcome:
     return ProbeOutcome(ProbeResult.PASS, "; ".join(evidence_parts))
 
 
+def _file_contains(path: Path, needle: str) -> bool:
+    """Literal grep of a single file, tolerant of an unreadable path."""
+    try:
+        return needle in path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+
+
 def _probe_wake_silent_inject() -> ProbeOutcome:
     """GJ-7 agent-wake: silent_inject."""
     if not _sibling_available("agent-wake"):
@@ -1641,17 +1781,37 @@ def _probe_wake_silent_inject() -> ProbeOutcome:
             claude_drops_silent = "silent" in claude_channel.read_text(encoding="utf-8")
         except Exception:
             pass
+    # The Claude harness has no noReply primitive, so honest support means
+    # deferring the event to the next turn and declaring the contract — never
+    # dropping it. Mentioning "silent" is not evidence of either.
+    claude_defers = claude_channel.exists() and _file_contains(
+        claude_channel, "flush_reason"
+    )
+    claude_declares = claude_channel.exists() and _file_contains(
+        claude_channel, "silent_inject"
+    )
+    has_channel_test = (
+        SIBLINGS_ROOT / "agent-wake" / "adapters" / "claude" / "tests" / "test_channel.py"
+    ).is_file()
     evidence_parts = [
         f"opencode noReply/silent={'present' if has_opencode_silent else 'missing'}",
-        f"claude silent handling={'drops' if claude_drops_silent else 'missing'}",
+        f"claude silent handling={'defers' if claude_defers else ('drops' if claude_drops_silent else 'missing')}",
+        f"claude declares the contract={'yes' if claude_declares else 'no'}",
+        f"claude tests/test_channel.py={'present' if has_channel_test else 'missing'}",
     ]
     if not has_opencode_silent:
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
-    # OpenCode supports silent inject; Claude adapter drops silent events.
+    if not (claude_defers and claude_declares and has_channel_test):
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts)
+            + "; OpenCode supports silent inject; Claude adapter drops silent events",
+        )
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; OpenCode supports silent inject; Claude adapter drops silent events",
+        + "; OpenCode injects silently; Claude defers to the next turn and "
+        "declares the limits machine-readably — neither drops the event",
     )
 
 
@@ -1694,15 +1854,39 @@ def _probe_wake_next_session() -> ProbeOutcome:
                 pass
         if has_next_session:
             break
+    # Naming the mode is not implementing it. Delivery needs somewhere durable
+    # to hold the event and something that drains it when a session appears.
+    durable = _wake_state_is_durable()
+    drains_on_connect = _sibling_source_contains(
+        "agent-wake", "agent_waked/socket_server.py", "drain", src_prefix=_WAKE_SRC
+    )
+    enqueues_on_no_subscriber = _sibling_source_contains(
+        "agent-wake", "agent_waked/router.py", "next_session", src_prefix=_WAKE_SRC
+    )
+    has_test = _sibling_test_exists(
+        "agent-wake", "test_next_session.py", tests_subdir=_WAKE_TESTS
+    )
     evidence_parts = [
         f"next_session/managed_session in daemon+adapters={'present' if has_next_session else 'absent'}",
+        f"durable queue={'present' if durable else 'absent'}",
+        f"router enqueues when no session is live={'yes' if enqueues_on_no_subscriber else 'no'}",
+        f"socket server drains on connect={'yes' if drains_on_connect else 'no'}",
+        f"daemon/tests/test_next_session.py={'present' if has_test else 'missing'}",
     ]
     if not has_next_session:
         return ProbeOutcome(
             ProbeResult.ABSENT,
             "; ".join(evidence_parts) + "; design exists, no implementation (agent-wake Plan 006)",
         )
-    return ProbeOutcome(ProbeResult.PARTIAL, "; ".join(evidence_parts))
+    if not (durable and drains_on_connect and enqueues_on_no_subscriber and has_test):
+        return ProbeOutcome(ProbeResult.PARTIAL, "; ".join(evidence_parts))
+    return ProbeOutcome(
+        ProbeResult.PASS,
+        "; ".join(evidence_parts)
+        + "; an event with no live session is queued durably and delivered when "
+        "the next one connects (managed_session queues but has no drainer yet — "
+        "agent-wake Plan 006 Phase 2B)",
+    )
 
 
 def _probe_wake_human_delivery() -> ProbeOutcome:
@@ -1762,15 +1946,33 @@ def _probe_wake_replay_rejection() -> ProbeOutcome:
         f"daemon/tests/test_ingest.py={'present' if has_test else 'missing'}",
         f"daemon/tests/test_e2e.py={'present' if has_e2e_test else 'missing'}",
     ]
+    durable = _wake_state_is_durable()
+    # The claim to prove is specifically survival across a restart — the
+    # in-memory path already rejected duplicates while the process lived.
+    has_restart_test = _sibling_source_contains(
+        "agent-wake",
+        "test_ingest.py",
+        "across_daemon_restart",
+        src_prefix=_WAKE_TESTS,
+    )
+    evidence_parts += [
+        f"durable state store={'present' if durable else 'absent'}",
+        f"restart-survival test={'present' if has_restart_test else 'missing'}",
+    ]
     if not (has_dedupe and has_dedupe_check):
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
     if not (has_test and has_e2e_test):
         return ProbeOutcome(ProbeResult.PARTIAL, "; ".join(evidence_parts))
-    # Duplicate event_id rejected while running; in-memory dedup lost on restart.
+    if not (durable and has_restart_test):
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts)
+            + "; dedup rejects duplicates while running; in-memory dedup lost on restart (BC-WAKE-004/012)",
+        )
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; dedup rejects duplicates while running; in-memory dedup lost on restart (BC-WAKE-004/012)",
+        + "; a replayed event_id is rejected across a daemon restart",
     )
 
 
