@@ -119,12 +119,16 @@ def _sibling_import(package: str) -> ModuleType | None:
 
 
 def _sibling_available(checkout_name: str, package: str | None = None) -> bool:
-    """Check if a sibling component is available (checkout OR importable)."""
-    if (SIBLINGS_ROOT / checkout_name).exists():
-        return True
+    """Check whether a sibling can be probed without false negatives.
+
+    API-aware probes need an importable package.  A source checkout alone is
+    sufficient only for source-only components such as agent-wake; treating a
+    non-importable checkout as available turns missing probe dependencies into
+    false ``absent`` feature results.
+    """
     if package is not None:
         return _sibling_import(package) is not None
-    return False
+    return (SIBLINGS_ROOT / checkout_name).exists()
 
 
 def _sibling_has_attr(package: str, attr_name: str) -> bool:
@@ -312,6 +316,18 @@ def _probe_upgrade_rollback_forward() -> ProbeOutcome:
         return ProbeOutcome(ProbeResult.PARTIAL, "upgrade.run_forward_recovery missing")
     if not _probe_test_exists("test_upgrade.py"):
         return ProbeOutcome(ProbeResult.PARTIAL, "tests/test_upgrade.py missing")
+    try:
+        upgrade_source = (
+            REPO_ROOT / "src" / "agent_suite" / "upgrade.py"
+        ).read_text(encoding="utf-8")
+    except OSError:
+        upgrade_source = ""
+    if "forward recovery is retired" in upgrade_source:
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "upgrade/rollback transaction engine present and tested; legacy "
+            "forward recovery is explicitly retired fail-closed",
+        )
     return ProbeOutcome(
         ProbeResult.PASS,
         "upgrade.run_upgrade/run_rollback/run_forward_recovery exposed; "
@@ -1753,8 +1769,9 @@ def _package_version(package: str) -> str | None:
 def _compute_observed_revisions() -> dict[str, str | None]:
     """Record the observed revision for each component probed.
 
-    For each component, try the installed package version first, then the git
-    HEAD of the sibling checkout, then None if neither is available.
+    Prefer the git HEAD of the source checkout actually inspected by the
+    probes, then fall back to an installed package version when no checkout is
+    available.
     """
     revisions: dict[str, str | None] = {}
     for component, info in _COMPONENT_REVISION_SOURCES.items():
@@ -1765,14 +1782,12 @@ def _compute_observed_revisions() -> dict[str, str | None]:
         if component == "agent-suite":
             rev = _git_head(REPO_ROOT)
         else:
-            # Try package version first
-            if package is not None:
-                rev = _package_version(package)
-            # Fall back to git HEAD in the checkout
-            if rev is None and checkout is not None:
+            if checkout is not None:
                 checkout_path = SIBLINGS_ROOT / checkout
                 if checkout_path.exists():
                     rev = _git_head(checkout_path)
+            if rev is None and package is not None:
+                rev = _package_version(package)
         revisions[component] = rev
     return revisions
 
@@ -1835,7 +1850,32 @@ def apply_probes(matrix_data: dict[str, Any]) -> dict[str, Any]:
         "+00:00", "Z"
     )
     matrix_data["observed_revisions"] = _compute_observed_revisions()
+    _refresh_wi_assignment_summary(matrix_data)
     return matrix_data
+
+
+def _refresh_wi_assignment_summary(matrix_data: dict[str, Any]) -> None:
+    """Keep the derived WI summary aligned with probe-updated row statuses."""
+    rows = [
+        row
+        for row in matrix_data["rows"]
+        if row["profile"] in ("A", "B") and row["status"] != "pass"
+    ]
+    assigned = [row for row in rows if row.get("owning_wi")]
+    matrix_data["wi_assignment_summary"] = {
+        "profile_b_non_pass_count": len(rows),
+        "assigned_count": len(assigned),
+        "unassigned": [
+            [row["journey"], row["component"], row["surface"]]
+            for row in rows
+            if not row.get("owning_wi")
+        ],
+        "wi_ids": sorted({row["owning_wi"] for row in assigned}),
+        "profile_c_deferred": (
+            "Profile C rows remain explicitly preview-stage per Sol Gate 0 "
+            "WS3. They do not need owning WIs at this gate."
+        ),
+    }
 
 
 def _run_probes(matrix_data: dict[str, Any]) -> dict[str, Any]:

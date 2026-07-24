@@ -33,12 +33,12 @@ from agent_suite.lock import (
     check_drift,
     generate_lock,
     load_lock_file,
-    read_component_revisions,
     read_regista_quad,
     write_lock_file,
 )
 from agent_suite.onboard import run_onboard
 from agent_suite.profiles import PROFILE_REQUIREMENTS, Profile
+from agent_suite.runtime_provenance import read_runtime_revisions
 
 
 class Runner(Protocol):
@@ -287,7 +287,14 @@ def _step_lock(
     component_versions: dict[str, str | None] = {
         r.component: r.version for r in report.components
     }
-    component_revisions = read_component_revisions()
+    try:
+        component_revisions = read_runtime_revisions()
+    except RuntimeError as exc:
+        return DeployStepResult(
+            DeployStep.LOCK,
+            DeployStepStatus.FAILED,
+            f"runtime revision provenance unavailable: {exc}",
+        )
     try:
         existing = load_lock_file()
     except ValueError as exc:
