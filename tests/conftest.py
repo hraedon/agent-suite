@@ -7,6 +7,7 @@ import json
 import os
 import secrets
 import shutil
+import socket
 import subprocess
 import time
 import uuid
@@ -50,12 +51,29 @@ def _can_run() -> bool:
 # ---------------------------------------------------------------------------
 
 
-class _EphemeralPostgres:
-    """Start/stop an ephemeral Postgres container for integration tests."""
+def _free_port() -> str:
+    """Ask the kernel for an unused TCP port on the loopback interface.
 
-    def __init__(self, port: str, container_name_prefix: str) -> None:
+    The port is released as soon as the socket closes, so the caller must bind
+    it promptly and be prepared for the race — see ``_EphemeralPostgres.start``.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return str(sock.getsockname()[1])
+
+
+class _EphemeralPostgres:
+    """Start/stop an ephemeral Postgres container for integration tests.
+
+    The published port is allocated dynamically. A fixed port collides with
+    any long-lived container the operator happens to be running (the suite's
+    own ``agent-suite-smoke-pg`` sits on 5433), which failed the integration
+    modules with a Docker exit-125 rather than a skip.
+    """
+
+    def __init__(self, container_name_prefix: str) -> None:
         self._container = f"{container_name_prefix}-{uuid.uuid4().hex[:8]}"
-        self._port = port
+        self._port = _free_port()
         self._db = "interop"
         self._user = "interop"
         self._password = "interop_pw"
@@ -67,29 +85,47 @@ class _EphemeralPostgres:
             f"@localhost:{self._port}/{self._db}"
         )
 
-    def start(self) -> None:
-        subprocess.run(
-            [
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                self._container,
-                "-e",
-                f"POSTGRES_DB={self._db}",
-                "-e",
-                f"POSTGRES_USER={self._user}",
-                "-e",
-                f"POSTGRES_PASSWORD={self._password}",
-                "-p",
-                f"{self._port}:5432",
-                "postgres:16-alpine",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
+    def start(self, *, attempts: int = 5) -> None:
+        """Run the container, re-drawing the port if the bind loses a race.
+
+        ``_free_port`` closes the socket before Docker binds it, so another
+        process can claim it in between. Docker exits 125 on that collision;
+        retry with a fresh port rather than failing the whole module.
+        """
+        last_stderr = ""
+        for attempt in range(attempts):
+            result = subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    self._container,
+                    "-e",
+                    f"POSTGRES_DB={self._db}",
+                    "-e",
+                    f"POSTGRES_USER={self._user}",
+                    "-e",
+                    f"POSTGRES_PASSWORD={self._password}",
+                    "-p",
+                    f"127.0.0.1:{self._port}:5432",
+                    "postgres:16-alpine",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                self._wait_ready(timeout=30)
+                return
+            last_stderr = result.stderr.strip()
+            # A failed `docker run --name` can still leave the name claimed.
+            self.stop()
+            if attempt < attempts - 1:
+                self._port = _free_port()
+        raise RuntimeError(
+            f"Could not start {self._container} after {attempts} attempts: "
+            f"{last_stderr}"
         )
-        self._wait_ready(timeout=30)
 
     def _wait_ready(self, *, timeout: int = 30) -> None:
         deadline = time.time() + timeout
@@ -161,8 +197,8 @@ def interop_dsn() -> Generator[str, None, None]:
     """Provide a DSN to a Postgres instance for integration tests.
 
     If ``INTEROP_DSN`` is set (e.g. by a CI service container), use that.
-    Otherwise stand up an ephemeral Docker container on port 5433 and tear it
-    down after the module.
+    Otherwise stand up an ephemeral Docker container on a dynamically
+    allocated port and tear it down after the module.
     """
     env_dsn = os.environ.get("INTEROP_DSN")
     if env_dsn:
@@ -174,7 +210,7 @@ def interop_dsn() -> Generator[str, None, None]:
             "Integration prerequisites not met — need regista + Docker or INTEROP_DSN"
         )
 
-    pg = _EphemeralPostgres(port="5433", container_name_prefix="agent-suite-interop")
+    pg = _EphemeralPostgres(container_name_prefix="agent-suite-interop")
     pg.start()
     try:
         yield pg.dsn
