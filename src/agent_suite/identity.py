@@ -293,10 +293,14 @@ def _enroll_principal(
     secret_backend: str | None,
     dry_run: bool,
 ) -> IdentityStep:
-    cmd: tuple[str, ...] = ("regista", "principal", "enroll", "--principal", principal)
+    # `--json` is a *global* regista flag and must precede the subcommand:
+    # the `principal` subcommands do not define their own (unlike `provision`),
+    # so a trailing --json is rejected as an unrecognised argument.
+    cmd: tuple[str, ...] = (
+        "regista", "--json", "principal", "enroll", "--principal", principal,
+    )
     if secret_backend:
         cmd += ("--secret-backend", secret_backend)
-    cmd += ("--json",)
     if dry_run:
         return IdentityStep(
             "principal_key",
@@ -350,10 +354,9 @@ def _active_keys(
 ) -> tuple[list[dict[str, Any]], IdentityStep | None]:
     """List a principal's active keys. Returns (keys, failure-step-or-None)."""
     cmd: tuple[str, ...] = (
-        "regista", "principal", "list",
+        "regista", "--json", "principal", "list",
         "--principal", principal,
         "--status", "active",
-        "--json",
     )
     result, run_error = _run_regista(runner, cmd)
     if result is None:
@@ -409,11 +412,10 @@ def _revoke_keys(
     revoked: list[dict[str, Any]] = []
     for entry, key_id in zip(keys, key_ids, strict=True):
         cmd: tuple[str, ...] = (
-            "regista", "principal", "revoke",
+            "regista", "--json", "principal", "revoke",
             "--principal", principal,
             "--key-id", key_id,
             "--reason", reason,
-            "--json",
         )
         result, run_error = _run_regista(runner, cmd)
         if result is None or result.returncode != 0:

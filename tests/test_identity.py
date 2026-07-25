@@ -66,7 +66,8 @@ class StubRegista:
             if self._delete is not None:
                 return self._delete(ref)
             return _completed(stdout=json.dumps({"ref": ref, "outcome": "deleted"}))
-        verb = cmd[2] if len(cmd) > 2 else ""
+        # argv is `regista --json principal <verb> ...`
+        verb = cmd[3] if len(cmd) > 3 else ""
         if verb == "enroll":
             if isinstance(self._enroll, Exception):
                 raise self._enroll
@@ -246,12 +247,15 @@ def test_onboarding_shells_the_documented_enroll_verb(tmp_path) -> None:
         runner=runner,
         installed=_installed(),
     )
+    # Pins argv exactly, including that `--json` precedes the subcommand —
+    # regista's `principal` verbs rely on the global flag and reject a
+    # trailing one. A stub that accepts anything hid this until the CLI was
+    # driven for real.
     assert runner.calls == [
         (
-            "regista", "principal", "enroll",
+            "regista", "--json", "principal", "enroll",
             "--principal", "alice",
             "--secret-backend", "vault",
-            "--json",
         )
     ]
 
@@ -314,7 +318,7 @@ def test_offboarding_revokes_every_active_key(tmp_path) -> None:
         runner=runner,
         installed=_installed(),
     )
-    revoked = [c for c in runner.calls if c[2] == "revoke"]
+    revoked = [c for c in runner.calls if c[3] == "revoke"]
     assert [c[c.index("--key-id") + 1] for c in revoked] == ["key-1", "key-2"]
     assert all("--reason" in c and c[c.index("--reason") + 1] == "leaver" for c in revoked)
     assert _step(result, "revoke_keys").outcome is IdentityOutcome.DONE
@@ -419,7 +423,7 @@ def test_offboarding_dry_run_revokes_nothing(tmp_path) -> None:
         runner=runner,
         installed=_installed(),
     )
-    assert [c for c in runner.calls if c[2] == "revoke"] == []
+    assert [c for c in runner.calls if c[3] == "revoke"] == []
     assert path.exists()
     assert _step(result, "revoke_keys").outcome is IdentityOutcome.PENDING
 
