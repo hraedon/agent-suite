@@ -1,10 +1,22 @@
 # Plan 015 — Production-grade 1.0 release closure
 
-**Status:** In Progress — Gate 0 execution started 2026-07-14. WI-0.1 (executable
-probes) complete; WI-0.2 (state reconciliation) in progress (SUITE.lock updated,
-identifier gate replaced, inventory CLI pending); WI-0.3 (support matrix) updated
-with ratified platforms (linux/k8s/Windows/docker, PostgreSQL 18+, Python
-3.12/3.13/3.14, Chrome/Edge/Safari/Firefox); WI-0.4 (release board) in progress.
+**Status:** In Progress — Gate 0 complete; Gate 1 complete (2026-07-25).
+Gate 0: WI-0.1 (executable probes) complete; WI-0.2 (state reconciliation)
+complete (SUITE.lock, identifier gate, inventory); WI-0.3 (support matrix)
+ratified (linux/k8s/Windows/docker, PostgreSQL 18+, Python 3.12/3.13/3.14,
+Chrome/Edge/Safari/Firefox); WI-0.4 (release board) complete.
+Gate 1: WI-1.1 (provider contracts) complete — seven Protocol interfaces,
+machine-readable contract registry, architecture boundary tests; WI-1.2 (work
+and knowledge journeys) complete — GJ-1–GJ-4 end-to-end through HTTP with
+two-principal review and negative cases; WI-1.3 (activity and evidence)
+complete — GJ-5/GJ-8 with verification verdicts and integrity reports;
+WI-1.4 (identity/keys/administration) complete — enrollment, rotation,
+revocation, break-glass dual control, no private key material in responses;
+WI-1.5 (notifications) complete — per-principal preferences, deep links,
+emission; WI-1.6 (console/accessibility) complete — six-area shell, accessible
+landmarks, aria-current, skip links. Dossier 649 tests pass, ruff + mypy
+--strict clean. Known xfail: knowledge create (regista reserved-transition
+block, tracked separately).
 **Owner:** agent-suite coordinates the release; each constituent owns its
 domain; dossier owns the normal human interface.
 **Depends:** agent-suite Plans 008, 009, 013, and 014; dossier Plans 015 and
