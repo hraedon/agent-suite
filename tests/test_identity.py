@@ -50,15 +50,22 @@ class StubRegista:
         active_keys: list[dict[str, object]] | None = None,
         revoke: Callable[[str], subprocess.CompletedProcess[str]] | None = None,
         list_result: subprocess.CompletedProcess[str] | None = None,
+        delete: Callable[[str], subprocess.CompletedProcess[str]] | None = None,
     ) -> None:
         self._enroll = enroll
         self._active_keys = active_keys or []
         self._revoke = revoke
         self._list_result = list_result
+        self._delete = delete
         self.calls: list[tuple[str, ...]] = []
 
     def __call__(self, cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
         self.calls.append(cmd)
+        if "secrets" in cmd:
+            ref = cmd[cmd.index("--ref") + 1]
+            if self._delete is not None:
+                return self._delete(ref)
+            return _completed(stdout=json.dumps({"ref": ref, "outcome": "deleted"}))
         verb = cmd[2] if len(cmd) > 2 else ""
         if verb == "enroll":
             if isinstance(self._enroll, Exception):
@@ -314,19 +321,59 @@ def test_offboarding_revokes_every_active_key(tmp_path) -> None:
     assert not path.exists(), "the leaver's overlay was left behind"
 
 
-def test_offboarding_reports_the_backend_refs_as_manual(tmp_path) -> None:
-    """regista has no delete verb — the fetch path stays open until an operator acts."""
+def test_offboarding_deletes_the_custodied_keys(tmp_path) -> None:
+    """Revocation alone leaves the private key fetchable; deletion closes it."""
+    runner = StubRegista(active_keys=ACTIVE_KEYS)
     result = run_user_offboarding(
         principal="alice",
         overlay_path=tmp_path / "suite.env",
-        runner=StubRegista(active_keys=ACTIVE_KEYS),
+        runner=runner,
+        installed=_installed(),
+    )
+    deleted_refs = [
+        c[c.index("--ref") + 1] for c in runner.calls if "secrets" in c
+    ]
+    assert deleted_refs == ["vault:secret/alice#key", "vault:secret/alice2#key"]
+    backend = _step(result, "secret_backend")
+    assert backend.outcome is IdentityOutcome.DONE
+    assert result.outcome is IdentityOutcome.DONE
+    assert result.ok is True
+
+
+def test_offboarding_reports_an_inline_ref_as_manual(tmp_path) -> None:
+    """A `windows:`/`literal:` ref carries the key — discarding it is the deletion."""
+
+    def delete(ref: str) -> subprocess.CompletedProcess[str]:
+        return _completed(stdout=json.dumps({"ref": ref, "outcome": "inline_ref"}))
+
+    result = run_user_offboarding(
+        principal="alice",
+        overlay_path=tmp_path / "suite.env",
+        runner=StubRegista(active_keys=ACTIVE_KEYS, delete=delete),
         installed=_installed(),
     )
     backend = _step(result, "secret_backend")
     assert backend.outcome is IdentityOutcome.MANUAL
-    assert "vault:secret/alice#key" in backend.detail
-    assert result.outcome is IdentityOutcome.MANUAL
+    assert "carry the key inline" in backend.detail
     assert result.ok is False, "an incomplete offboarding reported as success"
+
+
+def test_offboarding_reports_a_failed_delete_as_manual(tmp_path) -> None:
+    """A backend that refuses must not be read as a closed fetch path."""
+
+    def delete(ref: str) -> subprocess.CompletedProcess[str]:
+        return _completed(returncode=1, stderr="env: cannot delete")
+
+    result = run_user_offboarding(
+        principal="alice",
+        overlay_path=tmp_path / "suite.env",
+        runner=StubRegista(active_keys=ACTIVE_KEYS, delete=delete),
+        installed=_installed(),
+    )
+    backend = _step(result, "secret_backend")
+    assert backend.outcome is IdentityOutcome.MANUAL
+    assert "could not delete" in backend.detail
+    assert result.ok is False
 
 
 def test_offboarding_a_principal_with_no_active_keys_is_already_done(tmp_path) -> None:
@@ -423,7 +470,7 @@ def test_result_dict_is_json_serialisable(tmp_path) -> None:
         installed=_installed(),
     )
     payload = json.loads(json.dumps(result.to_dict()))
-    assert payload["ok"] is False
+    assert payload["ok"] is True
     assert payload["action"] == "offboard"
     assert {s["name"] for s in payload["steps"]} == {
         "revoke_keys",

@@ -85,10 +85,10 @@ jobs:
       # Pinned revisions (Plan 015 WI-0.2 / WI-2.2): interop CI installs from
       # immutable revisions, not moving @main branches. Update these SHAs when
       # the candidate lock advances; do not revert to @main.
-      REGISTA_SHA: 9718b941939884fee94c260f19efe3e4040c456b
-      AGENT_NOTES_SHA: 0bb9edb03d66e71031129bdd4faf28526904e17b
-      DOSSIER_SHA: 4e09ec50162b494d150905c604e2d81a6bd9cf8e
-      CAIRN_SHA: bded8b1f4dcdc36f8991f290e3e9b6a77ed3a9b7
+      REGISTA_SHA: 44eb8ffdfe49df5ee271a3fc8f09ce5dccd57443
+      AGENT_NOTES_SHA: ac78c6b5a1afd460a6e88b32fa94ad0b7ae2d6fd
+      DOSSIER_SHA: de91852ce2d08ef0fe17d6e0dee8f5d17003a3fd
+      CAIRN_SHA: 89a87e7667c13edf21f80fda0248a7707fc47c79
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # actions/checkout@v4

@@ -14,11 +14,11 @@ runner and installed-check are injectable (the ``doctor.py`` / ``bootstrap.py``
 pattern) so tests drive the full lifecycle against a stubbed regista with no
 live store.
 
-One honest seam is deliberate: regista's secret backends expose ``resolve``
-but no delete, so offboarding **revokes** the key — the SLA-bearing act, which
-windows it out of the registry — and reports the backend refs the operator
-must still remove. That is reported as ``MANUAL``, never quietly folded into
-success.
+Offboarding revokes the key (the SLA-bearing act, which windows it out of the
+registry) *and* deletes the custodied private key, so the fetch path closes
+too. Where deletion is genuinely impossible — a backend that refuses, or a
+reference that carries the secret inline rather than pointing at it — the run
+reports ``MANUAL`` with the exact refs, never folding it into success.
 """
 
 from __future__ import annotations
@@ -441,14 +441,23 @@ def _revoke_keys(
 
 
 def _secret_backend_step(
-    revoked: list[dict[str, Any]], *, dry_run: bool
+    revoked: list[dict[str, Any]],
+    *,
+    runner: Runner,
+    dry_run: bool,
 ) -> IdentityStep:
-    """Report the backend refs the operator must still remove.
+    """Remove the custodied private keys, so the fetch path actually closes.
 
-    regista's secret providers implement ``resolve`` only — there is no delete
-    verb to shell. Revocation windows the key out of the registry regardless
-    (onboarding doc §6), so the fetch path is the remaining exposure and the
-    operator has to close it. Say so.
+    Revocation windows the key out of the registry (onboarding doc §6) but
+    leaves the private key readable from the backend; deleting it is what
+    finishes the job. ``regista secrets --delete`` is idempotent, so a re-run
+    of an offboarding is safe.
+
+    Two outcomes are not deletions and are reported as ``MANUAL`` rather than
+    folded into success: a backend that refuses (``env:``), and a reference
+    that *carries* the secret rather than pointing at it (``windows:``,
+    ``literal:``) — there the operator has to discard the reference itself,
+    because every copy of it is a copy of the key.
     """
     refs = sorted(
         {
@@ -463,13 +472,45 @@ def _secret_backend_step(
             IdentityOutcome.ALREADY_DONE,
             "no custodied private-key refs recorded for the revoked keys",
         )
-    verb = "will need" if dry_run else "needs"
-    return IdentityStep(
-        "secret_backend",
-        IdentityOutcome.MANUAL,
-        f"revocation windows the key out of the registry; the private key {verb} "
-        f"removing from the secret backend to close the fetch path: {', '.join(refs)}",
-    )
+    if dry_run:
+        return IdentityStep(
+            "secret_backend",
+            IdentityOutcome.PENDING,
+            f"would delete {len(refs)} custodied private key(s): {', '.join(refs)}",
+        )
+
+    deleted: list[str] = []
+    inline: list[str] = []
+    failed: list[str] = []
+    for ref in refs:
+        cmd: tuple[str, ...] = ("regista", "--json", "secrets", "--ref", ref, "--delete")
+        result, run_error = _run_regista(runner, cmd)
+        if result is None or result.returncode != 0:
+            failed.append(f"{ref} ({run_error or 'delete refused'})")
+            continue
+        data = _parse_json(result.stdout)
+        outcome = data.get("outcome") if isinstance(data, dict) else None
+        if outcome in ("deleted", "already_absent"):
+            deleted.append(ref)
+        else:
+            inline.append(ref)
+
+    parts: list[str] = []
+    if deleted:
+        parts.append(f"deleted {len(deleted)} custodied key(s)")
+    if inline:
+        parts.append(
+            f"{len(inline)} reference(s) carry the key inline and must be "
+            f"discarded wherever they are recorded: {', '.join(inline)}"
+        )
+    if failed:
+        parts.append(f"could not delete: {', '.join(failed)}")
+
+    if failed or inline:
+        return IdentityStep(
+            "secret_backend", IdentityOutcome.MANUAL, "; ".join(parts)
+        )
+    return IdentityStep("secret_backend", IdentityOutcome.DONE, "; ".join(parts))
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +607,9 @@ def run_user_offboarding(
         )
         steps.append(revoke_step)
         if revoke_step.outcome is not IdentityOutcome.FAILED:
-            steps.append(_secret_backend_step(revoked, dry_run=dry_run))
+            steps.append(
+                _secret_backend_step(revoked, runner=run, dry_run=dry_run)
+            )
 
     if keep_overlay:
         steps.append(

@@ -141,33 +141,47 @@ This is the mirror of `bootstrap --user`. It:
    signed *before* the revocation stay valid; events *after* are flagged by
    `regista verify` as `unregistered-signer` (see the
    [threat model](key-custody-threat-model.md) §T5).
-2. Reports the secret-backend refs holding the private keys.
+2. **Deletes the custodied private key** from the secret backend
+   (`regista secrets --ref <ref> --delete`), closing the fetch path.
 3. Removes the leaver's per-user overlay (`--keep-overlay` to skip).
 
 Use `--dry-run` first: it lists exactly which keys would be revoked and
-touches nothing.
+deleted, and touches nothing.
 
-### The one manual step
+```
+offboard alice: done
+  revoke_keys      done   revoked 1 key(s): key-1
+  secret_backend   done   deleted 1 custodied key(s)
+  user_overlay     done   overlay removed at /home/alice/.config/agent-suite/suite.env
+```
 
-regista's secret providers implement `resolve` but **no delete**, so the suite
-cannot remove the private key from the backend for you. Revocation windows the
-key out of the registry regardless — but the fetch path stays open until the
-key is gone from the backend, so `offboard` reports the refs and exits with
-`manual_action_required`:
+Both steps matter and neither substitutes for the other: revocation stops the
+key being *accepted*, deletion stops it being *fetched*.
+
+### When it cannot finish
+
+Two cases leave real work outstanding, and both exit nonzero with
+`manual_action_required` rather than being folded into success:
+
+- **The backend refuses.** `env:` references cannot be deleted from here —
+  clearing the variable in this process would leave it set everywhere it
+  matters. Unset it wherever it is defined.
+- **The reference carries the key.** A `windows:` reference *is* the DPAPI
+  blob, and a `literal:` reference *is* the value. There is nothing stored to
+  delete, so every copy of the reference is a copy of the private key. Purge
+  the reference from wherever it is recorded — config, backups, tickets.
 
 ```
 offboard alice: manual_action_required
   revoke_keys      done                   revoked 1 key(s): key-1
-  secret_backend   manual_action_required revocation windows the key out of the
-                                          registry; the private key needs removing
-                                          from the secret backend to close the fetch
-                                          path: vault:secret/agent-suite/principals/alice#key
-  user_overlay     done                   overlay removed at /home/alice/.config/agent-suite/suite.env
+  secret_backend   manual_action_required 1 reference(s) carry the key inline and
+                                          must be discarded wherever they are
+                                          recorded: windows:AQAAANCMnd8B...
+  user_overlay     done                   overlay removed at ...
 ```
 
-A nonzero exit is the honest answer here: offboarding is not finished until an
-operator removes those refs (see the relevant [secrets runbook](secrets-vault.md)).
 Automation must not read a `manual_action_required` offboarding as complete.
+See the relevant [secrets runbook](secrets-vault.md) for backend specifics.
 
 ## 7. Verify
 

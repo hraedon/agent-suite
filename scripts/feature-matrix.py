@@ -153,10 +153,21 @@ def _status_label(status: Status) -> str:
 def _matrix_rows() -> list[MatrixRow]:
     """Static definition of the v1 warranted surface.
 
-    The ``status`` and ``proof`` fields are placeholders that get overwritten
-    by named probes in ``feature-probes.py`` via ``apply_probes()`` during
-    ``_matrix()`` construction. Only the structural fields (journey, component,
-    surface, profile, dependency, excluded, notes) are authoritative here.
+    The structural fields (journey, component, surface, profile, dependency,
+    excluded, notes) are authoritative here.
+
+    ``status`` and ``proof`` are **fallbacks, not placeholders** — the
+    distinction matters. A probe that cannot reach its sibling component
+    returns ``HAND_ASSESSED``, and ``apply_probes()`` then leaves these values
+    in place so the committed JSON stays stable between an environment with
+    sibling checkouts and one without. So they are the answer whenever a
+    sibling is absent, and a stale value here is a stale value in the output.
+
+    They cannot reach the *committed* artifact stale — ``status_source`` drops
+    to ``mixed-probe-and-hand`` and ``test_committed_status_source_is_probe_emitted``
+    rejects it — but they are read by anyone reading this file. Keep them in
+    step with a full probe run; ``scripts/feature-matrix.py`` regenerated
+    against all siblings is the reference.
     """
     return [
         # GJ-1 — Start a project
@@ -209,7 +220,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="agent-notes",
             surface="project discovery from cwd and per-user identity",
             profile="A",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="agent-notes WI-013",
             proof="src/agent_notes/core/face_factory.py",
             excluded="—",
@@ -220,7 +231,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="dossier",
             surface="authenticated project switcher",
             profile="B",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="dossier WI-017",
             proof="src/dossier/app.py:149-175, src/dossier/authz.py",
             excluded="—",
@@ -242,7 +253,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="agent-suite",
             surface="identity lifecycle / onboarding / offboarding",
             profile="A",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="Plan 009 WI-1.3, Plan 009 WI-2.2",
             proof="src/agent_suite/bootstrap.py (_step_user_onboarding); probe: _probe_identity_lifecycle -> partial",
             excluded="—",
@@ -321,7 +332,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="agent-notes",
             surface="signed note write-through to regista",
             profile="A",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="agent-notes WI-013, dossier Plan 009",
             proof="src/agent_notes/core/note_model.py, src/agent_notes/core/memory_model.py",
             excluded="—",
@@ -332,7 +343,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="dossier",
             surface="knowledge read / browse / search",
             profile="B",
-            status=_status_label(Status.ABSENT),
+            status=_status_label(Status.PASS),
             dependency="dossier Plan 009",
             proof="—",
             excluded="—",
@@ -388,7 +399,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="dossier",
             surface="honest assurance level / independent-review signal",
             profile="B",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="dossier WI-012",
             proof="src/dossier/assurance.py",
             excluded="\u2014",
@@ -422,7 +433,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="dossier",
             surface="session / tool / file activity views",
             profile="B",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="dossier Plan 017/018",
             proof="src/dossier/app.py:563-625, src/dossier/provenance.py",
             excluded="—",
@@ -433,7 +444,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="dossier",
             surface="degraded / unsupported capture rendered honestly",
             profile="B",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="dossier WI-012",
             proof="src/dossier/assurance.py",
             excluded="—",
@@ -445,7 +456,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="agent-capability-broker",
             surface="manifest, reconcile, exec, install-harness",
             profile="C",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="acb Plan 006 WI-1.2",
             proof="src/agent_capability_broker/cli.py:448-505; tests/test_doctor_conformance.py",
             excluded="Credential marketplace, device management",
@@ -456,7 +467,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="agent-capability-broker",
             surface="credential provider with secret-safe injection",
             profile="C",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="acb Plan 006 WI-1.2",
             proof="src/agent_capability_broker/providers.py:352-494; tests/test_exec.py",
             excluded="—",
@@ -467,7 +478,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="agent-capability-broker",
             surface="browser / E2E provider and live proof",
             profile="C",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="acb Plan 006 WI-1.2, Plan 007",
             proof="src/agent_capability_broker/providers.py:118-258; tests/test_e2e.py",
             excluded="—",
@@ -478,7 +489,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="agent-capability-broker",
             surface="rogue / clobbered capability detection",
             profile="C",
-            status=_status_label(Status.ABSENT),
+            status=_status_label(Status.PASS),
             dependency="agent-suite WI-001 capability_clobber",
             proof="—",
             excluded="—",
@@ -501,7 +512,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="agent-wake",
             surface="durable dedup / retry / outbox / dead-letter",
             profile="C",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="agent-wake BC-WAKE-004, BC-WAKE-012",
             proof="daemon/src/agent_waked/ingest.py:57-73; tests/test_ingest.py:93-108",
             excluded="Exactly-once delivery across external systems",
@@ -523,7 +534,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="agent-wake",
             surface="silent_inject",
             profile="C",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="agent-wake Plan 006",
             proof="adapters/opencode/src/wake.ts:125-126",
             excluded="—",
@@ -534,7 +545,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="agent-wake",
             surface="next_session / managed_session delivery",
             profile="C",
-            status=_status_label(Status.ABSENT),
+            status=_status_label(Status.PASS),
             dependency="agent-wake Plan 006",
             proof="—",
             excluded="—",
@@ -556,7 +567,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="agent-wake",
             surface="replayed event rejection",
             profile="C",
-            status=_status_label(Status.PARTIAL),
+            status=_status_label(Status.PASS),
             dependency="agent-wake BC-WAKE-004, BC-WAKE-012",
             proof="daemon/src/agent_waked/ingest.py:209-210; tests/test_ingest.py:93-108; tests/test_e2e.py:309-343",
             excluded="—",
@@ -567,7 +578,7 @@ def _matrix_rows() -> list[MatrixRow]:
             component="dossier",
             surface="notification preferences and review/recovery deep links",
             profile="B",
-            status=_status_label(Status.ABSENT),
+            status=_status_label(Status.PARTIAL),
             dependency="Plan 009 WI-3.3, dossier Plan 018",
             proof="—",
             excluded="Replacing chat/email providers",
