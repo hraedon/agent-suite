@@ -217,6 +217,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Scan only staged files (for the pre-commit hook) instead of the "
         "full tracked tree (the CI default).",
     )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail if the denylist is unset or empty. Use in publication and "
+        "release certification contexts where a missing policy is a blocker, "
+        "not a skip.",
+    )
     args = parser.parse_args(argv)
 
     paths = collect_staged_paths() if args.staged else collect_tracked_paths()
@@ -240,6 +247,13 @@ def main(argv: list[str] | None = None) -> int:
     #    forbidden identifiers. No-op until the secret is configured.
     raw = os.environ.get("AGENT_SUITE_FORBIDDEN_IDENTIFIERS", "")
     if not raw.strip():
+        if args.strict:
+            print(
+                "STRICT: AGENT_SUITE_FORBIDDEN_IDENTIFIERS is empty or unset; "
+                "a configured denylist is required in strict/release mode.",
+                file=sys.stderr,
+            )
+            return 1
         print(
             "AGENT_SUITE_FORBIDDEN_IDENTIFIERS is empty or unset; skipping identifier gate.",
             file=sys.stderr,
@@ -248,6 +262,14 @@ def main(argv: list[str] | None = None) -> int:
 
     identifiers = parse_identifier_set(raw)
     if not identifiers:
+        if args.strict:
+            print(
+                "STRICT: AGENT_SUITE_FORBIDDEN_IDENTIFIERS contained no usable "
+                f"identifiers (minimum length is {MIN_IDENTIFIER_LENGTH} "
+                "characters); a configured denylist is required in strict/release mode.",
+                file=sys.stderr,
+            )
+            return 1
         print(
             "AGENT_SUITE_FORBIDDEN_IDENTIFIERS contained no usable identifiers (minimum "
             f"length is {MIN_IDENTIFIER_LENGTH} characters); skipping gate.",

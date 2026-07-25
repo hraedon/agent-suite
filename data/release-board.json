@@ -13,7 +13,7 @@
           "owner_repo": "hraedon/agent-suite",
           "blocking_dependency": "Plan 009 WI-0.3",
           "status": "complete",
-          "status_note": "MET: status_source=probe-emitted (all 46 rows); proof_command python3 scripts/feature-probes.py --check exits 0 against canonical data/v1-feature-matrix.json. Profile C rows explicitly preview-stage per Sol WS3; every non-pass Profile A/B row has exactly one owning WI (WI-010..WI-017).",
+          "status_note": "MET: status_source=probe-emitted (all 46 rows); proof_command python3 scripts/feature-probes.py --check exits 0 against canonical data/v1-feature-matrix.json. Profile C rows explicitly preview-stage per Sol WS3; every non-pass Profile A/B row has exactly one owning WI (WI-010..WI-017, WI-025).",
           "proof_command": "python3 scripts/feature-probes.py --check",
           "proof_artifact": "data/v1-feature-matrix.json"
         },
@@ -58,7 +58,8 @@
           "title": "Freeze versioned provider contracts",
           "owner_repo": "hraedon/dossier",
           "blocking_dependency": "Gate 0",
-          "status": "not_started",
+          "status": "in_progress",
+          "status_note": "Provider Protocols landed (contracts.py: Work, Knowledge, Activity, Evidence, Operations, Identity, Delivery). Contract descriptor at data/contracts/provider-contracts.json. Architecture tests reject private imports and direct SQL. Gateway satisfies WorkProvider and IdentityProvider via describe_work/describe_identity. Degraded/unavailable/incompatible rendering tested. Remaining: area-module adapter conformance for Knowledge/Activity/Evidence/Operations/Delivery providers.",
           "proof_command": "pytest tests/test_provider_contracts.py",
           "proof_artifact": "data/contracts/"
         },
@@ -67,7 +68,8 @@
           "title": "Work and knowledge journeys",
           "owner_repo": "hraedon/dossier",
           "blocking_dependency": "WI-1.1",
-          "status": "not_started",
+          "status": "in_progress",
+          "status_note": "Golden journey tests landed for GJ-1 (project discovery, identity), GJ-2 (create, transition, comment, my-work, search), GJ-3 (knowledge index, search, new form), GJ-4 (full review journey with two principals, request-changes, reject, negative cases). Route-ordering bug fixed (/knowledge/new shadowed by /{note_id}). Known xfail: knowledge create_note uses reserved transition 'created' via append_note_event (needs knowledge module fix). Remaining: same-lineage, missing-lineage, expired-claim, stale-form negative cases.",
           "proof_command": "pytest tests/test_golden_journeys.py -k 'GJ-1 or GJ-2 or GJ-3 or GJ-4'",
           "proof_artifact": "golden/gj-1-through-4.json"
         },

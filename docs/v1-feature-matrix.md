@@ -1,7 +1,7 @@
 # v1 Feature Matrix (Plan 009 WI-0.1)
 
 **Version:** v1  
-**Generated:** 2026-07-25T18:24:04.237296Z
+**Generated:** 2026-07-25T21:10:56.665098Z
 **Status source:** probe-emitted
 **Status values:** pass / partial / blocked / absent
 
@@ -9,10 +9,10 @@ This matrix is emitted by named probes; every row's status is mechanically deter
 
 ## Observed revisions
 
-- **agent-suite**: 2fa4238
+- **agent-suite**: e4daddc
 - **regista**: 069950e
-- **agent-notes**: 853b831
-- **dossier**: cd14f86
+- **agent-notes**: eeb8eb2
+- **dossier**: 6a88b1e
 - **agent-provenance**: 94cb874
 - **agent-capability-broker**: 3655a72
 - **agent-wake**: 12d6b52
@@ -60,7 +60,7 @@ This matrix is emitted by named probes; every row's status is mechanically deter
 | GJ-5 | B | dossier | degraded / unsupported capture rendered honestly | pass | dossier WI-012 | probe: _probe_dossier_degraded_capture -> pass; evidence: dossier/assurance.py=present; compute_assurance_level=present; tests/test_app.py=present; delegates to regista=yes; unknown level rendered honestly=yes; fail-open fixed (WI-014) and the level is regista's, with unknown levels surfaced rather than guessed | — | Assurance level no longer fails open (WI-014 fixed); delegation to regista still pending (WI-012). |
 | GJ-6 | C | agent-capability-broker | manifest, reconcile, exec, install-harness | pass | acb Plan 006 WI-1.2 | probe: _probe_acb_core_verbs -> pass; evidence: cli.py=present; model.py=present; CLI 'doctor'=present; CLI 'reconcile'=present; CLI 'exec'=present; CLI 'install-harness'=present; tests/test_doctor_conformance.py=present; tests/test_reconcile.py=present; all four verbs present and e2e exec implemented | Credential marketplace, device management | Core verbs exist; e2e exec is NotImplementedError. |
 | GJ-6 | C | agent-capability-broker | credential provider with secret-safe injection | pass | acb Plan 006 WI-1.2 | probe: _probe_acb_credential_provider -> pass; evidence: providers.py=present; exec_composed=present; cred_vault.py=present; tests/test_exec.py=present; secret-safe injection unit-tested; every provider's exec implemented | — | Provider injection works and is unit-tested; full end-to-end `acb exec` invocation is NotImplementedError. |
-| GJ-6 | C | agent-capability-broker | browser / E2E provider and live proof | pass | acb Plan 006 WI-1.2, Plan 007 | probe: _probe_acb_e2e_provider -> pass; evidence: E2eProvider=present; E2eProvider.inspect=present; E2eProvider.exec=present; exec raises NotImplementedError=no; tests/test_e2e_inspect.py=present; tests/test_e2e_exec.py=present; scripts/e2e_live_proof.py=present; docs/e2e-live-proof.md=present; exec implemented and covered by a recorded live browser proof (Codex still deferred, per acb Plan 007) | — | E2eProvider.inspect exists; exec is not implemented; Codex deferred. |
+| GJ-6 | C | agent-capability-broker | browser / E2E provider and live proof | pass | acb Plan 006 WI-1.2, Plan 007 | probe: _probe_acb_e2e_provider -> pass; evidence: E2eProvider=present; E2eProvider.inspect=present; E2eProvider.exec=present; exec raises NotImplementedError=no; tests/test_e2e_inspect.py=present; tests/test_e2e_exec.py=present; scripts/e2e_live_proof.py=present; docs/e2e-live-proof.md=present; exec implemented and covered by a recorded live browser proof (Codex still deferred, per acb Plan 007) | — | E2eProvider exec is implemented and covered by a recorded live browser proof; Codex provider deferred per acb Plan 007. |
 | GJ-6 | C | agent-capability-broker | rogue / clobbered capability detection | pass | agent-suite WI-001 capability_clobber | probe: _probe_acb_rogue_detection -> pass; evidence: _cmd_doctor=present; _doctor_checks=present; _inspect_all=present; surface.py=present; audit_surface=present; doctor calls audit_surface=yes; tests/test_surface_audit.py=present; doctor diffs the installed surface against the manifest — rogue capabilities warn, clobbered ones fail | — | Doctor only inspects manifest-listed capabilities. |
 | GJ-7 | C | agent-wake | authenticated HTTP ingress | pass | — | probe: _probe_wake_http_ingress -> pass; evidence: daemon/src/agent_waked/ingest.py=present; daemon/src/agent_waked/gating.py=present; HMAC auth in gating.py=present; ingest.py imports verify_signature=present; create_ingest_app=present; daemon/tests/test_ingest.py=present | Universal wake protocol | HMAC-SHA256 per-source auth. |
 | GJ-7 | C | agent-wake | durable dedup / retry / outbox / dead-letter | pass | agent-wake BC-WAKE-004, BC-WAKE-012 | probe: _probe_wake_dedup_retry -> pass; evidence: Dedupe class in ingest.py=present; agent_waked/outbox.py=present; dead-letter logic=present; durable state store=present; dead-letter/pending CLI=present; daemon/tests/test_ingest.py=present; daemon/tests/test_outbox.py=present; daemon/tests/test_store.py=present; dedup and the queue survive restart; dead-lettered events are listable and redrivable | Exactly-once delivery across external systems | Dedup is in-memory FIFO; no durable inbox or dead-letter visibility. |
@@ -77,5 +77,5 @@ This matrix is emitted by named probes; every row's status is mechanically deter
 | GJ-9 | A | agent-suite | profile-aware doctor aggregation | pass | — | probe: _probe_doctor -> pass; evidence: doctor.aggregate exposed; tests/test_doctor.py present | — | Honest health reporting for required/optional components. |
 | GJ-9 | A | agent-suite | compatibility lock and drift check | pass | — | probe: _probe_lock -> pass; evidence: lock.generate_lock exposed; tests/test_lock.py present | — | SUITE.lock parsing and drift detection implemented. |
 | GJ-9 | A | agent-suite | backup / restore / disaster recovery orchestration | pass | Plan 008 WI-4.1, Plan 009 WI-4.2 | probe: _probe_backup_restore -> pass; evidence: src/agent_suite/backup.py present; run_backup/run_restore exposed; CLI 'backup'+'restore' registered; tests/test_backup.py present | — | Suite-level backup: doctor → pg_dump → verify → evidence export → manifest. |
-| GJ-9 | A | agent-suite | upgrade / rollback / forward-recovery gates | partial | Forward recovery retired pending shared transaction engine | probe: _probe_upgrade_rollback_forward -> partial; evidence: upgrade/rollback transaction engine present and tested; legacy forward recovery is explicitly retired fail-closed | — | Upgrade and rollback are installation-aware transactions; legacy forward recovery is explicitly retired fail-closed. |
+| GJ-9 | A | agent-suite | upgrade / rollback / forward-recovery gates | partial | Forward recovery retired pending shared transaction engine | probe: _probe_upgrade_rollback_forward -> partial; evidence: upgrade/rollback transaction engine present and tested; legacy forward recovery is explicitly retired fail-closed | — | Upgrade and rollback are installation-aware transactions; legacy forward recovery is explicitly retired fail-closed. Shared-user pip-install drift reconciliation tracked by WI-025. |
 | GJ-9 | A | regista | version / config / secret / doctor contracts | pass | — | probe: _probe_regista_contracts -> pass; evidence: regista/_doctor.py=present; regista/_cli.py=present; CLI 'version'=present; CLI 'doctor'=present; CLI 'config'=present; CLI 'secrets'=present | — | Doctor, version, and config contracts are exposed. |

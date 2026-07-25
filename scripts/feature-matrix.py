@@ -91,6 +91,7 @@ _WI_ASSIGNMENTS: dict[tuple[str, str, str], str] = {
     ("GJ-5", "dossier", "session / tool / file activity views"): "WI-015",
     ("GJ-5", "dossier", "degraded / unsupported capture rendered honestly"): "WI-016",
     ("GJ-7", "dossier", "notification preferences and review/recovery deep links"): "WI-017",
+    ("GJ-9", "agent-suite", "upgrade / rollback / forward-recovery gates"): "WI-025",
 }
 
 
@@ -121,7 +122,7 @@ def _wi_assignment_summary(rows: list[MatrixRow]) -> dict[str, object]:
     ]
     wi_ids = sorted({r.owning_wi for r in assigned})
     return {
-        "profile_b_non_pass_count": len(profile_ab_non_pass),
+        "profile_ab_non_pass_count": len(profile_ab_non_pass),
         "assigned_count": len(assigned),
         "unassigned": unassigned,
         "wi_ids": wi_ids,
@@ -482,7 +483,7 @@ def _matrix_rows() -> list[MatrixRow]:
             dependency="acb Plan 006 WI-1.2, Plan 007",
             proof="src/agent_capability_broker/providers.py:118-258; tests/test_e2e.py",
             excluded="—",
-            notes="E2eProvider.inspect exists; exec is not implemented; Codex deferred.",
+            notes="E2eProvider exec is implemented and covered by a recorded live browser proof; Codex provider deferred per acb Plan 007.",
         ),
         MatrixRow(
             journey="GJ-6",
@@ -672,7 +673,7 @@ def _matrix_rows() -> list[MatrixRow]:
             dependency="Forward recovery retired pending shared transaction engine",
             proof="src/agent_suite/upgrade.py (run_upgrade, run_rollback, fail-closed run_forward_recovery); tests/test_upgrade.py; probe: _probe_upgrade_rollback_forward -> partial",
             excluded="—",
-            notes="Upgrade and rollback are installation-aware transactions; legacy forward recovery is explicitly retired fail-closed.",
+            notes="Upgrade and rollback are installation-aware transactions; legacy forward recovery is explicitly retired fail-closed. Shared-user pip-install drift reconciliation tracked by WI-025.",
         ),
         MatrixRow(
             journey="GJ-9",

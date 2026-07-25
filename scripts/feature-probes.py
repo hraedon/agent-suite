@@ -2202,7 +2202,7 @@ def _refresh_wi_assignment_summary(matrix_data: dict[str, Any]) -> None:
     ]
     assigned = [row for row in rows if row.get("owning_wi")]
     matrix_data["wi_assignment_summary"] = {
-        "profile_b_non_pass_count": len(rows),
+        "profile_ab_non_pass_count": len(rows),
         "assigned_count": len(assigned),
         "unassigned": [
             [row["journey"], row["component"], row["surface"]]
@@ -2358,6 +2358,29 @@ def main(argv: list[str] | None = None) -> int:
                     f"'{probed['status_source']}' — every row must be "
                     "reproduced by a named probe (Plan 015 WI-0.1 AC). "
                     "Run with sibling checkouts installed.",
+                    file=sys.stderr,
+                )
+                return 1
+
+        unassigned_ab = [
+            (row["journey"], row["component"], row["surface"])
+            for row in probed["rows"]
+            if row["profile"] in ("A", "B")
+            and row["status"] != "pass"
+            and not row.get("owning_wi")
+        ]
+        if unassigned_ab:
+            print(
+                f"UNASSIGNED: {len(unassigned_ab)} non-pass Profile A/B "
+                "row(s) have no owning_wi:",
+                file=sys.stderr,
+            )
+            for key in unassigned_ab:
+                print(f"  {key}", file=sys.stderr)
+            if args.strict:
+                print(
+                    "STRICT: every non-pass Profile A/B row must have an "
+                    "owning WI (release-board WI-0.1 AC).",
                     file=sys.stderr,
                 )
                 return 1
