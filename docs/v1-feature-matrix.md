@@ -1,7 +1,7 @@
 # v1 Feature Matrix (Plan 009 WI-0.1)
 
 **Version:** v1  
-**Generated:** 2026-07-25T00:43:41.954718Z
+**Generated:** 2026-07-25T18:24:04.237296Z
 **Status source:** probe-emitted
 **Status values:** pass / partial / blocked / absent
 
@@ -9,7 +9,7 @@ This matrix is emitted by named probes; every row's status is mechanically deter
 
 ## Observed revisions
 
-- **agent-suite**: a898803
+- **agent-suite**: 2fa4238
 - **regista**: 069950e
 - **agent-notes**: 853b831
 - **dossier**: cd14f86
@@ -69,7 +69,7 @@ This matrix is emitted by named probes; every row's status is mechanically deter
 | GJ-7 | C | agent-wake | next_session / managed_session delivery | pass | agent-wake Plan 006 | probe: _probe_wake_next_session -> pass; evidence: next_session/managed_session in daemon+adapters=present; durable queue=present; router enqueues when no session is live=yes; socket server drains on connect=yes; daemon/tests/test_next_session.py=present; an event with no live session is queued durably and delivered when the next one connects (managed_session queues but has no drainer yet — agent-wake Plan 006 Phase 2B) | — | Design exists; no implementation. |
 | GJ-7 | C | agent-wake | human webhook and email delivery | pass | — | probe: _probe_wake_human_delivery -> pass; evidence: channels/webhook.py=present; channels/email.py=present; daemon/tests/test_channels_webhook.py=present; daemon/tests/test_channels_email.py=present | Replacing chat/email providers | Signed webhook and SMTP email channels implemented. |
 | GJ-7 | C | agent-wake | replayed event rejection | pass | agent-wake BC-WAKE-004, BC-WAKE-012 | probe: _probe_wake_replay_rejection -> pass; evidence: Dedupe class=present; dedupe.check call=present; daemon/tests/test_ingest.py=present; daemon/tests/test_e2e.py=present; durable state store=present; restart-survival test=present; a replayed event_id is rejected across a daemon restart | — | Duplicate event_id rejected while daemon is running; in-memory dedup is lost on restart, so post-restart replay is not prevented. |
-| GJ-7 | B | dossier | notification preferences and review/recovery deep links | partial | Plan 009 WI-3.3, dossier Plan 018 | probe: _probe_dossier_notification_prefs -> partial; evidence: dossier/notifications.py=present; NotificationEmitter=present; notification preference route=missing; tests/test_app.py=present; NotificationEmitter present but no preference UI or deep-link routing | Replacing chat/email providers | No notification preference UI or deep-link routing exists. |
+| GJ-7 | B | dossier | notification preferences and review/recovery deep links | pass | Plan 009 WI-3.3, dossier Plan 018 | probe: _probe_dossier_notification_prefs -> pass; evidence: dossier/notifications.py=present; NotificationEmitter=present; NotificationPreferenceStore=present; deep_link_for=present; notification preference route=present; tests/test_app.py=present; tests/test_notification_preferences.py=present; per-principal preference route + store present; review deep links target the item and integrity failures target the recovery surface | Replacing chat/email providers | Per-principal preference route + store; review events deep-link to the item and integrity failures to the recovery surface. Preferences are instance-local in v1; durable multi-replica consistency is Plan 019. |
 | GJ-8 | A | regista | scoped evidence bundle export | pass | — | probe: _probe_regista_bundle_export -> pass; evidence: Regista.export_audit_bundle=present; regista/_bundle.py=present; regista/_archive.py=present; tests/test_bundle.py=present | — | Self-contained JSON with events, receipts, segments, public keys. |
 | GJ-8 | A | regista | offline bundle verification | pass | — | probe: _probe_regista_bundle_verify -> pass; evidence: Regista.verify_audit_bundle_offline=present; regista/_bundle.py=present; tests/test_bundle.py=present | — | v2 verifies ed25519 signatures; v1 reports skipped honestly. |
 | GJ-8 | A | agent-provenance | bundle export, diff/chain verify, human report | pass | — | probe: _probe_cairn_bundle_export -> pass; evidence: cairn/_cli.py=present; cairn/proof.py=present; cairn/verifier.py=present; CLI 'export'=present; CLI 'verify'=present; CLI 'verify-chain'=present; CLI 'diff'=present; CLI 'portal'=present; tests/test_e2e_proof.py=present | — | cairn verify, verify-chain, export, diff, portal all present. |

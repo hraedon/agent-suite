@@ -582,7 +582,7 @@ def _matrix_rows() -> list[MatrixRow]:
             dependency="Plan 009 WI-3.3, dossier Plan 018",
             proof="—",
             excluded="Replacing chat/email providers",
-            notes="No notification preference UI or deep-link routing exists.",
+            notes="Per-principal preference route + store; review events deep-link to the item and integrity failures to the recovery surface. Preferences are instance-local in v1; durable multi-replica consistency is Plan 019.",
         ),
         # GJ-8 — Investigate and export evidence
         MatrixRow(

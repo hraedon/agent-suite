@@ -87,7 +87,7 @@ jobs:
       # the candidate lock advances; do not revert to @main.
       REGISTA_SHA: 069950e0fd42c795273bc942c83246d04a49baa7
       AGENT_NOTES_SHA: 853b831c882db3bae72061ec222067832e7c4e28
-      DOSSIER_SHA: cd14f86c0f238faf61f6e7eecfe7707c398ffac7
+      DOSSIER_SHA: 6a88b1e65501db7edc4f379c5f6842b750e94e1f
       CAIRN_SHA: 94cb874852ae6341b3388a93e101a362cf2217bd
 
     steps:

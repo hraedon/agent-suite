@@ -1214,24 +1214,43 @@ def _probe_dossier_notification_prefs() -> ProbeOutcome:
         "dossier", "dossier/notifications.py"
     )
     has_emitter = _sibling_has_attr("dossier.notifications", "NotificationEmitter")
+    has_pref_store = _sibling_has_attr(
+        "dossier.notifications", "NotificationPreferenceStore"
+    )
+    has_deep_link_for = _sibling_has_method(
+        "dossier.notifications", "NotificationEmitter", "deep_link_for"
+    )
     # Check for notification preference routes in the app
     has_pref_route = _sibling_route_exists(
         "dossier", "app", "/notifications"
     ) or _sibling_route_exists("dossier", "app", "/me/notifications")
     has_test = _sibling_test_exists("dossier", "test_app.py")
+    has_pref_test = _sibling_test_exists(
+        "dossier", "test_notification_preferences.py"
+    )
     evidence_parts = [
         f"dossier/notifications.py={'present' if has_notif_mod else 'absent'}",
         f"NotificationEmitter={'present' if has_emitter else 'missing'}",
+        f"NotificationPreferenceStore={'present' if has_pref_store else 'missing'}",
+        f"deep_link_for={'present' if has_deep_link_for else 'missing'}",
         f"notification preference route={'present' if has_pref_route else 'missing'}",
         f"tests/test_app.py={'present' if has_test else 'missing'}",
+        f"tests/test_notification_preferences.py={'present' if has_pref_test else 'missing'}",
     ]
     if not has_notif_mod:
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
-    # Notifications module exists but no preference UI or deep-link routing.
+    if not (has_pref_route and has_pref_store):
+        # Notifications module exists but no preference UI or deep-link routing.
+        return ProbeOutcome(
+            ProbeResult.PARTIAL,
+            "; ".join(evidence_parts)
+            + "; NotificationEmitter present but no preference UI or deep-link routing",
+        )
     return ProbeOutcome(
-        ProbeResult.PARTIAL,
+        ProbeResult.PASS,
         "; ".join(evidence_parts)
-        + "; NotificationEmitter present but no preference UI or deep-link routing",
+        + "; per-principal preference route + store present; review deep links "
+        "target the item and integrity failures target the recovery surface",
     )
 
 

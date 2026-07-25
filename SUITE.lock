@@ -30,8 +30,8 @@ revision = "12d6b52092599a801ceaee5ecdfc04d0655f9055"
 
 [components.dossier]
 repo = "hraedon/dossier"
-version = "0.0.1"
-revision = "cd14f86c0f238faf61f6e7eecfe7707c398ffac7"
+version = "0.1.0"
+revision = "6a88b1e65501db7edc4f379c5f6842b750e94e1f"
 
 [components.regista]
 repo = "hraedon/regista"

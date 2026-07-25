@@ -1,9 +1,9 @@
 {
   "version": "v1",
-  "generated_at": "2026-07-25T00:43:41.954718Z",
+  "generated_at": "2026-07-25T18:24:04.237296Z",
   "status_source": "probe-emitted",
   "observed_revisions": {
-    "agent-suite": "a898803",
+    "agent-suite": "2fa4238",
     "regista": "069950e",
     "agent-notes": "853b831",
     "dossier": "cd14f86",
@@ -501,11 +501,11 @@
       "component": "dossier",
       "surface": "notification preferences and review/recovery deep links",
       "profile": "B",
-      "status": "partial",
+      "status": "pass",
       "dependency": "Plan 009 WI-3.3, dossier Plan 018",
-      "proof": "probe: _probe_dossier_notification_prefs -> partial; evidence: dossier/notifications.py=present; NotificationEmitter=present; notification preference route=missing; tests/test_app.py=present; NotificationEmitter present but no preference UI or deep-link routing",
+      "proof": "probe: _probe_dossier_notification_prefs -> pass; evidence: dossier/notifications.py=present; NotificationEmitter=present; NotificationPreferenceStore=present; deep_link_for=present; notification preference route=present; tests/test_app.py=present; tests/test_notification_preferences.py=present; per-principal preference route + store present; review deep links target the item and integrity failures target the recovery surface",
       "excluded": "Replacing chat/email providers",
-      "notes": "No notification preference UI or deep-link routing exists.",
+      "notes": "Per-principal preference route + store; review events deep-link to the item and integrity failures to the recovery surface. Preferences are instance-local in v1; durable multi-replica consistency is Plan 019.",
       "owning_wi": "WI-017",
       "release_status": "in_qualification"
     },
@@ -628,8 +628,8 @@
     }
   ],
   "wi_assignment_summary": {
-    "profile_b_non_pass_count": 2,
-    "assigned_count": 1,
+    "profile_b_non_pass_count": 1,
+    "assigned_count": 0,
     "unassigned": [
       [
         "GJ-9",
@@ -637,9 +637,7 @@
         "upgrade / rollback / forward-recovery gates"
       ]
     ],
-    "wi_ids": [
-      "WI-017"
-    ],
+    "wi_ids": [],
     "profile_c_deferred": "Profile C rows remain explicitly preview-stage per Sol Gate 0 WS3. They do not need owning WIs at this gate."
   }
 }
