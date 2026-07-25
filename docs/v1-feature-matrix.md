@@ -1,7 +1,7 @@
 # v1 Feature Matrix (Plan 009 WI-0.1)
 
 **Version:** v1  
-**Generated:** 2026-07-25T00:42:38.441563Z
+**Generated:** 2026-07-25T00:43:41.954718Z
 **Status source:** probe-emitted
 **Status values:** pass / partial / blocked / absent
 
@@ -9,12 +9,12 @@ This matrix is emitted by named probes; every row's status is mechanically deter
 
 ## Observed revisions
 
-- **agent-suite**: 32df2c6
+- **agent-suite**: a898803
 - **regista**: 069950e
-- **agent-notes**: 7a3a2b1
-- **dossier**: 34b790b
-- **agent-provenance**: 4fd3c04
-- **agent-capability-broker**: c8cd0ab
+- **agent-notes**: 853b831
+- **dossier**: cd14f86
+- **agent-provenance**: 94cb874
+- **agent-capability-broker**: 3655a72
 - **agent-wake**: 12d6b52
 
 ## Golden journeys
