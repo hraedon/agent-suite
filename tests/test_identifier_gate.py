@@ -13,6 +13,14 @@ These tests do NOT depend on the real denylist. They construct their own
 forbidden set, write a fake tracked file containing the token, run the
 scanner, and assert a non-zero exit. This is the "demonstrably blocking"
 evidence Sol asked for.
+
+WI-018 extends this to every branch of the guard whose broken state fails
+*open* — the always-on ``samples/`` guard (no secret required), the
+``--staged`` pre-commit path, the first-component-only matching, and the
+denylist parser. A gate is only as good as the test that proves it blocks;
+each new case plants known-bad input and asserts a nonzero exit, so a
+refactor that silently disables a branch fails this file rather than failing
+open in production.
 """
 
 from __future__ import annotations
@@ -152,4 +160,199 @@ def test_current_tree_is_clean_against_canonical_denylist() -> None:
     assert not violations, (
         f"canonical denylist violation(s) in tracked files: "
         f"{[(v.path, v.line_number, v.identifier) for v in violations[:5]]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# WI-018 — fixture-driven tests for the fails-open branches.
+#
+# Each case below covers a branch of the gate whose broken state would pass
+# silently: the always-on samples/ guard, the --staged pre-commit path, the
+# first-component-only matcher, and the denylist parser. A refactor that
+# disables any of these must turn one of these tests red, not fail open.
+# ---------------------------------------------------------------------------
+
+
+def _make_repo(repo: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+
+
+def _run_gate(repo: Path, env_secret: str | None, *, staged: bool = False) -> subprocess.CompletedProcess[str]:
+    import os
+
+    argv = [sys.executable, str(_SCRIPT)]
+    if staged:
+        argv.append("--staged")
+    env = {**dict(os.environ)}
+    if env_secret is not None:
+        env["AGENT_SUITE_FORBIDDEN_IDENTIFIERS"] = env_secret
+    else:
+        env.pop("AGENT_SUITE_FORBIDDEN_IDENTIFIERS", None)
+    return subprocess.run(
+        argv, cwd=repo, env=env, capture_output=True, text=True, timeout=30, check=False,
+    )
+
+
+def test_always_on_samples_guard_blocks_without_secret(tmp_path: Path) -> None:
+    """The samples/ guard fires with NO secret configured.
+
+    This is the always-on branch that runs before the secret-driven scan. If a
+    refactor makes ``leaked_tracked_files`` return [], a force-add of real
+    identifier-bearing data under samples/ would slip through with exit 0 —
+    silent failure. Planting a tracked samples/ file and asserting nonzero exit
+    is the proof it still blocks.
+    """
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "samples").mkdir()
+    (repo / "samples" / "leaked.md").write_text("any content\n")
+    subprocess.run(["git", "-C", str(repo), "add", "samples/leaked.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "t"], check=True)
+
+    result = _run_gate(repo, env_secret=None)  # NO secret: the always-on path only
+    assert result.returncode != 0, (
+        f"always-on samples/ guard must block without the secret; got rc=0.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "samples/leaked.md" in result.stdout + result.stderr
+
+
+def test_always_on_guard_matches_first_path_component_only() -> None:
+    """Unit: leaked_tracked_files guards root-level samples/ but not a nested
+    code dir that happens to be named samples (e.g. tests/samples/).
+
+    A matcher that flipped to a ``in parts`` test would flag nested legitimate
+    code dirs (false positives); a matcher that flipped to never-match would
+    let root samples/ through (fail open). Pin the exact semantics.
+    """
+    from scripts.check_committed_identifiers import leaked_tracked_files
+
+    guarded = frozenset({"samples"})
+    paths = [
+        Path("samples/real.md"),        # guarded — root component
+        Path("tests/samples/legit.md"), # NOT guarded — nested code dir
+        Path("a/b/samples/deep.md"),    # NOT guarded — not a root component
+    ]
+    leaked = leaked_tracked_files(paths, guarded)
+    assert leaked == [Path("samples/real.md")], (
+        f"only root-level samples/ must be guarded; got {leaked}"
+    )
+
+
+def test_nested_samples_dir_is_scanned_not_guarded(tmp_path: Path) -> None:
+    """A leak inside tests/samples/ is caught by the SCAN, not skipped as
+    guarded — so the first-component matcher can't silently widen to skip it.
+
+    If ``leaked_tracked_files`` (or the skip filter) ever treated nested
+    samples/ as guarded, this forbidden token would be missed. Asserting
+    nonzero exit proves nested samples/ is still scanned.
+    """
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "tests" / "samples").mkdir(parents=True)
+    (repo / "tests" / "samples" / "fixture.md").write_text(
+        "token ZZN-NESTED-TOKEN-777 here\n"
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "tests/samples/fixture.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "t"], check=True)
+
+    result = _run_gate(repo, env_secret="ZZN-NESTED-TOKEN-777")
+    assert result.returncode != 0, (
+        f"nested tests/samples/ must be scanned, not skipped; got rc=0.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "tests/samples/fixture.md" in result.stdout + result.stderr
+
+
+def test_staged_path_blocks_a_forbidden_staged_file(tmp_path: Path) -> None:
+    """The --staged pre-commit path blocks a forbidden file that is staged but
+    NOT yet committed.
+
+    ``collect_staged_paths`` (``git diff --cached``) is a distinct code path
+    from ``collect_tracked_paths`` (``git ls-files``) with no prior coverage.
+    A refactor breaking it would let a leak reach the index in the pre-commit
+    hook. Plant a staged file and assert nonzero exit on ``--staged``.
+    """
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "staged.md").write_text("token ZZW-STAGED-TOKEN-555 here\n")
+    subprocess.run(["git", "-C", str(repo), "add", "staged.md"], check=True)
+    # Intentionally NO commit: the file is only staged.
+
+    result = _run_gate(repo, env_secret="ZZW-STAGED-TOKEN-555", staged=True)
+    assert result.returncode != 0, (
+        f"--staged must block a staged forbidden file; got rc=0.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "staged.md" in result.stdout + result.stderr
+
+
+def test_staged_path_passes_when_index_clean(tmp_path: Path) -> None:
+    """Inverse: --staged with nothing staged passes (no false positive)."""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "committed.md").write_text("clean\n")
+    subprocess.run(["git", "-C", str(repo), "add", "committed.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "t"], check=True)
+
+    result = _run_gate(repo, env_secret="ZZW-STAGED-TOKEN-555", staged=True)
+    assert result.returncode == 0, (
+        f"--staged must pass with a clean index; got rc={result.returncode}.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+def test_parse_identifier_set_strips_comments() -> None:
+    """A human-maintained denylist may document itself with # comments; comment
+    words must NOT become forbidden tokens. A parser regression here either
+    over-blocks (comment words flagged) or, if stripping is dropped, makes the
+    denylist uneditable. Pin the documented behavior.
+    """
+    from scripts.check_committed_identifiers import parse_identifier_set
+
+    raw = (
+        "# This is a comment line\n"
+        "real-host.example  # trailing comment words here\n"
+        "\n"
+        "svc-real-account\n"
+    )
+    identifiers = parse_identifier_set(raw)
+    assert identifiers == frozenset({"real-host.example", "svc-real-account"}), identifiers
+    # Comment words are not tokens.
+    assert "comment" not in identifiers
+    assert "trailing" not in identifiers
+
+
+def test_parse_identifier_set_drops_short_tokens() -> None:
+    """Tokens shorter than MIN_IDENTIFIER_LENGTH are dropped to avoid flagging
+    short common substrings. Pin the minimum-length filter so it can't silently
+    widen (flag everything) or vanish (flag 2-letter words).
+    """
+    from scripts.check_committed_identifiers import MIN_IDENTIFIER_LENGTH, parse_identifier_set
+
+    identifiers = parse_identifier_set("ab  xyz  host.example")
+    # "ab" (2) and "xyz" (3) are below the minimum (4); only host.example survives.
+    assert identifiers == frozenset({"host.example"}), identifiers
+    assert MIN_IDENTIFIER_LENGTH == 4
+
+
+def test_binary_file_is_skipped_no_false_positive(tmp_path: Path) -> None:
+    """A binary file (NUL byte, no text BOM) is skipped, not scanned — so a
+    forbidden-looking byte sequence inside one can't produce a false positive,
+    and a regression in the binary heuristic can't crash the scan.
+    """
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    binary = repo / "blob.bin"
+    # Forbidden token as text + a NUL byte -> classified binary and skipped.
+    binary.write_bytes(b"ZZV-BIN-TOKEN-333\x00\x01\x02more bytes")
+    subprocess.run(["git", "-C", str(repo), "add", "blob.bin"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "t"], check=True)
+
+    result = _run_gate(repo, env_secret="ZZV-BIN-TOKEN-333")
+    assert result.returncode == 0, (
+        f"binary file must be skipped (no false positive); got rc={result.returncode}.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )

@@ -21,6 +21,7 @@ from agent_suite.conformance import (
     ErrorCase,
     SuccessCase,
     UsageCase,
+    assert_cases_declared,
     run_broken_pipe_case,
     run_error_case,
     run_success_case,
@@ -82,6 +83,18 @@ BROKEN_PIPE_CASES = [
         env=_HERMETIC_ENV,
     ),
 ]
+
+# WI-026 meta-guard: fail collection loudly if any contract dimension empties.
+# A zero-case dimension enforces nothing and — because this module is the
+# kit-importing surface — would be indistinguishable from a pass in green CI.
+# (The whole-module-skip class is covered by test_conformance_meta_guard.py.)
+assert_cases_declared(
+    minimum=1,
+    success=SUCCESS_CASES,
+    error=ERROR_CASES,
+    usage=USAGE_CASES,
+    broken_pipe=BROKEN_PIPE_CASES,
+)
 
 
 @pytest.mark.parametrize("case", SUCCESS_CASES, ids=lambda c: c.name)

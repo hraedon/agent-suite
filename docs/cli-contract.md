@@ -127,6 +127,39 @@ clean venv (release tags). Results per component are recorded in
 agent-suite's `data/cli-conformance.json`, not in the frozen v1
 feature matrix.
 
+### Meta-guard — a gate that skips enforces nothing (WI-026)
+
+A conformance gate's failure mode must not be "silently passes." The
+2026-07-24 bug: three components' `test_cli_conformance.py` did
+`pytest.importorskip("agent_suite.conformance")` against a module name
+that was never installed, so every case *skipped*, CI stayed green, and
+zero contract was enforced. A skipped gate is indistinguishable from a
+passing one in a green build.
+
+The cure is defense in depth. Both layers ship from the kit; every
+conforming component adopts both:
+
+1. **Empty-dimension guard (kit helper).** After the kit import, call
+   `assert_cases_declared(success=..., error=..., usage=..., minimum=1)`
+   once at module top. It raises `ConformanceGateError` at collection
+   time if any named case group is short of `minimum` — catching the
+   "module loaded but a refactor emptied a dimension" class. It also
+   refuses a no-arg call (a guard over no dimensions protects nothing).
+
+2. **Whole-module-skip guard (meta test).** Add a
+   `test_conformance_meta_guard.py` (see agent-suite's for the reference
+   shape) that runs the conformance module as a subprocess and asserts
+   ≥1 case *passed*, not all-skipped. This is the only layer that
+   catches `importorskip` firing against a missing/wrong kit module,
+   because the importorskip'd module never reaches layer 1. The guard is
+   factored into a pure `require_gate_ran(pytest_output)` function with a
+   deny-case, so it is provably not a tautology over string matching.
+
+`importorskip` remains the right primitive for a *local, kit-less
+checkout* (a dev who skipped the `[dev]` extra should not get a hard
+error). In CI the kit is a mandatory pinned dep; layer 2 turns "CI ran
+with the kit absent/wrong-named" from a silent skip into a red build.
+
 ## Decision record — CLI over MCP
 
 Per `docs/process-calibration.md` §1: the suite keeps a CLI-first agent

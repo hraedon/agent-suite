@@ -3,13 +3,13 @@
   "cli_contract_version": 1,
   "components": {
     "agent-suite": {
-      "kit_version": "1.0.0",
+      "kit_version": "1.1.0",
       "cli_contract_version": 1,
       "lane": "source-checkout",
       "result": "pass",
-      "evidence": "tests/test_cli_conformance.py in agent-suite CI (lint-and-test job)",
-      "recorded": "2026-07-20",
-      "notes": "Wheel lane (P1) not yet wired. dry-run exit-2 convention resolved: codex-plugins dry-run now exits 0 (plan display is success, not a usage error)."
+      "evidence": "tests/test_cli_conformance.py in agent-suite CI (lint-and-test job); WI-026 meta-guard: assert_cases_declared dogfooded here + tests/test_conformance_meta_guard.py proves the gate runs (not skips)",
+      "recorded": "2026-07-25",
+      "notes": "Wheel lane (P1) not yet wired. dry-run exit-2 convention resolved: codex-plugins dry-run now exits 0. kit 1.1.0 adds assert_cases_declared (additive; family adoption is a per-repo pin bump + helper call)."
     },
     "regista": {
       "kit_version": "1.0.0",

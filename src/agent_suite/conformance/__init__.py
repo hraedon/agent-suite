@@ -16,27 +16,31 @@ from agent_suite.conformance.envelope import (
 )
 from agent_suite.conformance.kit import (
     BrokenPipeCase,
+    ConformanceGateError,
     ErrorCase,
     Framing,
     SuccessCase,
     UsageCase,
+    assert_cases_declared,
     run_broken_pipe_case,
     run_error_case,
     run_success_case,
     run_usage_case,
 )
 
-KIT_VERSION = "1.0.0"
+KIT_VERSION = "1.1.0"
 CLI_CONTRACT_VERSION = 1
 
 __all__ = [
     "KIT_VERSION",
     "CLI_CONTRACT_VERSION",
     "BrokenPipeCase",
+    "ConformanceGateError",
     "ErrorCase",
     "Framing",
     "SuccessCase",
     "UsageCase",
+    "assert_cases_declared",
     "build_envelope",
     "emit_error",
     "run_broken_pipe_case",

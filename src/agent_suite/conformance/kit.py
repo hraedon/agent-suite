@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping
@@ -79,6 +80,64 @@ class BrokenPipeCase:
 
 
 CASE_TIMEOUT: float = 60.0
+
+
+class ConformanceGateError(AssertionError):
+    """A conformance gate that declared (or ran) too few cases.
+
+    Subclasses ``AssertionError`` so it reads as a loud failure in a pytest run
+    and is caught by ``pytest.raises(AssertionError)``; it is a distinct type so
+    the *class* of bug (a gate enforcing nothing) is grep-able and reviewable
+    apart from an ordinary assertion. This is the WI-026 "fails open" hazard.
+    """
+
+
+def assert_cases_declared(
+    minimum: int = 1,
+    **named_groups: Collection[object],
+) -> None:
+    """Meta-guard (WI-026): every declared case group must be non-empty.
+
+    A conformance gate that declares zero cases for a contract dimension
+    (success / error / usage / broken-pipe) enforces nothing for it. Worse, the
+    surrounding module is conventionally ``pytest.importorskip``-guarded, so a
+    gate that collected nothing is indistinguishable from a passing one in green
+    CI — exactly the silent-skip bug that bit three components in the wild. This
+    helper fails collection loudly when any named group is short of ``minimum``.
+
+    Call it once at module top, after the kit import, so the failure surfaces at
+    collection time rather than being skippable::
+
+        assert_cases_declared(
+            minimum=1,
+            success=SUCCESS_CASES,
+            error=ERROR_CASES,
+            usage=USAGE_CASES,
+            broken_pipe=BROKEN_PIPE_CASES,
+        )
+
+    This catches the "module loaded but a dimension emptied by a refactor"
+    class. The complementary "the whole module skipped via importorskip" class
+    is caught by the meta-guard test pattern documented in
+    ``docs/cli-contract.md`` §7 — the two compose (defense in depth).
+    """
+    if minimum < 1:
+        raise ValueError(f"minimum must be >= 1, got {minimum}")
+    if not named_groups:
+        raise ConformanceGateError(
+            "assert_cases_declared was called with no case groups; a guard that "
+            "protects no dimensions enforces nothing. See docs/cli-contract.md §7 "
+            "(WI-026)."
+        )
+    short = sorted((name, len(group)) for name, group in named_groups.items() if len(group) < minimum)
+    if not short:
+        return
+    which = ", ".join(f"{name} ({n})" for name, n in short)
+    raise ConformanceGateError(
+        f"conformance gate declared fewer than {minimum} case(s) for dimension(s): "
+        f"{which}; a zero-case dimension enforces nothing and is indistinguishable "
+        f"from a pass in green CI. See docs/cli-contract.md §7 (WI-026)."
+    )
 
 
 def _run(
