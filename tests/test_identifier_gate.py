@@ -34,6 +34,15 @@ import pytest
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check_committed_identifiers.py"
 
 
+def _combined(result: subprocess.CompletedProcess) -> str:
+    """stdout+stderr with backslashes normalized to forward slashes.
+
+    The gate emits OS-native path separators (backslashes on Windows); these
+    tests assert forward-slash paths so they pass on both platforms.
+    """
+    return (result.stdout + result.stderr).replace("\\", "/")
+
+
 def test_scan_text_flags_a_forbidden_token() -> None:
     """scan_text emits a Violation for any line containing a forbidden token."""
     from scripts.check_committed_identifiers import scan_text
@@ -216,7 +225,7 @@ def test_always_on_samples_guard_blocks_without_secret(tmp_path: Path) -> None:
         f"always-on samples/ guard must block without the secret; got rc=0.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
-    assert "samples/leaked.md" in result.stdout + result.stderr
+    assert "samples/leaked.md" in _combined(result)
 
 
 def test_always_on_guard_matches_first_path_component_only() -> None:
@@ -263,7 +272,7 @@ def test_nested_samples_dir_is_scanned_not_guarded(tmp_path: Path) -> None:
         f"nested tests/samples/ must be scanned, not skipped; got rc=0.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
-    assert "tests/samples/fixture.md" in result.stdout + result.stderr
+    assert "tests/samples/fixture.md" in _combined(result)
 
 
 def test_staged_path_blocks_a_forbidden_staged_file(tmp_path: Path) -> None:
