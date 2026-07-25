@@ -356,3 +356,29 @@ def test_binary_file_is_skipped_no_false_positive(tmp_path: Path) -> None:
         f"binary file must be skipped (no false positive); got rc={result.returncode}.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
+
+
+def test_utf16_file_with_forbidden_token_is_caught(tmp_path: Path) -> None:
+    """A UTF-16 (BOM) file containing a forbidden token MUST be detected, not
+    silently skipped.
+
+    UTF-16 encodes ASCII as NUL-padded bytes, so without the BOM sniff the
+    null-byte binary heuristic would misclassify it as binary and the scan would
+    skip it — a forbidden identifier leaking past the gate undetected. This is a
+    real fails-open path for forbidden content (Windows tooling commonly emits
+    UTF-16). Planting the token and asserting nonzero exit pins the BOM sniff.
+    """
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    leaked = repo / "windows_export.txt"
+    # Encoding="utf-16" writes a BOM; the token is real text inside it.
+    leaked.write_text("leaked ZZY-UTF16-TOKEN-111 here\n", encoding="utf-16")
+    subprocess.run(["git", "-C", str(repo), "add", "windows_export.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "t"], check=True)
+
+    result = _run_gate(repo, env_secret="ZZY-UTF16-TOKEN-111")
+    assert result.returncode != 0, (
+        f"UTF-16 file with a forbidden token must be caught; got rc=0.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "windows_export.txt" in result.stdout + result.stderr

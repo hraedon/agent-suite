@@ -116,9 +116,12 @@ def assert_cases_declared(
             broken_pipe=BROKEN_PIPE_CASES,
         )
 
-    This catches the "module loaded but a dimension emptied by a refactor"
-    class. The complementary "the whole module skipped via importorskip" class
-    is caught by the meta-guard test pattern documented in
+    Scope — what this does and does not catch. It verifies the *declared lists*
+    are non-empty, so a refactor that empties a list (or moves it behind a flag)
+    fails loudly. It does NOT verify the lists are actually parametrized, nor
+    that the whole module wasn't skipped: if ``importorskip`` fires, this line is
+    never reached. The complementary "whole module skipped" / "cases declared but
+    not collected" class is caught by the meta-guard test pattern documented in
     ``docs/cli-contract.md`` §7 — the two compose (defense in depth).
     """
     if minimum < 1:
