@@ -15,9 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_suite import doctor
-from agent_suite import inventory
-from agent_suite import lock
+from agent_suite import doctor, inventory, lock
 from agent_suite.components import COMPONENTS, Tier
 from agent_suite.inventory import (
     ComponentDrift,
@@ -28,7 +26,6 @@ from agent_suite.inventory import (
     write_inventory_file,
 )
 from agent_suite.lock import ComponentPin, RegistaVersionQuad, SuiteLock
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

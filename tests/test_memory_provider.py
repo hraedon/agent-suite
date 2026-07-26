@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 import pytest
 
@@ -45,7 +45,6 @@ from agent_suite.lock import (
     serialize_lock,
     write_lock_file,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRACTS_DIR = REPO_ROOT / "data" / "contracts"

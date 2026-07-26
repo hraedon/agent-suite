@@ -240,9 +240,9 @@ def test_lock_check_memory_provider_drift_uses_current_provider() -> None:
     from agent_suite.lock import (
         ComponentPin,
         ProviderExtension,
+        RegistaVersionQuad,
         SuiteLock,
         check_drift,
-        RegistaVersionQuad,
     )
 
     quad = RegistaVersionQuad(

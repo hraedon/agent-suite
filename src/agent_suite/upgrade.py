@@ -24,15 +24,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol, assert_never, cast
 
-from agent_suite.components import COMPONENTS, Component, Locality, UpgradeKind
 from agent_suite import doctor as doctor_mod
 from agent_suite import lock as lock_mod
+from agent_suite.components import COMPONENTS, Component, Locality, UpgradeKind
 from agent_suite.runtime_provenance import (
     InstallMode,
     RuntimeProvenance,
     probe_runtime_provenance,
 )
-
 
 # ---------------------------------------------------------------------------
 # Injectable interfaces (same shape as doctor.Runner / lock.VersionRunner)

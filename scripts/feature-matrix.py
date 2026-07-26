@@ -19,7 +19,7 @@ import importlib.util
 import json
 import sys
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, assert_never
@@ -709,7 +709,7 @@ def _matrix() -> Matrix:
     # observed_revisions), then reconstruct the Matrix dataclass.
     payload: dict[str, Any] = {
         "version": "v1",
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "status_source": "hand-assessed",
         "observed_revisions": {},
         "profiles": ["A", "B", "C"],

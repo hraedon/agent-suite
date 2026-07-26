@@ -44,8 +44,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 
-from agent_suite import doctor
-from agent_suite import lock
+from agent_suite import doctor, lock
 from agent_suite.components import COMPONENTS, Component
 from agent_suite.runtime_provenance import read_runtime_revisions
 

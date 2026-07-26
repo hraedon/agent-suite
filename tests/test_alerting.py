@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 import pytest
 
@@ -20,7 +20,6 @@ from agent_suite.alerting import (
     run_alert_check,
 )
 from agent_suite.doctor import SuiteReport
-
 
 # ---------------------------------------------------------------------------
 # Helpers

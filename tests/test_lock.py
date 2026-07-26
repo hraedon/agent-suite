@@ -24,7 +24,6 @@ from agent_suite.lock import (
     write_lock_file,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
@@ -628,7 +627,7 @@ def test_read_component_revisions_reads_local_checkout_sha(
     import os
     import subprocess as sp
 
-    from agent_suite.components import _component, Tier
+    from agent_suite.components import Tier, _component
     from agent_suite.lock import read_component_revisions
 
     basename = "fake-suite-comp"
@@ -654,7 +653,7 @@ def test_candidate_revision_is_omitted_for_dirty_checkout(tmp_path: Path) -> Non
     import os
     import subprocess as sp
 
-    from agent_suite.components import _component, Tier
+    from agent_suite.components import Tier, _component
     from agent_suite.lock import read_candidate_revisions
 
     checkout = tmp_path / "dirty-tool"
@@ -688,7 +687,7 @@ def test_candidate_revision_is_omitted_for_dirty_checkout(tmp_path: Path) -> Non
 def test_read_candidate_versions_matches_root_and_nested_distributions(
     tmp_path: Path,
 ) -> None:
-    from agent_suite.components import _component, Tier
+    from agent_suite.components import Tier, _component
     from agent_suite.lock import read_candidate_versions
 
     root_checkout = tmp_path / "root-tool"
@@ -718,7 +717,7 @@ def test_read_candidate_versions_matches_root_and_nested_distributions(
 
 
 def test_read_candidate_versions_ignores_unrelated_distribution(tmp_path: Path) -> None:
-    from agent_suite.components import _component, Tier
+    from agent_suite.components import Tier, _component
     from agent_suite.lock import read_candidate_versions
 
     checkout = tmp_path / "tool"
@@ -826,9 +825,8 @@ def test_suite_release_prefers_release_board(tmp_path: Path, monkeypatch) -> Non
     """_suite_release reads data/release-board.json relative to the module file."""
     import json as _json
 
-    from agent_suite.lock import _suite_release
-
     import agent_suite.lock as lock_mod
+    from agent_suite.lock import _suite_release
 
     # Fake module location: <tmp>/src/agent_suite/lock.py
     # _suite_release walks parents[2] to find <tmp> and reads data/release-board.json.
@@ -845,9 +843,8 @@ def test_suite_release_prefers_release_board(tmp_path: Path, monkeypatch) -> Non
 
 def test_suite_release_falls_back_when_no_board(tmp_path: Path, monkeypatch) -> None:
     """Without release-board.json, _suite_release still returns a string."""
-    from agent_suite.lock import _suite_release
-
     import agent_suite.lock as lock_mod
+    from agent_suite.lock import _suite_release
 
     monkeypatch.setattr(
         lock_mod, "__file__", str(tmp_path / "nowhere" / "lock.py")
@@ -1126,7 +1123,7 @@ def test_read_component_revisions_finds_checkout_from_non_workspace_cwd(
     import os
     import subprocess as sp
 
-    from agent_suite.components import _component, Tier
+    from agent_suite.components import Tier, _component
     from agent_suite.lock import read_component_revisions
 
     basename = "fake-suite-comp-cwd"
@@ -1156,7 +1153,7 @@ def test_read_component_revisions_honest_none_when_checkout_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When the checkout is absent, the revision is honestly None (M-5)."""
-    from agent_suite.components import _component, Tier
+    from agent_suite.components import Tier, _component
     from agent_suite.lock import read_component_revisions
 
     monkeypatch.setenv("SUITE_WORKSPACE_ROOT", str(tmp_path / "nonexistent"))

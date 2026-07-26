@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import json
 import subprocess
-from typing import Mapping
-
+from collections.abc import Mapping
+from datetime import UTC
 
 from agent_suite.key_watch import (
     KeyAgeStatus,
@@ -22,7 +22,6 @@ from agent_suite.key_watch import (
     format_key_rotation_text,
     format_store_growth_text,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -63,9 +62,9 @@ def _key(valid_from: str, key_id: str = "k1", valid_to: str | None = None) -> di
 
 
 def test_key_rotation_ok_when_keys_within_cadence() -> None:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    recent = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    recent = (datetime.now(UTC) - timedelta(days=10)).isoformat()
     runner = StubRunner({
         "regista": _completed(stdout=_principal_json([
             {"principal_id": "alice", "keys": [_key(recent)]},
@@ -79,9 +78,9 @@ def test_key_rotation_ok_when_keys_within_cadence() -> None:
 
 
 def test_key_rotation_approaching_warns() -> None:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    old = (datetime.now(timezone.utc) - timedelta(days=85)).isoformat()
+    old = (datetime.now(UTC) - timedelta(days=85)).isoformat()
     runner = StubRunner({
         "regista": _completed(stdout=_principal_json([
             {"principal_id": "alice", "keys": [_key(old)]},
@@ -95,9 +94,9 @@ def test_key_rotation_approaching_warns() -> None:
 
 
 def test_key_rotation_expired_fails() -> None:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    expired = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
+    expired = (datetime.now(UTC) - timedelta(days=100)).isoformat()
     runner = StubRunner({
         "regista": _completed(stdout=_principal_json([
             {"principal_id": "alice", "keys": [_key(expired)]},
@@ -111,10 +110,10 @@ def test_key_rotation_expired_fails() -> None:
 
 
 def test_key_rotation_skips_windowed_out_keys() -> None:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
-    valid_to = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    old = (datetime.now(UTC) - timedelta(days=200)).isoformat()
+    valid_to = (datetime.now(UTC) - timedelta(days=10)).isoformat()
     runner = StubRunner({
         "regista": _completed(stdout=_principal_json([
             {"principal_id": "alice", "keys": [_key(old, valid_to=valid_to)]},
@@ -150,9 +149,9 @@ def test_key_rotation_error_on_bad_json() -> None:
 
 
 def test_key_rotation_handles_list_format() -> None:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    recent = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    recent = (datetime.now(UTC) - timedelta(days=5)).isoformat()
     runner = StubRunner({
         "regista": _completed(stdout=json.dumps([
             {"principal_id": "alice", "keys": [_key(recent)]},
@@ -165,9 +164,9 @@ def test_key_rotation_handles_list_format() -> None:
 
 
 def test_key_rotation_handles_dict_with_principals_key() -> None:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    recent = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    recent = (datetime.now(UTC) - timedelta(days=5)).isoformat()
     runner = StubRunner({
         "regista": _completed(stdout=json.dumps({
             "principals": [

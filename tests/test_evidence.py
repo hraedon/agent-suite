@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 from agent_suite.evidence import (
     EvidenceExportResult,

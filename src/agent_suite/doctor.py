@@ -29,10 +29,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol, assert_never
 
-from agent_suite import key_watch
-from agent_suite import lock
-from agent_suite import runtime_provenance
-from agent_suite import verify_restore
+from agent_suite import key_watch, lock, runtime_provenance, verify_restore
 from agent_suite._redact import redact_url as _redact_url
 from agent_suite.codex_catalog import CODEX_PLUGIN_CATALOG, CodexPluginId, with_marketplace
 from agent_suite.codex_health import CodexHealthReport, check_codex_health, format_codex_health_text

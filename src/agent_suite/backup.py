@@ -20,7 +20,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Protocol, assert_never
@@ -111,7 +111,7 @@ def _mask_dsn(dsn: str) -> str:
         masked_parts: list[str] = []
         for part in parts:
             if "=" in part:
-                key, _, value = part.partition("=")
+                key, _, _value = part.partition("=")
                 if key in ("password", "pass", "pwd"):
                     masked_parts.append(f"{key}=***")
                 else:
@@ -366,7 +366,7 @@ def run_backup(
     else:
         dump_hash = _sha256_file(dump_path) if dump_path.exists() else None
         manifest = {
-            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "backup_dir": str(backup_dir),
             "dsn_masked": _mask_dsn(resolved_dsn) if resolved_dsn else None,
             "database_snapshot": str(dump_path) if dump_path.exists() else None,

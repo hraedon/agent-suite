@@ -27,6 +27,7 @@ from typing import Protocol, assert_never
 
 from agent_suite import identity
 from agent_suite._redact import redact_url
+from agent_suite.components import COMPONENTS, Component, Tier
 from agent_suite.harness import (
     HarnessTarget,
     expand_harness_target,
@@ -37,9 +38,6 @@ from agent_suite.harness_install import (
     install_harness_argv,
     requires_structured_install_result,
 )
-
-from agent_suite.components import COMPONENTS, Component, Tier
-
 
 # ---------------------------------------------------------------------------
 # Injectable interfaces (same shape as doctor.Runner / lock.VersionRunner)

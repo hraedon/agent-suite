@@ -32,8 +32,8 @@ KIT_VERSION = "1.1.0"
 CLI_CONTRACT_VERSION = 1
 
 __all__ = [
-    "KIT_VERSION",
     "CLI_CONTRACT_VERSION",
+    "KIT_VERSION",
     "BrokenPipeCase",
     "ConformanceGateError",
     "ErrorCase",

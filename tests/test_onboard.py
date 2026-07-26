@@ -8,25 +8,24 @@ in CI)").
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 import pytest
 
+from agent_suite.harness import HarnessTarget
 from agent_suite.onboard import (
+    RECOGNIZED_SPEC_VERSIONS,
     OnboardResult,
+    OnboardStatus,
     OnboardStep,
     OnboardStepResult,
-    OnboardStatus,
-    RECOGNIZED_SPEC_VERSIONS,
     _compute_ok,
     _extract_schema_version,
     _is_terminal,
     format_text,
     run_onboard,
 )
-from agent_suite.harness import HarnessTarget
-
 
 # ---------------------------------------------------------------------------
 # Helpers

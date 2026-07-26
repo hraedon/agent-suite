@@ -464,9 +464,9 @@ def _mutate_anchor_mismatch(proj: RegistaProject) -> None:
 
 def _mutate_unauthorized_project_access(proj: RegistaProject) -> None:
     import psycopg
+    import regista as regista_pkg
     from psycopg.sql import SQL, Identifier
     from regista import Regista
-    import regista as regista_pkg
     from regista.testing import drop_project_schema
 
     wi_id = _drive_to_done(proj)
@@ -512,9 +512,9 @@ def _mutate_revoked_key(proj: RegistaProject) -> None:
     principal binding.  This mirrors how ``anchor_mismatch`` tests
     ``verify_anchor_receipt`` rather than ``replay``.
     """
-    import nacl.signing
     from datetime import UTC, datetime
 
+    import nacl.signing
     from regista import Event
     from regista._events import sign_event
     from regista._signing_scheme import Ed25519Scheme

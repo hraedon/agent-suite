@@ -13,7 +13,7 @@ dependencies = []  # stdlib-only core
 Repository = "https://github.com/YOUR-ORG/agent-suite"
 
 [project.optional-dependencies]
-dev = ["ruff>=0.5,<0.16", "mypy", "pytest", "build", "hatchling"]  # build+hatchling: conformance wheel build-test; ruff<0.16: 0.16 expanded the default rule set (isort/TRY/BLE/PLW/UP/SIM), flagging 300+ pre-existing lines — adopt deliberately, not via an unpinned bump
+dev = ["ruff>=0.16,<1", "mypy", "pytest", "build", "hatchling"]  # build+hatchling: conformance wheel build-test; ruff pinned to the 0.16 line with an explicit lint select (see [tool.ruff.lint])
 vault = ["hvac"]                     # HashiCorp Vault secret backend (edge only)
 azure = ["azure-identity", "azure-keyvault-secrets", "PyJWT[crypto]"]  # Azure Key Vault + Entra (edge only)
 windows = ["pywin32; sys_platform == 'win32'"]        # DPAPI / Credential Manager (edge only)
@@ -41,6 +41,16 @@ ignore_missing_imports = true
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+# Deliberate, explicit selection (WI-028) — ruff 0.16 expanded its default
+# rule set (TRY/BLE/PLW/SIM/S), which flagged 300+ pre-existing lines on an
+# unpinned CI run. We adopt the family's valuable rules (isort, pyupgrade,
+# naming, warnings, ruff-specific) plus ruff's standard E4/E7/E9 + F core,
+# and deliberately exclude the noisy expanded rules (TRY/BLE/PLW/SIM/S) and
+# E501 (line-length was never repo-wide enforced; a 118-line backlog —
+# tracked as follow-up) so CI is green on 0.16 without a risky bulk rewrite.
+select = ["E4", "E7", "E9", "F", "I", "N", "W", "UP", "RUF"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

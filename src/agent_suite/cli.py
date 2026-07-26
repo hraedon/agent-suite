@@ -424,9 +424,10 @@ def main(argv: list[str] | None = None) -> int:
     command = Command(args.command)
     match command:
         case Command.DOCTOR:
+            import json as _json
+
             from agent_suite.doctor import aggregate, format_text
             from agent_suite.profiles import Profile
-            import json as _json
 
             verify_restore_dsn: str | None = None
             if getattr(args, "verify_restore", False):
@@ -575,7 +576,8 @@ def main(argv: list[str] | None = None) -> int:
                 write_lock_file(lock)
                 return 0
         case Command.BOOTSTRAP:
-            from agent_suite.bootstrap import format_text as _fmt_bs, run_bootstrap
+            from agent_suite.bootstrap import format_text as _fmt_bs
+            from agent_suite.bootstrap import run_bootstrap
             from agent_suite.config import memory_provider_config
 
             mp_config = memory_provider_config()
@@ -603,7 +605,8 @@ def main(argv: list[str] | None = None) -> int:
         case Command.ONBOARD:
             from pathlib import Path
 
-            from agent_suite.onboard import format_text as _fmt_ob, run_onboard
+            from agent_suite.onboard import format_text as _fmt_ob
+            from agent_suite.onboard import run_onboard
 
             spec_path = Path(args.spec) if args.spec else None
             ob_result = run_onboard(
@@ -621,7 +624,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(_fmt_ob(ob_result))
             return 0 if ob_result.ok else 1
         case Command.VERIFY_RESTORE:
-            from agent_suite.verify_restore import format_text as _fmt_vr, verify_restore
+            from agent_suite.verify_restore import format_text as _fmt_vr
+            from agent_suite.verify_restore import verify_restore
 
             vr_result = verify_restore(
                 dsn=args.dsn or os.environ.get("REGISTA_DSN", ""),
@@ -848,18 +852,20 @@ def main(argv: list[str] | None = None) -> int:
                 else 1
             )
         case Command.DUAL_CONTROL:
+            import json as _json
+            import time as _time
             from pathlib import Path
 
             from agent_suite.dual_control import (
                 ProtectedOperation,
+                StepUpLevel,
+                ValidatedToken,
+                _hash_token,
                 create_approval,
                 create_request,
                 evaluate_approval,
             )
             from agent_suite.dual_control_store import DualControlStore
-            from agent_suite.dual_control import ValidatedToken, StepUpLevel, _hash_token
-            import json as _json
-            import time as _time
 
             # Validate flags before touching the store: the store eagerly
             # creates its directory, and a flag error must not depend on
@@ -997,7 +1003,8 @@ def main(argv: list[str] | None = None) -> int:
         case Command.DEPLOY:
             from pathlib import Path
 
-            from agent_suite.deploy import format_text as _fmt_dep, run_deploy
+            from agent_suite.deploy import format_text as _fmt_dep
+            from agent_suite.deploy import run_deploy
 
             spec_path = Path(args.spec) if args.spec else None
             from agent_suite.config import memory_provider_config
@@ -1029,7 +1036,8 @@ def main(argv: list[str] | None = None) -> int:
         case Command.EXPORT_EVIDENCE:
             from pathlib import Path
 
-            from agent_suite.evidence import format_text as _fmt_ev, run_evidence_export
+            from agent_suite.evidence import format_text as _fmt_ev
+            from agent_suite.evidence import run_evidence_export
 
             ev_result = run_evidence_export(
                 output_dir=Path(args.output),
@@ -1206,8 +1214,10 @@ def main(argv: list[str] | None = None) -> int:
 
             from agent_suite.inventory import (
                 collect_inventory,
-                format_text as _fmt_inv,
                 write_inventory_file,
+            )
+            from agent_suite.inventory import (
+                format_text as _fmt_inv,
             )
 
             shared_endpoints = _shared_endpoints_from_env()

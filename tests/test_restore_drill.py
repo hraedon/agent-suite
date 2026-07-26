@@ -28,11 +28,11 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import (
-    _EphemeralPostgres,
-    _InteropDsn,
     _docker_available,
     _dsn_available,
+    _EphemeralPostgres,
     _generate_hmac_key,
+    _InteropDsn,
     _regista_available,
 )
 
@@ -108,8 +108,8 @@ def test_restore_drill_verifies_intact(interop_dsn: _InteropDsn) -> None:
     restored DSN — proving the restored backup is cryptographically intact.
     """
     import psycopg
-    from regista import Regista
     import regista as regista_pkg
+    from regista import Regista
     from regista.testing import drop_project_schema
 
     project = f"restore_{uuid.uuid4().hex[:8]}"

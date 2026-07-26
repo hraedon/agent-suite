@@ -6,15 +6,14 @@ from pathlib import Path
 import pytest
 
 from agent_suite.human_surfaces import (
-    HumanRole,
     STATUS_VOCABULARY,
+    HumanRole,
     SupportLevel,
     SurfaceArea,
     SurfaceRisk,
     area_label,
     load_registry,
 )
-
 
 REGISTRY = Path(__file__).resolve().parent.parent / "data" / "contracts" / "human-surfaces.json"
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -22,7 +23,6 @@ from agent_suite.dual_control_store import (
     DualControlStore,
     DualControlStoreError,
 )
-from pathlib import Path
 
 
 def _make_token(

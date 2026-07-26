@@ -8,7 +8,7 @@ in CI)").
 from __future__ import annotations
 
 import subprocess
-from typing import Mapping
+from collections.abc import Mapping
 
 import pytest
 
@@ -25,7 +25,6 @@ from agent_suite.bootstrap import (
     run_bootstrap,
 )
 from agent_suite.harness import HarnessTarget
-
 
 # ---------------------------------------------------------------------------
 # Helpers

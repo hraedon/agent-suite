@@ -26,9 +26,9 @@ from pathlib import Path
 from typing import Protocol, assert_never
 
 from agent_suite.bootstrap import run_bootstrap
-from agent_suite.harness import HarnessTarget, normalize_harness_target
 from agent_suite.components import COMPONENTS
 from agent_suite.doctor import aggregate
+from agent_suite.harness import HarnessTarget, normalize_harness_target
 from agent_suite.lock import (
     check_drift,
     generate_lock,

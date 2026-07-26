@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 import pytest
 
@@ -33,15 +33,14 @@ from agent_suite.upgrade import (
     RollbackResult,
     RollbackStatus,
     UpgradeResult,
+    _mutation_command,
     check_advancements,
     format_advancement_text,
     format_rollback_text,
     format_upgrade_text,
     run_rollback,
     run_upgrade,
-    _mutation_command,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

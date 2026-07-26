@@ -23,7 +23,6 @@ from typing import Protocol, assert_never
 
 from agent_suite.profiles import Profile
 
-
 PROTOCOL_VERSION = "1.0.0-draft.1"
 
 

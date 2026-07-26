@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_suite.bootstrap import BootstrapResult, StepResult, StepKind, StepStatus
+from agent_suite.bootstrap import BootstrapResult, StepKind, StepResult, StepStatus
 from agent_suite.deploy import (
     DeployResult,
     DeployStep,

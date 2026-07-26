@@ -6,8 +6,8 @@ All tests use stubbed runners — no real systemd or Windows.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 import pytest
 
@@ -18,12 +18,11 @@ from agent_suite.schedule import (
     ScheduleKind,
     ScheduleReport,
     ScheduleResult,
+    format_schedule_report,
     generate_schedule_files,
     install_schedules,
     remove_schedules,
-    format_schedule_report,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

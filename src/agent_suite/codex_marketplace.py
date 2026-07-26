@@ -14,7 +14,6 @@ from pathlib import Path
 
 from agent_suite.codex_catalog import CodexPluginEntry, CodexPluginProfile
 
-
 _OWNER_FILE = ".agent-suite-marketplace.json"
 _MARKETPLACE_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 

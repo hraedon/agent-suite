@@ -53,7 +53,7 @@ class DualControlState(Enum):
 
 
 class TokenValidator(Protocol):
-    def validate(self, token: str, required_level: StepUpLevel) -> "ValidatedToken":
+    def validate(self, token: str, required_level: StepUpLevel) -> ValidatedToken:
         ...
 
 

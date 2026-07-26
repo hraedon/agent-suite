@@ -5,12 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from agent_suite.profiles import Profile
 from agent_suite.windows_setup import (
     PROTOCOL_VERSION,
     ActionState,
     HostObservation,
-    PlanState,
     PlannedAction,
+    PlanState,
     PreflightState,
     ProbeState,
     ReceiptState,
@@ -26,7 +27,6 @@ from agent_suite.windows_setup import (
     sign_receipt,
     verify_signed_receipt,
 )
-from agent_suite.profiles import Profile
 
 
 def _observation(**changes: object) -> HostObservation:

@@ -19,7 +19,6 @@ from urllib.parse import urlparse
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Prerequisite gating — building blocks for module-level skip decisions
 # ---------------------------------------------------------------------------
@@ -247,8 +246,8 @@ def regista_project(interop_dsn: str, tmp_path: Path) -> Generator[RegistaProjec
             )
         pytest.skip("regista is not installed")
 
-    from regista import Regista
     import regista as regista_pkg
+    from regista import Regista
     from regista.testing import drop_project_schema
 
     project = f"conftest_{uuid.uuid4().hex[:8]}"

@@ -32,6 +32,8 @@ from agent_suite.release_manifest import (
     ManifestVerifyResult,
     ReleaseManifest,
     ReleaseManifestSubcommand,
+    _sha256_text,
+    _wheel_filename,
     build_manifest,
     collect_wheel_artifacts,
     compute_manifest_self_sha256,
@@ -41,8 +43,6 @@ from agent_suite.release_manifest import (
     serialize_manifest,
     verify_manifest_against_wheels,
 )
-from agent_suite.release_manifest import _sha256_text, _wheel_filename
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -354,7 +354,7 @@ def test_deserialize_accepts_empty_umbrella_tag_sha() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_matching_inventory() -> "build_inventory":  # type: ignore[valid-type]
+def _build_matching_inventory() -> build_inventory:  # type: ignore[valid-type]
     """Build an inventory whose components match the fixture manifest exactly."""
     versions = {ident: data[1] for ident, data in _CONSTITUENT_DATA.items()}
     revisions = {ident: data[2] for ident, data in _CONSTITUENT_DATA.items()}
@@ -841,9 +841,8 @@ def test_cli_release_manifest_build_missing_lock(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """`release-manifest build` exits non-zero when SUITE.lock is missing."""
-    from agent_suite.cli import main
-
     import agent_suite.lock as lock_mod
+    from agent_suite.cli import main
 
     monkeypatch.setattr(lock_mod, "DEFAULT_LOCK_PATH", tmp_path / "nonexistent.lock")
 

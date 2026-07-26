@@ -107,8 +107,8 @@ def _enum_values(enum_cls: Any) -> set[str]:
 def _cross_reference_health(fixture: dict[str, Any]) -> list[str]:
     errors: list[str] = []
 
-    from agent_suite.doctor import ComponentStatus
     from agent_suite.components import Locality, Tier
+    from agent_suite.doctor import ComponentStatus
     from agent_suite.key_watch import KeyAgeStatus, StoreGrowthStatus
     from agent_suite.lock import DriftKind
     from agent_suite.verify_restore import ProjectVerifyStatus
@@ -335,8 +335,8 @@ def _snapshot_notification(fixture: dict[str, Any]) -> list[str]:
 
 def _cross_reference_human_surfaces(fixture: dict[str, Any]) -> list[str]:
     from agent_suite.human_surfaces import (
-        HumanRole,
         STATUS_VOCABULARY,
+        HumanRole,
         SupportLevel,
         SurfaceArea,
         SurfaceRisk,
@@ -367,6 +367,7 @@ def _cross_reference_human_surfaces(fixture: dict[str, Any]) -> list[str]:
 
 
 def _cross_reference_windows_setup(fixture: dict[str, Any]) -> list[str]:
+    from agent_suite.profiles import Profile
     from agent_suite.windows_setup import (
         PROTOCOL_VERSION,
         ActionState,
@@ -376,7 +377,6 @@ def _cross_reference_windows_setup(fixture: dict[str, Any]) -> list[str]:
         ReceiptState,
         SetupOperation,
     )
-    from agent_suite.profiles import Profile
 
     errors: list[str] = []
     expected = {

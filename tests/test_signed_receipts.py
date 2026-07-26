@@ -1,20 +1,20 @@
 from __future__ import annotations
 
+from agent_suite.profiles import Profile
 from agent_suite.windows_setup import (
     HostObservation,
     ProbeState,
+    ReceiptState,
     SetupOperation,
     SetupReceipt,
-    ReceiptState,
-    SigningKeyRef,
+    SetupRequest,
     SignedReceipt,
+    SigningKeyRef,
+    build_plan,
+    dry_run,
     sign_receipt,
     verify_signed_receipt,
-    dry_run,
-    build_plan,
-    SetupRequest,
 )
-from agent_suite.profiles import Profile
 
 
 def _make_receipt() -> SetupReceipt:

@@ -23,7 +23,7 @@ import json
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -280,7 +280,7 @@ def run_evidence_export(
         ))
 
     manifest = {
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "output_dir": str(output_dir),
         "projects": [r.to_dict() for r in results],
         "dsn_provided": dsn is not None,

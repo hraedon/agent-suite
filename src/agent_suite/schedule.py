@@ -28,7 +28,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol, assert_never
 
-
 # ---------------------------------------------------------------------------
 # Injectable interfaces
 # ---------------------------------------------------------------------------

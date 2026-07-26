@@ -159,7 +159,11 @@ def test_current_tree_is_clean_against_canonical_denylist() -> None:
     if not denylist_path.is_file():
         pytest.skip("canonical denylist not present locally; CI gate is authoritative")
     raw = denylist_path.read_text(encoding="utf-8")
-    from scripts.check_committed_identifiers import parse_identifier_set, collect_tracked_paths, scan_files
+    from scripts.check_committed_identifiers import (
+        collect_tracked_paths,
+        parse_identifier_set,
+        scan_files,
+    )
 
     identifiers = parse_identifier_set(raw)
     if not identifiers:

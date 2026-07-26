@@ -235,12 +235,11 @@ def test_drive_work_item_across_real_faces_to_done(
         )
 
     import regista
-    from regista.testing import drop_project_schema
-
     from agent_notes.core.actor import Actor as AgentActor
     from agent_notes.core.regista_face import RegistaFace
     from dossier.actors import Actor as HumanActor
     from dossier.gateway import RegistaGateway
+    from regista.testing import drop_project_schema
 
     project = f"faces_{uuid.uuid4().hex[:8]}"
 

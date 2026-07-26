@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from typing import Callable
+from collections.abc import Callable
 
 import pytest
 
@@ -25,7 +25,6 @@ from agent_suite.identity import (
     run_user_offboarding,
     run_user_onboarding,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

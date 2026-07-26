@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Callable, Mapping
 
 import pytest
 

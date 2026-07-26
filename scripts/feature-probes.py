@@ -33,7 +33,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from types import ModuleType
@@ -2185,7 +2185,7 @@ def apply_probes(matrix_data: dict[str, Any]) -> dict[str, Any]:
         matrix_data["status_source"] = "hand-assessed"
 
     matrix_data["_hand_assessed_keys"] = hand_assessed_keys
-    matrix_data["generated_at"] = datetime.now(timezone.utc).isoformat().replace(
+    matrix_data["generated_at"] = datetime.now(UTC).isoformat().replace(
         "+00:00", "Z"
     )
     matrix_data["observed_revisions"] = _compute_observed_revisions()

@@ -49,7 +49,7 @@ def validate_envelope(document: Any) -> list[str]:
         violations.append("envelope 'ok' is not false")
     error = document.get("error")
     if not isinstance(error, dict):
-        return violations + ["envelope 'error' is not an object"]
+        return [*violations, "envelope 'error' is not an object"]
     code = error.get("code")
     if not isinstance(code, str) or not _CODE_RE.match(code):
         violations.append(f"error 'code' {code!r} is not a SCREAMING_SNAKE string")

@@ -7,10 +7,10 @@ from agent_suite.winsw import (
     SUITE_SERVICES,
     ServiceState,
     WinSWServiceSpec,
+    format_winsw_report,
     generate_winsw_xml,
     install_winsw_service,
     remove_winsw_service,
-    format_winsw_report,
 )
 
 

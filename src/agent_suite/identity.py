@@ -31,8 +31,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol, assert_never
 
-from agent_suite.config import user_suite_env_path, _parse_env_file
-
+from agent_suite.config import _parse_env_file, user_suite_env_path
 
 # ---------------------------------------------------------------------------
 # Injectable interfaces (same shape as bootstrap.Runner / bootstrap.Installed)

@@ -18,10 +18,9 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Mapping
 
 from agent_suite.conformance.envelope import validate_envelope
 

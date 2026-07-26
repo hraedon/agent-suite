@@ -40,7 +40,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, assert_never
 
-
 # ---------------------------------------------------------------------------
 # Injectable interfaces (same shape as bootstrap.Runner / doctor.Runner)
 # ---------------------------------------------------------------------------
@@ -259,7 +258,7 @@ def plugin_list_argv(*, available: bool = False, json_output: bool = True) -> tu
     """Build the ``codex plugin list`` argv."""
     base: tuple[str, ...] = ("codex", "plugin", "list")
     if available:
-        base = base + ("--available",)
+        base = (*base, "--available")
     return base + (("--json",) if json_output else ())
 
 

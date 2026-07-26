@@ -6,7 +6,6 @@ import subprocess
 from agent_suite.codex_catalog import CodexPluginEntry, CodexPluginId, CodexPluginProfile
 from agent_suite.codex_verify import VerifyStatus, verify_codex_profile
 
-
 _CATALOG = (
     CodexPluginEntry(
         plugin_id=CodexPluginId.AGENT_NOTES,

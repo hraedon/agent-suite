@@ -36,7 +36,6 @@ from urllib import request as urllib_request
 
 from agent_suite import doctor as doctor_mod
 
-
 # ---------------------------------------------------------------------------
 # Injectable interfaces
 # ---------------------------------------------------------------------------

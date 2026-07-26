@@ -51,7 +51,6 @@ from agent_suite.harness_install import (
     requires_structured_install_result,
 )
 
-
 # ---------------------------------------------------------------------------
 # Injectable interfaces (same shape as bootstrap.Runner / doctor.Runner)
 # ---------------------------------------------------------------------------

@@ -169,13 +169,13 @@ def test_observe_host_with_artifact_files(tmp_path: Path) -> None:
 
 
 def test_format_preflight_text_contains_state_and_checks() -> None:
+    from agent_suite.profiles import Profile
     from agent_suite.windows_setup import (
         HostObservation,
-        SetupRequest,
         SetupOperation,
+        SetupRequest,
         run_preflight,
     )
-    from agent_suite.profiles import Profile
 
     observation = HostObservation(
         os_name="Windows",
