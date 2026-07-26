@@ -51,7 +51,6 @@ build/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
-uv.lock
 
 # Editors / OS
 .DS_Store

@@ -18,24 +18,26 @@ jobs:
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # actions/checkout@v5
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # actions/setup-python@v6
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      # Resolve deps from the committed uv.lock (WI-028): a new ruff/mypy
+      # release can no longer redden main with zero code change. --frozen
+      # trusts the lockfile as-is (no fresh resolution); bump deps by
+      # regenerating uv.lock, not by letting CI resolve anew.
+      - run: uv venv
+      - run: uv sync --frozen --extra dev
 
       - name: Identifier gate
         env:
           AGENT_SUITE_FORBIDDEN_IDENTIFIERS: ${{ secrets.AGENT_SUITE_FORBIDDEN_IDENTIFIERS }}
-        run: python3 scripts/check_committed_identifiers.py
+        run: uv run python scripts/check_committed_identifiers.py
 
       - name: Plan index check
-        run: python3 scripts/plan-index.py --check
+        run: uv run python scripts/plan-index.py --check
 
       - name: Contract conformance check (WI-0.2)
-        run: python3 scripts/validate-contracts.py --check
+        run: uv run python scripts/validate-contracts.py --check
 
       - name: Feature probes check (WI-0.1)
         # Non-strict structural check: detects status/proof drift on rows
@@ -43,19 +45,19 @@ jobs:
         # return HAND_ASSESSED here (no sibling checkouts in this job) and
         # are reported as warnings, not failures. The strict check runs in
         # the feature-probes job below with all siblings checked out.
-        run: python3 scripts/feature-probes.py --check
+        run: uv run python scripts/feature-probes.py --check
 
       - name: Architecture test (import boundary)
-        run: pytest tests/test_architecture.py -q
+        run: uv run pytest tests/test_architecture.py -q
 
       - name: Lint (ruff)
-        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check-lock-agreement.py
+        run: uv run ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check-lock-agreement.py
 
       - name: Type check (mypy)
-        run: mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py
+        run: uv run mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py
 
       - name: Run tests
-        run: pytest --tb=short -q
+        run: uv run pytest --tb=short -q
 
   interop:
     runs-on: ubuntu-latest
@@ -92,10 +94,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # actions/checkout@v5
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # actions/setup-python@v6
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           python-version: "3.12"
-          cache: pip
 
       - name: Install PostgreSQL 18 client tools
         run: |
@@ -104,8 +105,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client-18
 
-      - name: Install agent-suite
-        run: pip install -e ".[dev]"
+      # agent-suite + its dev deps come from the frozen lock (WI-028); the
+      # sibling components below are pinned-SHA pip installs into the same venv.
+      - run: uv venv
+      - run: uv sync --frozen --extra dev
 
       - name: Install regista (spine)
         # regista-hraedon is the published PyPI distribution of hraedon/regista.
@@ -113,7 +116,7 @@ jobs:
         # SHA for reproducibility checks; the install pulls from PyPI for speed.
         # 0.5.3 is the Plan 018 P0 rollup (stderr logging default, CLI error
         # envelope, no-traceback error paths, conformance kit); 0.5.2 predated it.
-        run: pip install regista-hraedon==0.5.3
+        run: uv pip install regista-hraedon==0.5.3
 
       # Both face repos are public — install as a hard required step. If the
       # install fails, CI fails: combined with INTEROP_REQUIRE_FACES=1 above,
@@ -121,11 +124,11 @@ jobs:
       # (Plan 002 WI-1).
       - name: Install faces (agent-notes + dossier)
         run: |
-          pip install "git+https://github.com/hraedon/agent-notes.git@${AGENT_NOTES_SHA}" \
-                      "git+https://github.com/hraedon/dossier.git@${DOSSIER_SHA}"
+          uv pip install "git+https://github.com/hraedon/agent-notes.git@${AGENT_NOTES_SHA}" \
+                       "git+https://github.com/hraedon/dossier.git@${DOSSIER_SHA}"
 
       - name: Install agent-provenance (cairn)
-        run: pip install "git+https://github.com/hraedon/agent-provenance.git@${CAIRN_SHA}"
+        run: uv pip install "git+https://github.com/hraedon/agent-provenance.git@${CAIRN_SHA}"
 
       - name: Set up agent-notes schema (skill-smoke prerequisite)
         run: |
@@ -158,7 +161,7 @@ jobs:
         env:
           AGENT_NOTES_SMOKE_DSN: postgresql://interop:interop_pw@localhost:5432/agent_notes_smoke
           AGENT_NOTES_SMOKE_REGISTA_DSN: postgresql://interop:interop_pw@localhost:5432/agent_notes_smoke_regista
-        run: pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py tests/test_adversarial_corpus.py tests/test_skill_smoke.py -v --tb=short
+        run: uv run pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py tests/test_adversarial_corpus.py tests/test_skill_smoke.py -v --tb=short
 
   # Plan 015 WI-0.1 — strict feature-probe verification with all sibling
   # components checked out at SUITE.lock-pinned revisions. Prevents the
@@ -172,18 +175,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # actions/checkout@v5
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # actions/setup-python@v6
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           python-version: "3.12"
-          cache: pip
 
-      - name: Install agent-suite
-        run: pip install -e ".[dev]"
+      - run: uv venv
+      - run: uv sync --frozen --extra dev
 
       - name: Checkout sibling components at SUITE.lock-pinned revisions
         run: |
           mkdir -p /tmp/siblings
-          python3 -c "
+          uv run python -c "
           import tomllib, subprocess
           from pathlib import Path
           lock = tomllib.loads(Path('SUITE.lock').read_text())
@@ -204,19 +206,19 @@ jobs:
       - name: Check cross-repo lock agreement
         env:
           AGENT_SUITE_SIBLINGS_ROOT: /tmp/siblings
-        run: python3 scripts/check-lock-agreement.py
+        run: uv run python scripts/check-lock-agreement.py
 
       - name: Install regista (spine)
-        run: pip install /tmp/siblings/regista
+        run: uv pip install /tmp/siblings/regista
 
       - name: Install faces (agent-notes + dossier)
-        run: pip install /tmp/siblings/agent-notes /tmp/siblings/dossier
+        run: uv pip install /tmp/siblings/agent-notes /tmp/siblings/dossier
 
       - name: Install agent-provenance (cairn)
-        run: pip install /tmp/siblings/agent-provenance
+        run: uv pip install /tmp/siblings/agent-provenance
 
       - name: Install agent-capability-broker
-        run: pip install /tmp/siblings/agent-capability-broker
+        run: uv pip install /tmp/siblings/agent-capability-broker
 
       # agent-wake has no importable package (package=None in the probe
       # revision sources); only its source checkout is needed for the
@@ -225,7 +227,7 @@ jobs:
       - name: Run feature-probe check (strict)
         env:
           AGENT_SUITE_SIBLINGS_ROOT: /tmp/siblings
-        run: python3 scripts/feature-probes.py --check --strict
+        run: uv run python scripts/feature-probes.py --check --strict
 
   # Plan 003 WI-5.1 — prove agent-suite imports and unit tests pass on native
   # Windows. agent-suite is stdlib-only, so this is primarily a guard against
@@ -242,25 +244,23 @@ jobs:
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # actions/checkout@v5
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # actions/setup-python@v6
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      - run: uv venv
+      - run: uv sync --frozen --extra dev
 
       - name: Architecture test (import boundary)
-        run: pytest tests/test_architecture.py -q
+        run: uv run pytest tests/test_architecture.py -q
 
       - name: Contract conformance check (WI-0.2)
-        run: python3 scripts/validate-contracts.py --check
+        run: uv run python scripts/validate-contracts.py --check
 
       - name: Lint (ruff)
-        run: ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check-lock-agreement.py
+        run: uv run ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check-lock-agreement.py
 
       - name: Type check (mypy)
-        run: mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py
+        run: uv run mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py
 
       - name: Run tests
-        run: pytest --tb=short -q
+        run: uv run pytest --tb=short -q
