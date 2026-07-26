@@ -556,6 +556,7 @@ def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, int, bool
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
         if result.returncode == 0:
             sha = result.stdout.strip()
@@ -571,6 +572,7 @@ def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, int, bool
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
         if result.returncode == 0:
             ahead = int(result.stdout.strip())
@@ -584,6 +586,7 @@ def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, int, bool
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
         if result.returncode == 0:
             behind = int(result.stdout.strip())
@@ -597,6 +600,7 @@ def _probe_origin_state(checkout_path: Path) -> tuple[str | None, int, int, bool
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
         if result.returncode == 0:
             dirty = bool(result.stdout.strip())
@@ -644,6 +648,7 @@ def _probe_head(checkout_path: Path) -> str | None:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
         if result.returncode == 0:
             sha = result.stdout.strip()

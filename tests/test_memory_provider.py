@@ -322,8 +322,12 @@ _INSTALL_OK = (
 def test_bootstrap_native_engine_done() -> None:
     runner = StubRunner({
         ("regista", "doctor"): _completed(stdout='{"reachable": true, "ok": true}'),
-        ("regista", "provision"): _completed(stdout='[{"project": "test", "schema_created": true}]'),
-        ("regista", "provision-principal"): _completed(stdout='{"principal_id": "suite-service"}'),
+        ("regista", "provision"): _completed(
+            stdout='[{"project": "test", "schema_created": true}]'
+        ),
+        ("regista", "provision-principal"): _completed(
+            stdout='{"principal_id": "suite-service"}'
+        ),
         ("regista", "secrets"): _completed(stdout="ok"),
         ("agent-notes", "install-harness"): _completed(stdout=_INSTALL_OK),
         ("cairn",): _completed(stdout=_INSTALL_OK),
@@ -346,8 +350,12 @@ def test_bootstrap_native_engine_done() -> None:
 def test_bootstrap_hindsight_unreachable_failed() -> None:
     runner = StubRunner({
         ("regista", "doctor"): _completed(stdout='{"reachable": true, "ok": true}'),
-        ("regista", "provision"): _completed(stdout='[{"project": "test", "schema_created": true}]'),
-        ("regista", "provision-principal"): _completed(stdout='{"principal_id": "suite-service"}'),
+        ("regista", "provision"): _completed(
+            stdout='[{"project": "test", "schema_created": true}]'
+        ),
+        ("regista", "provision-principal"): _completed(
+            stdout='{"principal_id": "suite-service"}'
+        ),
         ("regista", "secrets"): _completed(stdout="ok"),
         ("agent-notes", "install-harness"): _completed(stdout=_INSTALL_OK),
         ("agent-notes", "memory-provider"): _completed(
@@ -374,8 +382,12 @@ def test_bootstrap_hindsight_unreachable_failed() -> None:
 def test_bootstrap_hindsight_no_url_failed() -> None:
     runner = StubRunner({
         ("regista", "doctor"): _completed(stdout='{"reachable": true, "ok": true}'),
-        ("regista", "provision"): _completed(stdout='[{"project": "test", "schema_created": true}]'),
-        ("regista", "provision-principal"): _completed(stdout='{"principal_id": "suite-service"}'),
+        ("regista", "provision"): _completed(
+            stdout='[{"project": "test", "schema_created": true}]'
+        ),
+        ("regista", "provision-principal"): _completed(
+            stdout='{"principal_id": "suite-service"}'
+        ),
         ("regista", "secrets"): _completed(stdout="ok"),
         ("agent-notes", "install-harness"): _completed(stdout=_INSTALL_OK),
         ("cairn",): _completed(stdout=_INSTALL_OK),
@@ -399,8 +411,12 @@ def test_bootstrap_hindsight_no_url_failed() -> None:
 def test_bootstrap_hindsight_reachable_done() -> None:
     runner = StubRunner({
         ("regista", "doctor"): _completed(stdout='{"reachable": true, "ok": true}'),
-        ("regista", "provision"): _completed(stdout='[{"project": "test", "schema_created": true}]'),
-        ("regista", "provision-principal"): _completed(stdout='{"principal_id": "suite-service"}'),
+        ("regista", "provision"): _completed(
+            stdout='[{"project": "test", "schema_created": true}]'
+        ),
+        ("regista", "provision-principal"): _completed(
+            stdout='{"principal_id": "suite-service"}'
+        ),
         ("regista", "secrets"): _completed(stdout="ok"),
         ("agent-notes", "install-harness"): _completed(stdout=_INSTALL_OK),
         ("agent-notes", "memory-provider"): _completed(stdout=_mp_describe_ok()),
@@ -623,9 +639,13 @@ def test_lock_round_trip_with_provider_extension() -> None:
     lock = SuiteLock(
         release="1.0.0",
         regista_quad=None,
-        components={"regista": __import__("agent_suite.lock", fromlist=["ComponentPin"]).ComponentPin(
-            repo="YOUR-ORG/regista", version="0.4.0"
-        )},
+        components={
+            "regista": __import__(
+                "agent_suite.lock", fromlist=["ComponentPin"]
+            ).ComponentPin(
+                repo="YOUR-ORG/regista", version="0.4.0"
+            )
+        },
         provider_extension=_PROVIDER_EXT,
     )
     text = serialize_lock(lock)

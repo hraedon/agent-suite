@@ -105,6 +105,7 @@ def _marketplace_add(path: Path, expected_name: str) -> None:
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["marketplaceName"] == expected_name
@@ -318,7 +319,7 @@ def test_live_same_name_wrong_identity_is_not_false_green(
     _marketplace_add(mkt_a, "market-a")
     proc = subprocess.run(
         ("codex", "plugin", "add", "twin@market-a", "--json"),
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, check=False,
     )
     assert proc.returncode == 0, proc.stderr
 

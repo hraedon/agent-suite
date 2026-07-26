@@ -179,7 +179,10 @@ def _matrix_rows() -> list[MatrixRow]:
             profile="A",
             status=_status_label(Status.PASS),
             dependency="Plan 008 WI-3.2, Plan 009 WI-4.1",
-            proof="src/agent_suite/deploy.py; tests/test_deploy.py; probe: _probe_deploy_cli -> pass",
+            proof=(
+                "src/agent_suite/deploy.py; tests/test_deploy.py;"
+                " probe: _probe_deploy_cli -> pass"
+            ),
             excluded="SaaS, Kubernetes operator, fleet remote management",
             notes="Deploy front door composes preflight → bootstrap → onboard → lock → doctor.",
         ),
@@ -190,7 +193,10 @@ def _matrix_rows() -> list[MatrixRow]:
             profile="A",
             status=_status_label(Status.PASS),
             dependency="Plan 009 WI-1.3, Plan 009 WI-4.1",
-            proof="src/agent_suite/onboard.py; tests/test_onboard.py; probe: _probe_onboard_harness -> pass",
+            proof=(
+                "src/agent_suite/onboard.py; tests/test_onboard.py;"
+                " probe: _probe_onboard_harness -> pass"
+            ),
             excluded="—",
             notes="Suite-level onboard: spec → provision → sign event-zero → wire harness.",
         ),
@@ -256,9 +262,15 @@ def _matrix_rows() -> list[MatrixRow]:
             profile="A",
             status=_status_label(Status.PASS),
             dependency="Plan 009 WI-1.3, Plan 009 WI-2.2",
-            proof="src/agent_suite/bootstrap.py (_step_user_onboarding); probe: _probe_identity_lifecycle -> partial",
+            proof=(
+                "src/agent_suite/bootstrap.py (_step_user_onboarding);"
+                " probe: _probe_identity_lifecycle -> partial"
+            ),
             excluded="—",
-            notes="Per-user onboarding step exists but reports 'not yet implemented'; offboarding absent.",
+            notes=(
+                "Per-user onboarding step exists but reports"
+                " 'not yet implemented'; offboarding absent."
+            ),
         ),
         # GJ-2 — Plan and execute work
         MatrixRow(
@@ -324,7 +336,10 @@ def _matrix_rows() -> list[MatrixRow]:
             profile="A",
             status=_status_label(Status.PASS),
             dependency="—",
-            proof="skills/file-breadcrumb/SKILL.md, skills/add-memory/SKILL.md, skills/reflect/SKILL.md; src/agent_notes/cli/memory.py",
+            proof=(
+                "skills/file-breadcrumb/SKILL.md, skills/add-memory/SKILL.md,"
+                " skills/reflect/SKILL.md; src/agent_notes/cli/memory.py"
+            ),
             excluded="General wiki / document authoring",
             notes="Skills and CLI both present.",
         ),
@@ -404,7 +419,10 @@ def _matrix_rows() -> list[MatrixRow]:
             dependency="dossier WI-012",
             proof="src/dossier/assurance.py",
             excluded="\u2014",
-            notes="Assurance fail-open fixed (WI-014); computation remains home-grown rather than delegated to regista (WI-012).",
+            notes=(
+                "Assurance fail-open fixed (WI-014); computation remains"
+                " home-grown rather than delegated to regista (WI-012)."
+            ),
         ),
         # GJ-5 — Understand agent activity
         MatrixRow(
@@ -449,7 +467,10 @@ def _matrix_rows() -> list[MatrixRow]:
             dependency="dossier WI-012",
             proof="src/dossier/assurance.py",
             excluded="—",
-            notes="Assurance level no longer fails open (WI-014 fixed); delegation to regista still pending (WI-012).",
+            notes=(
+                "Assurance level no longer fails open (WI-014 fixed);"
+                " delegation to regista still pending (WI-012)."
+            ),
         ),
         # GJ-6 — Supply an approved capability
         MatrixRow(
@@ -472,7 +493,10 @@ def _matrix_rows() -> list[MatrixRow]:
             dependency="acb Plan 006 WI-1.2",
             proof="src/agent_capability_broker/providers.py:352-494; tests/test_exec.py",
             excluded="—",
-            notes="Provider injection works and is unit-tested; full end-to-end `acb exec` invocation is NotImplementedError.",
+            notes=(
+                "Provider injection works and is unit-tested;"
+                " full end-to-end `acb exec` invocation is NotImplementedError."
+            ),
         ),
         MatrixRow(
             journey="GJ-6",
@@ -483,7 +507,10 @@ def _matrix_rows() -> list[MatrixRow]:
             dependency="acb Plan 006 WI-1.2, Plan 007",
             proof="src/agent_capability_broker/providers.py:118-258; tests/test_e2e.py",
             excluded="—",
-            notes="E2eProvider exec is implemented and covered by a recorded live browser proof; Codex provider deferred per acb Plan 007.",
+            notes=(
+                "E2eProvider exec is implemented and covered by a recorded"
+                " live browser proof; Codex provider deferred per acb Plan 007."
+            ),
         ),
         MatrixRow(
             journey="GJ-6",
@@ -526,7 +553,10 @@ def _matrix_rows() -> list[MatrixRow]:
             profile="C",
             status=_status_label(Status.PASS),
             dependency="—",
-            proof="adapters/opencode/src/wake.ts:88-157; adapters/claude/src/agent_wake_claude/channel.py",
+            proof=(
+                "adapters/opencode/src/wake.ts:88-157;"
+                " adapters/claude/src/agent_wake_claude/channel.py"
+            ),
             excluded="—",
             notes="Both adapters can deliver live prompts.",
         ),
@@ -559,7 +589,10 @@ def _matrix_rows() -> list[MatrixRow]:
             profile="C",
             status=_status_label(Status.PASS),
             dependency="—",
-            proof="daemon/src/agent_waked/channels/webhook.py; daemon/src/agent_waked/channels/email.py",
+            proof=(
+                "daemon/src/agent_waked/channels/webhook.py;"
+                " daemon/src/agent_waked/channels/email.py"
+            ),
             excluded="Replacing chat/email providers",
             notes="Signed webhook and SMTP email channels implemented.",
         ),
@@ -570,9 +603,16 @@ def _matrix_rows() -> list[MatrixRow]:
             profile="C",
             status=_status_label(Status.PASS),
             dependency="agent-wake BC-WAKE-004, BC-WAKE-012",
-            proof="daemon/src/agent_waked/ingest.py:209-210; tests/test_ingest.py:93-108; tests/test_e2e.py:309-343",
+            proof=(
+                "daemon/src/agent_waked/ingest.py:209-210;"
+                " tests/test_ingest.py:93-108; tests/test_e2e.py:309-343"
+            ),
             excluded="—",
-            notes="Duplicate event_id rejected while daemon is running; in-memory dedup is lost on restart, so post-restart replay is not prevented.",
+            notes=(
+                "Duplicate event_id rejected while daemon is running;"
+                " in-memory dedup is lost on restart,"
+                " so post-restart replay is not prevented."
+            ),
         ),
         MatrixRow(
             journey="GJ-7",
@@ -583,7 +623,12 @@ def _matrix_rows() -> list[MatrixRow]:
             dependency="Plan 009 WI-3.3, dossier Plan 018",
             proof="—",
             excluded="Replacing chat/email providers",
-            notes="Per-principal preference route + store; review events deep-link to the item and integrity failures to the recovery surface. Preferences are instance-local in v1; durable multi-replica consistency is Plan 019.",
+            notes=(
+                "Per-principal preference route + store; review events"
+                " deep-link to the item and integrity failures to the"
+                " recovery surface. Preferences are instance-local in v1;"
+                " durable multi-replica consistency is Plan 019."
+            ),
         ),
         # GJ-8 — Investigate and export evidence
         MatrixRow(
@@ -626,9 +671,15 @@ def _matrix_rows() -> list[MatrixRow]:
             profile="A",
             status=_status_label(Status.PASS),
             dependency="Plan 009 WI-2.3",
-            proof="src/agent_suite/evidence.py; tests/test_evidence.py; probe: _probe_evidence_export -> pass",
+            proof=(
+                "src/agent_suite/evidence.py; tests/test_evidence.py;"
+                " probe: _probe_evidence_export -> pass"
+            ),
             excluded="—",
-            notes="Composes regista bundle export + cairn export + verify into one suite-level manifest.",
+            notes=(
+                "Composes regista bundle export + cairn export + verify"
+                " into one suite-level manifest."
+            ),
         ),
         # GJ-9 — Operate and recover
         MatrixRow(
@@ -660,7 +711,10 @@ def _matrix_rows() -> list[MatrixRow]:
             profile="A",
             status=_status_label(Status.PASS),
             dependency="Plan 008 WI-4.1, Plan 009 WI-4.2",
-            proof="src/agent_suite/backup.py; tests/test_backup.py; probe: _probe_backup_restore -> pass",
+            proof=(
+                "src/agent_suite/backup.py; tests/test_backup.py;"
+                " probe: _probe_backup_restore -> pass"
+            ),
             excluded="—",
             notes="Suite-level backup: doctor → pg_dump → verify → evidence export → manifest.",
         ),
@@ -671,9 +725,17 @@ def _matrix_rows() -> list[MatrixRow]:
             profile="A",
             status=_status_label(Status.PARTIAL),
             dependency="Forward recovery retired pending shared transaction engine",
-            proof="src/agent_suite/upgrade.py (run_upgrade, run_rollback, fail-closed run_forward_recovery); tests/test_upgrade.py; probe: _probe_upgrade_rollback_forward -> partial",
+            proof=(
+                "src/agent_suite/upgrade.py (run_upgrade, run_rollback,"
+                " fail-closed run_forward_recovery); tests/test_upgrade.py;"
+                " probe: _probe_upgrade_rollback_forward -> partial"
+            ),
             excluded="—",
-            notes="Upgrade and rollback are installation-aware transactions; legacy forward recovery is explicitly retired fail-closed. Shared-user pip-install drift reconciliation tracked by WI-025.",
+            notes=(
+                "Upgrade and rollback are installation-aware transactions;"
+                " legacy forward recovery is explicitly retired fail-closed."
+                " Shared-user pip-install drift reconciliation tracked by WI-025."
+            ),
         ),
         MatrixRow(
             journey="GJ-9",
@@ -838,7 +900,10 @@ def _matrix_to_markdown(matrix: Matrix) -> str:
     lines.append("")
     lines.append("## Matrix")
     lines.append("")
-    header = "| Journey | Profile | Component | Surface | Status | Dependency | Proof | Excluded | Notes |"
+    header = (
+        "| Journey | Profile | Component | Surface | Status | Dependency |"
+        " Proof | Excluded | Notes |"
+    )
     separator = "|---|---|---|---|---|---|---|---|---|"
     lines.append(header)
     lines.append(separator)

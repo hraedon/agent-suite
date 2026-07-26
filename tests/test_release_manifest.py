@@ -237,7 +237,11 @@ def test_build_manifest_raises_on_missing_regista_quad() -> None:
     lock = SuiteLock(
         release="1.0.0-dev",
         regista_quad=None,
-        components={"regista": ComponentPin(repo="hraedon/regista", version="0.5.1", revision=_SHA_A)},
+        components={
+            "regista": ComponentPin(
+                repo="hraedon/regista", version="0.5.1", revision=_SHA_A
+            )
+        },
     )
     with pytest.raises(ValueError, match="no regista quad"):
         build_manifest(
@@ -595,7 +599,9 @@ def test_dry_run_fixture_with_real_suite_lock() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_wheel_file(dir_path: Path, ident: str, version: str, content: bytes = b"fake wheel") -> Path:
+def _make_wheel_file(
+    dir_path: Path, ident: str, version: str, content: bytes = b"fake wheel"
+) -> Path:
     """Create a fake wheel file in ``dir_path`` and return its path."""
     wheel_name = _wheel_filename(ident, version)
     path = dir_path / wheel_name

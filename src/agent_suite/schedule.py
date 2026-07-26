@@ -40,7 +40,7 @@ class Runner(Protocol):
 
 
 def _default_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +232,8 @@ def _windows_unregister_script(spec: ScheduleSpec) -> str:
     """Generate a PowerShell script that unregisters a Windows Scheduled Task."""
     return (
         f"# Remove the '{spec.name}' scheduled task.\n"
-        f"Unregister-ScheduledTask -TaskName '{spec.name}' -Confirm:$false -ErrorAction SilentlyContinue\n"
+        f"Unregister-ScheduledTask -TaskName '{spec.name}' "
+        f"-Confirm:$false -ErrorAction SilentlyContinue\n"
     )
 
 
@@ -454,7 +455,10 @@ def remove_schedules(
                 unregister_script.write_text(
                     _windows_unregister_script(spec), encoding="utf-8"
                 )
-                runner(("powershell", "-ExecutionPolicy", "Bypass", "-File", str(unregister_script)))
+                runner((
+                    "powershell", "-ExecutionPolicy", "Bypass",
+                    "-File", str(unregister_script),
+                ))
             except OSError:
                 pass
 

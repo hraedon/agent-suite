@@ -59,7 +59,13 @@ def test_probe_service_account_unsupported_on_non_windows() -> None:
 
 def test_probe_postgres_available_on_open_port() -> None:
     mock_socket = pytest.MonkeyPatch()
-    mock_socket.setattr(socket, "create_connection", lambda *a, **kw: type("Sock", (), {"__enter__": lambda s: s, "__exit__": lambda *a: None})())
+    mock_socket.setattr(
+        socket,
+        "create_connection",
+        lambda *a, **kw: type(
+            "Sock", (), {"__enter__": lambda s: s, "__exit__": lambda *a: None}
+        )(),
+    )
     assert probe_postgres("localhost", 5432) is ProbeState.AVAILABLE
     mock_socket.undo()
 

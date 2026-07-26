@@ -50,7 +50,7 @@ class Installed(Protocol):
 
 
 def _default_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
 
 
 def _default_installed(cli_name: str) -> bool:

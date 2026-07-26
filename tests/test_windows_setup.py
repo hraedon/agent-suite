@@ -66,7 +66,10 @@ def test_ready_plan_is_deterministic_and_dry_run_never_applies() -> None:
     assert preflight.state is PreflightState.READY
     assert first == second
     assert first.plan_id.startswith("sha256:")
-    assert json.dumps(first.to_dict(), sort_keys=True) == json.dumps(second.to_dict(), sort_keys=True)
+    assert (
+        json.dumps(first.to_dict(), sort_keys=True)
+        == json.dumps(second.to_dict(), sort_keys=True)
+    )
     receipt = dry_run(first)
     assert receipt.state is ReceiptState.DRY_RUN
     assert {action.state for action in receipt.actions} == {ActionState.SKIPPED_DRY_RUN}

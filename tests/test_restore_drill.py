@@ -142,7 +142,10 @@ def test_restore_drill_verifies_intact(interop_dsn: _InteropDsn) -> None:
                 actor_metadata=agent_meta,
                 custom_fields={"title": "Restore-drill test work-item"},
             )
-            sub.transition(wi.work_item_id, "start", agent, actor_kind="agent", actor_metadata=agent_meta)
+            sub.transition(
+                wi.work_item_id, "start", agent,
+                actor_kind="agent", actor_metadata=agent_meta,
+            )
             sub.transition(
                 wi.work_item_id, "submit_for_review", agent,
                 actor_kind="agent", actor_metadata=agent_meta,
@@ -177,7 +180,7 @@ def test_restore_drill_verifies_intact(interop_dsn: _InteropDsn) -> None:
                 "--no-privileges",
                 "-f", str(dump_path),
             ]
-            r = subprocess.run(dump_cmd, capture_output=True, text=True, env=pg_env)
+            r = subprocess.run(dump_cmd, capture_output=True, text=True, env=pg_env, check=False)
             assert r.returncode == 0, (
                 f"pg_dump failed (exit {r.returncode}): {r.stderr.strip()}"
             )
@@ -191,7 +194,7 @@ def test_restore_drill_verifies_intact(interop_dsn: _InteropDsn) -> None:
                 "--dbname", interop_dsn.db,
                 "-c", f'CREATE DATABASE "{restored_db}"',
             ]
-            r = subprocess.run(create_cmd, capture_output=True, text=True, env=pg_env)
+            r = subprocess.run(create_cmd, capture_output=True, text=True, env=pg_env, check=False)
             assert r.returncode == 0, (
                 f"CREATE DATABASE failed (exit {r.returncode}): {r.stderr.strip()}"
             )
@@ -205,7 +208,9 @@ def test_restore_drill_verifies_intact(interop_dsn: _InteropDsn) -> None:
                     "--dbname", restored_db,
                     "-f", str(dump_path),
                 ]
-                r = subprocess.run(restore_cmd, capture_output=True, text=True, env=pg_env)
+                r = subprocess.run(
+                    restore_cmd, capture_output=True, text=True, env=pg_env, check=False
+                )
                 assert r.returncode == 0, (
                     f"psql restore failed (exit {r.returncode}): {r.stderr.strip()}"
                 )
@@ -243,7 +248,7 @@ def test_restore_drill_verifies_intact(interop_dsn: _InteropDsn) -> None:
                     "--dbname", interop_dsn.db,
                     "-c", f'DROP DATABASE IF EXISTS "{restored_db}"',
                 ]
-                subprocess.run(drop_db_cmd, capture_output=True, text=True, env=pg_env)
+                subprocess.run(drop_db_cmd, capture_output=True, text=True, env=pg_env, check=False)
 
         finally:
             sub.close()

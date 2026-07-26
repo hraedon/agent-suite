@@ -54,7 +54,8 @@ class ComponentStatus(Enum):
 
     OK = "ok"  # installed; doctor green
     DEGRADED = "degraded"  # installed; ok but in a non-fatal degrade mode (e.g. coordinator-absent)
-    REMOTE = "remote"  # shared service not installed locally; endpoint reachable and healthy (Plan 004 WI-1.6)
+    REMOTE = "remote"  # shared service not installed locally; endpoint reachable
+                       # and healthy (Plan 004 WI-1.6)
     ABSENT = "absent"  # not installed on this box
     NOT_CONFIGURED = (
         "not_configured"  # shared service with no endpoint configured (Plan 004 WI-1.6)
@@ -88,7 +89,7 @@ class RevisionProbe(Protocol):
 
 
 def _default_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
 
 
 def _default_installed(cli_name: str) -> bool:
@@ -720,7 +721,11 @@ def aggregate(
         current_provider_extension = lock.read_provider_extension(
             engine=mp_config.engine,
             runner=version_runner if version_runner is not None else lock._default_runner,
-            installed=version_installed if version_installed is not None else lock._default_installed,
+            installed=(
+                version_installed
+                if version_installed is not None
+                else lock._default_installed
+            ),
         )
 
         rprobe: RevisionProbe = (

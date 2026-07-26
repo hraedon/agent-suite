@@ -103,7 +103,11 @@ class SequenceProbe:
 
 
 def _pip_would_install(package: str, version: str) -> str:
-    return f"Collecting {package}\n  Using cached {package}-{version}-py3-none-any.whl\nWould install {package}-{version}\n"
+    return (
+        f"Collecting {package}\n"
+        f"  Using cached {package}-{version}-py3-none-any.whl\n"
+        f"Would install {package}-{version}\n"
+    )
 
 
 def _pip_already_satisfied(package: str, version: str) -> str:

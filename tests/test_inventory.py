@@ -363,7 +363,10 @@ def test_missing_regista_quad_when_locked_but_absent() -> None:
         lock_obj=_lock(_all_versions("1.0.0")),
         has_lock_file=True,
         lock_path=Path("SUITE.lock"),
-        component_versions={"regista": None, **{c.ident: "1.0.0" for c in COMPONENTS if c.ident != "regista"}},
+        component_versions={
+            "regista": None,
+            **{c.ident: "1.0.0" for c in COMPONENTS if c.ident != "regista"},
+        },
         component_revisions={},
         current_quad=None,  # regista absent
     )
@@ -603,7 +606,11 @@ def test_collect_inventory_with_stubs(tmp_path: Path, monkeypatch: pytest.Monkey
     """collect_inventory wires the doctor + lock + revisions into build_inventory."""
     versions = _all_versions("0.5.0")
     _stub_doctor_aggregate(monkeypatch, component_versions=versions)
-    monkeypatch.setattr(inventory, "read_runtime_revisions", lambda **kw: {c.ident: _SHA_A for c in COMPONENTS})
+    monkeypatch.setattr(
+        inventory,
+        "read_runtime_revisions",
+        lambda **kw: {c.ident: _SHA_A for c in COMPONENTS},
+    )
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
 
     lock_path = tmp_path / "SUITE.lock"
@@ -671,14 +678,22 @@ def test_collect_inventory_malformed_lock(tmp_path: Path, monkeypatch: pytest.Mo
 # ---------------------------------------------------------------------------
 
 
-def test_cli_inventory_json(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_cli_inventory_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     """`agent-suite inventory --json --record` prints JSON and writes the artifact."""
     from agent_suite.cli import main
 
     _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
     monkeypatch.setattr(inventory, "read_runtime_revisions", lambda **kw: {})
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
-    monkeypatch.setattr(inventory, "_default_inventory_path", lambda: tmp_path / "candidate-inventory.json")
+    monkeypatch.setattr(
+        inventory,
+        "_default_inventory_path",
+        lambda: tmp_path / "candidate-inventory.json",
+    )
 
     rc = main(["inventory", "--json", "--record"])
     captured = capsys.readouterr()
@@ -690,14 +705,22 @@ def test_cli_inventory_json(capsys: pytest.CaptureFixture[str], monkeypatch: pyt
     assert (tmp_path / "candidate-inventory.json").is_file()
 
 
-def test_cli_inventory_text(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_cli_inventory_text(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     """`agent-suite inventory --record` (text mode) prints a readable summary + writes artifact."""
     from agent_suite.cli import main
 
     _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
     monkeypatch.setattr(inventory, "read_runtime_revisions", lambda **kw: {})
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
-    monkeypatch.setattr(inventory, "_default_inventory_path", lambda: tmp_path / "candidate-inventory.json")
+    monkeypatch.setattr(
+        inventory,
+        "_default_inventory_path",
+        lambda: tmp_path / "candidate-inventory.json",
+    )
 
     rc = main(["inventory", "--record"])
     captured = capsys.readouterr()
@@ -716,7 +739,11 @@ def test_cli_inventory_read_only_by_default(
     _stub_doctor_aggregate(monkeypatch, component_versions=_all_versions("1.0.0"))
     monkeypatch.setattr(inventory, "read_runtime_revisions", lambda **kw: {})
     monkeypatch.setattr(lock, "read_regista_quad", lambda **kw: _QUAD)
-    monkeypatch.setattr(inventory, "_default_inventory_path", lambda: tmp_path / "candidate-inventory.json")
+    monkeypatch.setattr(
+        inventory,
+        "_default_inventory_path",
+        lambda: tmp_path / "candidate-inventory.json",
+    )
 
     rc = main(["inventory", "--json"])
     captured = capsys.readouterr()

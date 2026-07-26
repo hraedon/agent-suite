@@ -48,7 +48,10 @@ def test_scan_text_flags_a_forbidden_token() -> None:
     from scripts.check_committed_identifiers import scan_text
 
     violations = list(
-        scan_text("this line has ZZZ-FORIDDEN-TOKEN-XYZ in it", frozenset({"zzz-foridden-token-xyz"}))
+        scan_text(
+            "this line has ZZZ-FORIDDEN-TOKEN-XYZ in it",
+            frozenset({"zzz-foridden-token-xyz"}),
+        )
     )
     assert len(violations) == 1
     assert violations[0].identifier == "zzz-foridden-token-xyz"
@@ -103,6 +106,7 @@ def test_gate_fails_on_forbidden_token_in_tracked_file(
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode != 0, (
         f"gate must fail when a forbidden token is present; got rc=0.\n"
@@ -137,6 +141,7 @@ def test_gate_passes_when_no_forbidden_token_present(
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, (
         f"gate must pass when no forbidden token is present; got rc={result.returncode}.\n"
@@ -192,7 +197,9 @@ def _make_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
 
 
-def _run_gate(repo: Path, env_secret: str | None, *, staged: bool = False) -> subprocess.CompletedProcess[str]:
+def _run_gate(
+    repo: Path, env_secret: str | None, *, staged: bool = False
+) -> subprocess.CompletedProcess[str]:
     import os
 
     argv = [sys.executable, str(_SCRIPT)]

@@ -112,6 +112,7 @@ class _EphemeralPostgres:
                 ],
                 capture_output=True,
                 text=True,
+                check=False,
             )
             if result.returncode == 0:
                 self._wait_ready(timeout=30)
@@ -133,6 +134,7 @@ class _EphemeralPostgres:
                 ["docker", "exec", self._container, "pg_isready", "-U", self._user],
                 capture_output=True,
                 text=True,
+                check=False,
             )
             if r.returncode == 0:
                 return
@@ -146,6 +148,7 @@ class _EphemeralPostgres:
             ["docker", "rm", "-f", self._container],
             capture_output=True,
             text=True,
+            check=False,
         )
 
 

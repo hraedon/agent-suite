@@ -957,7 +957,10 @@ def _probe_dossier_work_forms() -> ProbeOutcome:
     has_test = _sibling_test_exists("dossier", "test_app.py")
     evidence_parts = [
         f"route /p/{{project}}/issues/new={'present' if has_new_route else 'missing'}",
-        f"route /p/{{project}}/issues/{{work_item_id}}={'present' if has_detail_route else 'missing'}",
+        (
+            f"route /p/{{project}}/issues/{{work_item_id}}="
+            f"{'present' if has_detail_route else 'missing'}"
+        ),
         f"route .../transitions={'present' if has_transition_route else 'missing'}",
         f"route /my-work={'present' if has_my_work_route else 'missing'}",
         f"tests/test_app.py={'present' if has_test else 'missing'}",
@@ -1124,7 +1127,10 @@ def _probe_dossier_activity_views() -> ProbeOutcome:
     evidence_parts = [
         f"dossier/provenance.py={'present' if has_provenance_mod else 'absent'}",
         f"route /sessions={'present' if has_sessions_route else 'missing'}",
-        f"route /p/{{project}}/sessions/{{session_id}}={'present' if has_session_detail_route else 'missing'}",
+        (
+            f"route /p/{{project}}/sessions/{{session_id}}="
+            f"{'present' if has_session_detail_route else 'missing'}"
+        ),
         f"route /feed={'present' if has_feed_route else 'missing'}",
         f"tests/test_app.py={'present' if has_test else 'missing'}",
     ]
@@ -1749,7 +1755,10 @@ def _probe_wake_live_wake() -> ProbeOutcome:
     )
     evidence_parts = [
         f"adapters/opencode/src/wake.ts={'present' if has_opencode_adapter else 'absent'}",
-        f"adapters/claude/src/agent_wake_claude/channel.py={'present' if has_claude_adapter else 'absent'}",
+        (
+            f"adapters/claude/src/agent_wake_claude/channel.py="
+            f"{'present' if has_claude_adapter else 'absent'}"
+        ),
         f"daemon/tests/test_e2e.py={'present' if has_test else 'missing'}",
     ]
     if not (has_opencode_adapter and has_claude_adapter):
@@ -1814,7 +1823,10 @@ def _probe_wake_silent_inject() -> ProbeOutcome:
     ).is_file()
     evidence_parts = [
         f"opencode noReply/silent={'present' if has_opencode_silent else 'missing'}",
-        f"claude silent handling={'defers' if claude_defers else ('drops' if claude_drops_silent else 'missing')}",
+        (
+            f"claude silent handling="
+            f"{'defers' if claude_defers else ('drops' if claude_drops_silent else 'missing')}"
+        ),
         f"claude declares the contract={'yes' if claude_declares else 'no'}",
         f"claude tests/test_channel.py={'present' if has_channel_test else 'missing'}",
     ]
@@ -1850,8 +1862,9 @@ def _probe_wake_next_session() -> ProbeOutcome:
             continue
         for py_file in root.rglob("*.py"):
             try:
-                if "next_session" in py_file.read_text(encoding="utf-8") or "managed_session" in py_file.read_text(
-                    encoding="utf-8"
+                if (
+                    "next_session" in py_file.read_text(encoding="utf-8")
+                    or "managed_session" in py_file.read_text(encoding="utf-8")
                 ):
                     has_next_session = True
                     break
@@ -1864,8 +1877,9 @@ def _probe_wake_next_session() -> ProbeOutcome:
             continue
         for ts_file in root.rglob("*.ts"):
             try:
-                if "next_session" in ts_file.read_text(encoding="utf-8") or "managed_session" in ts_file.read_text(
-                    encoding="utf-8"
+                if (
+                    "next_session" in ts_file.read_text(encoding="utf-8")
+                    or "managed_session" in ts_file.read_text(encoding="utf-8")
                 ):
                     has_next_session = True
                     break
@@ -1886,7 +1900,10 @@ def _probe_wake_next_session() -> ProbeOutcome:
         "agent-wake", "test_next_session.py", tests_subdir=_WAKE_TESTS
     )
     evidence_parts = [
-        f"next_session/managed_session in daemon+adapters={'present' if has_next_session else 'absent'}",
+        (
+            f"next_session/managed_session in daemon+adapters="
+            f"{'present' if has_next_session else 'absent'}"
+        ),
         f"durable queue={'present' if durable else 'absent'}",
         f"router enqueues when no session is live={'yes' if enqueues_on_no_subscriber else 'no'}",
         f"socket server drains on connect={'yes' if drains_on_connect else 'no'}",
@@ -1986,7 +2003,8 @@ def _probe_wake_replay_rejection() -> ProbeOutcome:
         return ProbeOutcome(
             ProbeResult.PARTIAL,
             "; ".join(evidence_parts)
-            + "; dedup rejects duplicates while running; in-memory dedup lost on restart (BC-WAKE-004/012)",
+            + "; dedup rejects duplicates while running;"
+            + " in-memory dedup lost on restart (BC-WAKE-004/012)",
         )
     return ProbeOutcome(
         ProbeResult.PASS,
@@ -2004,51 +2022,77 @@ PROBES: dict[tuple[str, str, str], str] = {
     # agent-suite (8 rows)
     ("GJ-1", "agent-suite", "profile-aware bootstrap / deploy CLI"): "_probe_deploy_cli",
     ("GJ-1", "agent-suite", "project onboarding and harness selection"): "_probe_onboard_harness",
-    ("GJ-1", "agent-suite", "identity lifecycle / onboarding / offboarding"): "_probe_identity_lifecycle",
+    ("GJ-1", "agent-suite",
+     "identity lifecycle / onboarding / offboarding"): "_probe_identity_lifecycle",
     ("GJ-8", "agent-suite", "suite-level evidence export orchestration"): "_probe_evidence_export",
-    ("GJ-9", "agent-suite", "backup / restore / disaster recovery orchestration"): "_probe_backup_restore",
-    ("GJ-9", "agent-suite", "upgrade / rollback / forward-recovery gates"): "_probe_upgrade_rollback_forward",
+    ("GJ-9", "agent-suite",
+     "backup / restore / disaster recovery orchestration"): "_probe_backup_restore",
+    ("GJ-9", "agent-suite",
+     "upgrade / rollback / forward-recovery gates"): "_probe_upgrade_rollback_forward",
     ("GJ-9", "agent-suite", "profile-aware doctor aggregation"): "_probe_doctor",
     ("GJ-9", "agent-suite", "compatibility lock and drift check"): "_probe_lock",
     # regista (9 rows)
     ("GJ-1", "regista", "project / schema provisioning"): "_probe_regista_provisioning",
-    ("GJ-1", "regista", "workflow registration and discovery"): "_probe_regista_workflow_registration",
-    ("GJ-1", "regista", "principal enrollment, rotation, revocation, delegation"): "_probe_regista_principal_lifecycle",
-    ("GJ-2", "regista", "work-item lifecycle (create, claim, transition)"): "_probe_regista_work_item_lifecycle",
+    ("GJ-1", "regista",
+     "workflow registration and discovery"): "_probe_regista_workflow_registration",
+    ("GJ-1", "regista",
+     "principal enrollment, rotation, revocation, delegation"):
+        "_probe_regista_principal_lifecycle",
+    ("GJ-2", "regista",
+     "work-item lifecycle (create, claim, transition)"): "_probe_regista_work_item_lifecycle",
     ("GJ-2", "regista", "race-free claim / assignment"): "_probe_regista_race_free_claims",
     ("GJ-4", "regista", "cross-lineage review validators"): "_probe_regista_review_validators",
     ("GJ-8", "regista", "scoped evidence bundle export"): "_probe_regista_bundle_export",
     ("GJ-8", "regista", "offline bundle verification"): "_probe_regista_bundle_verify",
     ("GJ-9", "regista", "version / config / secret / doctor contracts"): "_probe_regista_contracts",
     # agent-notes (6 rows)
-    ("GJ-1", "agent-notes", "project discovery from cwd and per-user identity"): "_probe_agent_notes_project_discovery",
+    ("GJ-1", "agent-notes",
+     "project discovery from cwd and per-user identity"): "_probe_agent_notes_project_discovery",
     ("GJ-2", "agent-notes", "work-item skills / CLI"): "_probe_agent_notes_work_item_cli",
-    ("GJ-3", "agent-notes", "breadcrumb / memory / reflection skills and CLI"): "_probe_agent_notes_knowledge_cli",
-    ("GJ-3", "agent-notes", "signed note write-through to regista"): "_probe_agent_notes_write_through",
-    ("GJ-3", "agent-notes", "search across breadcrumbs, memories, links"): "_probe_agent_notes_search",
-    ("GJ-4", "agent-notes", "review CLI (pass, accept, reject, request-changes)"): "_probe_agent_notes_review_cli",
+    ("GJ-3", "agent-notes",
+     "breadcrumb / memory / reflection skills and CLI"): "_probe_agent_notes_knowledge_cli",
+    ("GJ-3", "agent-notes",
+     "signed note write-through to regista"): "_probe_agent_notes_write_through",
+    ("GJ-3", "agent-notes",
+     "search across breadcrumbs, memories, links"): "_probe_agent_notes_search",
+    ("GJ-4", "agent-notes",
+     "review CLI (pass, accept, reject, request-changes)"): "_probe_agent_notes_review_cli",
     # dossier (8 rows)
     ("GJ-1", "dossier", "authenticated project switcher"): "_probe_dossier_project_switcher",
-    ("GJ-2", "dossier", "work queues, detail, transition, review forms"): "_probe_dossier_work_forms",
-    ("GJ-2", "dossier", "separation-of-duties enforcement in review"): "_probe_dossier_separation_of_duties",
+    ("GJ-2", "dossier",
+     "work queues, detail, transition, review forms"): "_probe_dossier_work_forms",
+    ("GJ-2", "dossier",
+     "separation-of-duties enforcement in review"): "_probe_dossier_separation_of_duties",
     ("GJ-3", "dossier", "knowledge read / browse / search"): "_probe_dossier_knowledge",
     ("GJ-4", "dossier", "review queue and verdict forms"): "_probe_dossier_review_queue",
-    ("GJ-4", "dossier", "honest assurance level / independent-review signal"): "_probe_dossier_assurance",
+    ("GJ-4", "dossier",
+     "honest assurance level / independent-review signal"): "_probe_dossier_assurance",
     ("GJ-5", "dossier", "session / tool / file activity views"): "_probe_dossier_activity_views",
-    ("GJ-5", "dossier", "degraded / unsupported capture rendered honestly"): "_probe_dossier_degraded_capture",
-    ("GJ-7", "dossier", "notification preferences and review/recovery deep links"): "_probe_dossier_notification_prefs",
+    ("GJ-5", "dossier",
+     "degraded / unsupported capture rendered honestly"): "_probe_dossier_degraded_capture",
+    ("GJ-7", "dossier",
+     "notification preferences and review/recovery deep links"):
+        "_probe_dossier_notification_prefs",
     # agent-provenance (3 rows)
-    ("GJ-5", "agent-provenance", "session and tool begin/end capture"): "_probe_cairn_session_capture",
-    ("GJ-5", "agent-provenance", "principal / delegation / work binding"): "_probe_cairn_principal_binding",
-    ("GJ-8", "agent-provenance", "bundle export, diff/chain verify, human report"): "_probe_cairn_bundle_export",
+    ("GJ-5", "agent-provenance",
+     "session and tool begin/end capture"): "_probe_cairn_session_capture",
+    ("GJ-5", "agent-provenance",
+     "principal / delegation / work binding"): "_probe_cairn_principal_binding",
+    ("GJ-8", "agent-provenance",
+     "bundle export, diff/chain verify, human report"): "_probe_cairn_bundle_export",
     # agent-capability-broker (4 rows)
-    ("GJ-6", "agent-capability-broker", "manifest, reconcile, exec, install-harness"): "_probe_acb_core_verbs",
-    ("GJ-6", "agent-capability-broker", "credential provider with secret-safe injection"): "_probe_acb_credential_provider",
-    ("GJ-6", "agent-capability-broker", "browser / E2E provider and live proof"): "_probe_acb_e2e_provider",
-    ("GJ-6", "agent-capability-broker", "rogue / clobbered capability detection"): "_probe_acb_rogue_detection",
+    ("GJ-6", "agent-capability-broker",
+     "manifest, reconcile, exec, install-harness"): "_probe_acb_core_verbs",
+    ("GJ-6", "agent-capability-broker",
+     "credential provider with secret-safe injection"): "_probe_acb_credential_provider",
+    ("GJ-6", "agent-capability-broker",
+     "browser / E2E provider and live proof"): "_probe_acb_e2e_provider",
+    ("GJ-6", "agent-capability-broker",
+     "rogue / clobbered capability detection"): "_probe_acb_rogue_detection",
     # agent-wake (7 rows)
     ("GJ-7", "agent-wake", "authenticated HTTP ingress"): "_probe_wake_http_ingress",
-    ("GJ-7", "agent-wake", "durable dedup / retry / outbox / dead-letter"): "_probe_wake_dedup_retry",
+    ("GJ-7", "agent-wake",
+     "durable dedup / retry / outbox / dead-letter"): "_probe_wake_dedup_retry",
     ("GJ-7", "agent-wake", "live_wake (Claude, OpenCode)"): "_probe_wake_live_wake",
     ("GJ-7", "agent-wake", "silent_inject"): "_probe_wake_silent_inject",
     ("GJ-7", "agent-wake", "next_session / managed_session delivery"): "_probe_wake_next_session",
@@ -2262,7 +2306,10 @@ def _matrix_to_markdown(matrix_data: dict[str, Any]) -> str:
     lines.append("")
     lines.append("## Matrix")
     lines.append("")
-    header = "| Journey | Profile | Component | Surface | Status | Dependency | Proof | Excluded | Notes |"
+    header = (
+        "| Journey | Profile | Component | Surface | Status | Dependency |"
+        " Proof | Excluded | Notes |"
+    )
     separator = "|---|---|---|---|---|---|---|---|---|"
     lines.append(header)
     lines.append(separator)

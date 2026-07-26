@@ -103,7 +103,9 @@ def test_remove_missing_service_is_not_installed(tmp_path: Path) -> None:
 
 def test_remove_dry_run_does_not_delete(tmp_path: Path) -> None:
     install_winsw_service(_spec(), winsw_dir=tmp_path, runner=_ok_runner)
-    result = remove_winsw_service("test-service", winsw_dir=tmp_path, dry_run=True, runner=_ok_runner)
+    result = remove_winsw_service(
+        "test-service", winsw_dir=tmp_path, dry_run=True, runner=_ok_runner
+    )
     assert result.state is ServiceState.REMOVED
     assert Path(result.files_written[0]).exists()
 

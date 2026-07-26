@@ -57,7 +57,7 @@ class Installed(Protocol):
 
 
 def _default_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
 
 
 def _default_installed(cli_name: str) -> bool:
@@ -366,7 +366,8 @@ def _step_provision(
             return StepResult(
                 StepKind.PROVISION,
                 StepStatus.REFUSED,
-                f"provision-principal refused (would clobber existing key for {princ_id}): {p_stderr}",
+                f"provision-principal refused (would clobber "
+                f"existing key for {princ_id}): {p_stderr}",
             )
         if "already" in p_stderr.lower() or "exists" in p_stderr.lower():
             already_provisioned = True
@@ -533,7 +534,8 @@ def _step_memory_provider(
     return StepResult(
         StepKind.MEMORY_PROVIDER,
         StepStatus.DONE,
-        f"memory provider: hindsight (engine: {engine_name}) reachable at {redact_url(hindsight_url)}",
+        f"memory provider: hindsight (engine: {engine_name}) "
+        f"reachable at {redact_url(hindsight_url)}",
     )
 
 
@@ -752,7 +754,11 @@ def run_bootstrap(
         results.append(result)
         if _is_terminal(result.status):
             remaining = [
-                StepResult(s, StepStatus.SKIPPED, f"skipped: prior step {result.step.value} did not succeed")
+                StepResult(
+                    s,
+                    StepStatus.SKIPPED,
+                    f"skipped: prior step {result.step.value} did not succeed",
+                )
                 for s in steps_to_run
                 if s != step and s not in {r.step for r in results}
             ]

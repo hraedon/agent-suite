@@ -57,7 +57,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument(
         "--restore-dsn",
-        help="Postgres DSN for --verify-restore (or REGISTA_DSN); errors if --verify-restore is set and neither is provided",
+        help=(
+            "Postgres DSN for --verify-restore (or REGISTA_DSN); "
+            "errors if --verify-restore is set and neither is provided"
+        ),
     )
     doctor.add_argument(
         "--profile",
@@ -661,7 +664,10 @@ def main(argv: list[str] | None = None) -> int:
                     return emit_error(
                         "FLAG_CONFLICT",
                         "upgrade --forward-recover does not support --dry-run",
-                        detail="Forward recovery completes a partial upgrade; run without --dry-run.",
+                        detail=(
+                            "Forward recovery completes a partial upgrade; "
+                            "run without --dry-run."
+                        ),
                         json_mode=getattr(args, "json", False),
                     )
                 from agent_suite.upgrade import (
@@ -1288,7 +1294,8 @@ def main(argv: list[str] | None = None) -> int:
                     ):
                         try:
                             result = subprocess.run(
-                                cmd, capture_output=True, text=True, timeout=10
+                                cmd, capture_output=True, text=True,
+                                timeout=10, check=False,
                             )
                             if result.returncode == 0:
                                 sha = result.stdout.strip()

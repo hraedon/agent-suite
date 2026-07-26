@@ -88,7 +88,7 @@ class Installed(Protocol):
 
 
 def _default_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
 
 
 def _default_installed(cli_name: str) -> bool:
@@ -456,12 +456,14 @@ def _probe_revision(
                 capture_output=True,
                 text=True,
                 timeout=10,
+                check=False,
             )
             result = subprocess.run(
                 ("git", "-C", str(candidate), "rev-parse", "HEAD"),
                 capture_output=True,
                 text=True,
                 timeout=10,
+                check=False,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             return None

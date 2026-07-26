@@ -90,7 +90,7 @@ def _build_conformance_wheel(dest: Path) -> Path:
     proc = subprocess.run(
         [sys.executable, "-m", "build", "--wheel", "--no-isolation",
          "--outdir", str(dest), str(CONFORMANCE_DIR)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:
         pytest.fail(f"conformance wheel build failed:\n{proc.stderr[-2000:]}")

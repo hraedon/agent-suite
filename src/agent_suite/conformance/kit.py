@@ -131,7 +131,11 @@ def assert_cases_declared(
             "protects no dimensions enforces nothing. See docs/cli-contract.md §7 "
             "(WI-026)."
         )
-    short = sorted((name, len(group)) for name, group in named_groups.items() if len(group) < minimum)
+    short = sorted(
+        (name, len(group))
+        for name, group in named_groups.items()
+        if len(group) < minimum
+    )
     if not short:
         return
     which = ", ".join(f"{name} ({n})" for name, n in short)

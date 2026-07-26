@@ -283,7 +283,11 @@ def classify_doctor(
         ident for ident, status in component_statuses.items() if status not in unavailable
     }
     profile = profile_for_components(installed)
-    reference = reference_profile if reference_profile is not None else (profile if profile is not None else Profile.A)
+    reference = (
+        reference_profile
+        if reference_profile is not None
+        else (profile if profile is not None else Profile.A)
+    )
     required = PROFILE_REQUIREMENTS[reference]
     missing_required = sorted(required - installed)
     extra_optional = sorted(installed - required)

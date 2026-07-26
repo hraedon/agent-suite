@@ -92,13 +92,15 @@ def test_core_does_not_import_edge_at_module_level() -> None:
             if isinstance(node, ast.ImportFrom) and node.module:
                 for edge in _EDGE_MODULES:
                     assert edge not in node.module, (
-                        f"core module {module_name!r} imports edge module {edge!r} at module level — "
+                        f"core module {module_name!r} imports edge module {edge!r} "
+                        f"at module level — "
                         "edge modules must only be imported lazily inside functions"
                     )
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     for edge in _EDGE_MODULES:
                         assert edge not in alias.name, (
-                            f"core module {module_name!r} imports edge module {edge!r} at module level — "
+                            f"core module {module_name!r} imports edge module {edge!r} "
+                            f"at module level — "
                             "edge modules must only be imported lazily inside functions"
                         )

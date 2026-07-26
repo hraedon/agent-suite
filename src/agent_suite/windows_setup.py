@@ -221,7 +221,11 @@ def run_preflight(observation: HostObservation, request: SetupRequest) -> Prefli
     )
     needs_secret_provider = needs_postgres
     needs_network = bool(operations)
-    os_state = ProbeState.AVAILABLE if observation.os_name.lower() == "windows" else ProbeState.UNSUPPORTED
+    os_state = (
+        ProbeState.AVAILABLE
+        if observation.os_name.lower() == "windows"
+        else ProbeState.UNSUPPORTED
+    )
     python_state = _python_support(observation.python_version)
     identity_state = (
         ProbeState.AVAILABLE
@@ -514,6 +518,7 @@ def _default_runner(action: PlannedAction) -> ActionState:
                     capture_output=True,
                     text=True,
                     timeout=300,
+                    check=False,
                 )
                 return ActionState.APPLIED if result.returncode == 0 else ActionState.FAILED
             except (OSError, subprocess.SubprocessError):
@@ -538,6 +543,7 @@ def _default_runner(action: PlannedAction) -> ActionState:
                     capture_output=True,
                     text=True,
                     timeout=120,
+                    check=False,
                 )
                 return ActionState.APPLIED if result.returncode == 0 else ActionState.FAILED
             except (OSError, subprocess.SubprocessError):

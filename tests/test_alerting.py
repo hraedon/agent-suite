@@ -229,7 +229,9 @@ def test_delivery_failure_on_network_error(tmp_path: Path, monkeypatch: pytest.M
 # ---------------------------------------------------------------------------
 
 
-def test_corrupted_state_treated_as_no_prior(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_corrupted_state_treated_as_no_prior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _stub_doctor(monkeypatch, suite_ok=False)
     state_path = tmp_path / "state.json"
     state_path.write_text("not json")

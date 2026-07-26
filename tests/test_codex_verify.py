@@ -24,7 +24,9 @@ _CATALOG = (
 )
 
 
-def _proc(cmd: tuple[str, ...], code: int = 0, stdout: str = "") -> subprocess.CompletedProcess[str]:
+def _proc(
+    cmd: tuple[str, ...], code: int = 0, stdout: str = ""
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(cmd, code, stdout=stdout, stderr="")
 
 

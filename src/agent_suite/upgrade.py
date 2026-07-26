@@ -63,7 +63,7 @@ class ProviderProbe(Protocol):
 
 
 def _default_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
 
 
 def _default_installed(cli_name: str) -> bool:
@@ -369,7 +369,9 @@ def _pip_check_latest(
 
     combined = result.stdout + result.stderr
     if _ALREADY_SATISFIED in combined and "Would install" not in combined:
-        installed_match = re.search(r"already satisfied: " + re.escape(package) + r"[^\d]*([\d.]+)", combined)
+        installed_match = re.search(
+            r"already satisfied: " + re.escape(package) + r"[^\d]*([\d.]+)", combined
+        )
         installed = installed_match.group(1) if installed_match else None
         return installed, installed, AdvancementStatus.UP_TO_DATE, "already up to date"
 
@@ -379,10 +381,20 @@ def _pip_check_latest(
             r"would install " + re.escape(package) + r"[^\d]*([\d.]+)", combined
         )
         installed = installed_match.group(1) if installed_match else None
-        return installed, target, AdvancementStatus.ADVANCEMENT_AVAILABLE, f"{installed or '?'} -> {target}"
+        return (
+            installed,
+            target,
+            AdvancementStatus.ADVANCEMENT_AVAILABLE,
+            f"{installed or '?'} -> {target}",
+        )
 
     if result.returncode != 0:
-        return None, None, AdvancementStatus.ERROR, f"pip exit {result.returncode}: {result.stderr.strip()[:200]}"
+        return (
+            None,
+            None,
+            AdvancementStatus.ERROR,
+            f"pip exit {result.returncode}: {result.stderr.strip()[:200]}",
+        )
 
     return None, None, AdvancementStatus.ERROR, "could not parse pip dry-run output"
 
@@ -409,7 +421,12 @@ def _docker_check_latest(
         return None, None, AdvancementStatus.UNREACHABLE, f"{cli_name} doctor failed: {exc}"
 
     if result.returncode != 0:
-        return None, None, AdvancementStatus.UNREACHABLE, f"{cli_name} doctor exit {result.returncode}"
+        return (
+            None,
+            None,
+            AdvancementStatus.UNREACHABLE,
+            f"{cli_name} doctor exit {result.returncode}",
+        )
 
     try:
         data = json.loads(result.stdout)
@@ -1852,7 +1869,8 @@ def run_rollback(
     if (
         current_quad is not None
         and target_lock.regista_quad is not None
-        and current_quad.canonical_workflow_version != target_lock.regista_quad.canonical_workflow_version
+        and current_quad.canonical_workflow_version
+        != target_lock.regista_quad.canonical_workflow_version
     ):
         pass
 
@@ -2103,7 +2121,8 @@ def format_rollback_text(result: RollbackResult) -> str:
     lines.append(f"  status: {result.status.value}")
     if result.current_schema_version is not None and result.target_schema_version is not None:
         lines.append(
-            f"  schema: current={result.current_schema_version}, target={result.target_schema_version}"
+            f"  schema: current={result.current_schema_version}, "
+            f"target={result.target_schema_version}"
         )
     lines.append("")
     lines.append(f"rollback: {'OK' if result.ok else 'NOT OK'}")

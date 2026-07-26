@@ -831,7 +831,7 @@ def test_corrupted_backup(regista_project: RegistaProject) -> None:
             "--no-privileges",
             "-f", str(dump_path),
         ]
-        r = subprocess.run(dump_cmd, capture_output=True, text=True, env=pg_env)
+        r = subprocess.run(dump_cmd, capture_output=True, text=True, env=pg_env, check=False)
         assert r.returncode == 0, f"pg_dump failed: {r.stderr}"
 
         create_cmd = [
@@ -842,7 +842,7 @@ def test_corrupted_backup(regista_project: RegistaProject) -> None:
             "--dbname", dsn_info.db,
             "-c", f'CREATE DATABASE "{restored_db}"',
         ]
-        r = subprocess.run(create_cmd, capture_output=True, text=True, env=pg_env)
+        r = subprocess.run(create_cmd, capture_output=True, text=True, env=pg_env, check=False)
         assert r.returncode == 0, f"CREATE DATABASE failed: {r.stderr}"
 
         try:
@@ -855,7 +855,7 @@ def test_corrupted_backup(regista_project: RegistaProject) -> None:
                 "--set", "ON_ERROR_STOP=1",
                 "-f", str(dump_path),
             ]
-            r = subprocess.run(restore_cmd, capture_output=True, text=True, env=pg_env)
+            r = subprocess.run(restore_cmd, capture_output=True, text=True, env=pg_env, check=False)
             assert r.returncode == 0, f"psql restore failed: {r.stderr}"
 
             restored_dsn = (
@@ -905,7 +905,7 @@ def test_corrupted_backup(regista_project: RegistaProject) -> None:
                 "--dbname", dsn_info.db,
                 "-c", f'DROP DATABASE IF EXISTS "{restored_db}"',
             ]
-            r = subprocess.run(drop_cmd, capture_output=True, text=True, env=pg_env)
+            r = subprocess.run(drop_cmd, capture_output=True, text=True, env=pg_env, check=False)
             if r.returncode != 0:
                 import warnings
                 warnings.warn(

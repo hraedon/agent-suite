@@ -36,7 +36,13 @@ def _completed(
 
 
 class StubRunner:
-    def __init__(self, outputs: Mapping[tuple[str, ...], subprocess.CompletedProcess[str] | Exception] | None = None) -> None:
+    def __init__(
+        self,
+        outputs: (
+            Mapping[tuple[str, ...], subprocess.CompletedProcess[str] | Exception]
+            | None
+        ) = None,
+    ) -> None:
         self._outputs = outputs or {}
         self.calls: list[tuple[str, ...]] = []
 

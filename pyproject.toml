@@ -43,14 +43,12 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-# Deliberate, explicit selection (WI-028) — ruff 0.16 expanded its default
-# rule set (TRY/BLE/PLW/SIM/S), which flagged 300+ pre-existing lines on an
-# unpinned CI run. We adopt the family's valuable rules (isort, pyupgrade,
-# naming, warnings, ruff-specific) plus ruff's standard E4/E7/E9 + F core,
-# and deliberately exclude the noisy expanded rules (TRY/BLE/PLW/SIM/S) and
-# E501 (line-length was never repo-wide enforced; a 118-line backlog —
-# tracked as follow-up) so CI is green on 0.16 without a risky bulk rewrite.
-select = ["E4", "E7", "E9", "F", "I", "N", "W", "UP", "RUF"]
+# Full-E family selection matching regista/cairn (E incl. E501 + F + I + N + W
+# + UP + RUF), PLUS PLW — agent-suite is the suite's acting/orchestration layer,
+# so it additionally enforces PLW1510 (subprocess.run must state `check=`
+# explicitly) to keep silent component-CLI failures from looking like success.
+# The noisy ruff-0.16 expanded defaults (TRY/BLE/SIM/S) remain excluded.
+select = ["E", "F", "I", "N", "W", "UP", "RUF", "PLW"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

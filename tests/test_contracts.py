@@ -300,8 +300,12 @@ def test_notification_delivery_mode_partition() -> None:
         f"uncategorized={sorted(all_modes - categorized)}, "
         f"extra={sorted(categorized - all_modes)}"
     )
-    assert not (supported & partial), f"modes in both supported and partial: {sorted(supported & partial)}"
-    assert not (supported & absent), f"modes in both supported and absent: {sorted(supported & absent)}"
+    assert not (supported & partial), (
+        f"modes in both supported and partial: {sorted(supported & partial)}"
+    )
+    assert not (supported & absent), (
+        f"modes in both supported and absent: {sorted(supported & absent)}"
+    )
     assert not (partial & absent), f"modes in both partial and absent: {sorted(partial & absent)}"
 
 
@@ -336,6 +340,7 @@ def test_validate_contracts_script_passes() -> None:
         [sys.executable, str(REPO_ROOT / "scripts" / "validate-contracts.py"), "--check"],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert result.returncode == 0, (
         f"validate-contracts.py failed (exit {result.returncode}):\n{result.stderr}"

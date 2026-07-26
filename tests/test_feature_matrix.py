@@ -44,7 +44,10 @@ def test_matrix_data_file_exists_and_is_valid_json() -> None:
 
 def test_matrix_rows_have_required_fields() -> None:
     matrix = feature_matrix._matrix()
-    required = {"journey", "component", "surface", "profile", "status", "dependency", "proof", "excluded", "notes"}
+    required = {
+        "journey", "component", "surface", "profile",
+        "status", "dependency", "proof", "excluded", "notes",
+    }
     for row in matrix.rows:
         row_dict = row.__dict__
         assert required <= row_dict.keys()
@@ -103,7 +106,10 @@ def test_committed_json_matches_generator() -> None:
     for key in ignored:
         committed.pop(key, None)
         generated.pop(key, None)
-    assert committed == generated, "Committed data/v1-feature-matrix.json is out of sync with scripts/feature-matrix.py; run python3 scripts/feature-matrix.py"
+    assert committed == generated, (
+        "Committed data/v1-feature-matrix.json is out of sync with "
+        "scripts/feature-matrix.py; run python3 scripts/feature-matrix.py"
+    )
 
 
 def test_committed_status_source_is_probe_emitted() -> None:

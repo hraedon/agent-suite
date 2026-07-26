@@ -133,7 +133,9 @@ def test_conformance_gate_runs_at_least_one_case(tmp_path: Path) -> None:
     cure for the 2026-07-24 bug.
     """
     proc = _run_pytest(CONFORMANCE_TEST, tmp_path)
-    counts = require_gate_ran(proc.stdout + proc.stderr, exit_code=proc.returncode, minimum_passed=1)
+    counts = require_gate_ran(
+        proc.stdout + proc.stderr, exit_code=proc.returncode, minimum_passed=1
+    )
     assert counts["passed"] >= 1, counts
 
 
@@ -149,7 +151,10 @@ def test_require_gate_ran_accepts_a_clean_passing_summary() -> None:
 def test_require_gate_ran_rejects_an_all_skip_summary() -> None:
     """Deny case: an exit-0 all-skip summary (importorskip fired) is rejected."""
     with pytest.raises(ConformanceGateError, match="importorskip"):
-        require_gate_ran("s.....                                   [100%]\n5 skipped in 0.5s\n", exit_code=0)
+        require_gate_ran(
+            "s.....                                   [100%]\n5 skipped in 0.5s\n",
+            exit_code=0,
+        )
 
 
 def test_require_gate_ran_rejects_nonzero_exit() -> None:

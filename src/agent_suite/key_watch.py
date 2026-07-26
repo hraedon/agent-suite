@@ -48,7 +48,7 @@ class Installed(Protocol):
 
 
 def _default_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
 
 
 def _default_installed(cli_name: str) -> bool:
@@ -232,16 +232,28 @@ def check_key_rotation(
 
     if result.returncode != 0:
         stderr = result.stderr.strip().lower()
-        if "unknown" in stderr or "not found" in stderr or "no such" in stderr or "invalid choice" in stderr or "unrecognized" in stderr:
+        if (
+            "unknown" in stderr
+            or "not found" in stderr
+            or "no such" in stderr
+            or "invalid choice" in stderr
+            or "unrecognized" in stderr
+        ):
             return KeyRotationResult(
                 ok=True,
                 status=KeyAgeStatus.UNSUPPORTED,
-                detail="regista does not support 'principal list' — key-age check requires regista Plan 026 WI-3.1",
+                detail=(
+                    "regista does not support 'principal list' — "
+                    "key-age check requires regista Plan 026 WI-3.1"
+                ),
             )
         return KeyRotationResult(
             ok=True,
             status=KeyAgeStatus.UNREACHABLE,
-            detail=f"regista principal list exit {result.returncode}: {result.stderr.strip()[:200]}",
+            detail=(
+                f"regista principal list exit {result.returncode}: "
+                f"{result.stderr.strip()[:200]}"
+            ),
         )
 
     try:
@@ -404,11 +416,20 @@ def check_store_growth(
 
     if result.returncode != 0:
         stderr = result.stderr.strip().lower()
-        if "unknown" in stderr or "not found" in stderr or "no such" in stderr or "invalid choice" in stderr or "unrecognized" in stderr:
+        if (
+            "unknown" in stderr
+            or "not found" in stderr
+            or "no such" in stderr
+            or "invalid choice" in stderr
+            or "unrecognized" in stderr
+        ):
             return StoreGrowthResult(
                 ok=True,
                 status=StoreGrowthStatus.UNSUPPORTED,
-                detail="regista does not support 'stats' — store-growth check requires a regista feature",
+                detail=(
+                    "regista does not support 'stats' — "
+                    "store-growth check requires a regista feature"
+                ),
             )
         return StoreGrowthResult(
             ok=True,

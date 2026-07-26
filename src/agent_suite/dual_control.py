@@ -179,7 +179,11 @@ def create_request(
     """
     minimum = required_step_up(operation)
     if step_up_required is not None:
-        required = step_up_required if _step_up_rank(step_up_required) >= _step_up_rank(minimum) else minimum
+        required = (
+            step_up_required
+            if _step_up_rank(step_up_required) >= _step_up_rank(minimum)
+            else minimum
+        )
     else:
         required = minimum
 

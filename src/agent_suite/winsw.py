@@ -36,7 +36,7 @@ class Runner(Protocol):
 def _default_runner(cmd: tuple[str, ...]) -> int:
     import subprocess
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
     return result.returncode
 
 

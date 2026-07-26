@@ -69,7 +69,7 @@ class Installed(Protocol):
 
 
 def _default_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
 
 
 def _default_installed(cli_name: str) -> bool:
@@ -295,7 +295,8 @@ def _step_provision(
             return OnboardStepResult(
                 OnboardStep.PROVISION,
                 OnboardStatus.REFUSED,
-                f"provision-principal refused (would clobber existing key for {princ_id}): {p_stderr}",
+                f"provision-principal refused (would clobber "
+                f"existing key for {princ_id}): {p_stderr}",
             )
         if "already" in p_stderr.lower() or "exists" in p_stderr.lower():
             already_provisioned = True

@@ -179,7 +179,11 @@ def test_zero_warnings_is_verified() -> None:
 
 def test_warnings_key_omitted_is_verified() -> None:
     runner = StubRunner(
-        {"alpha": _completed(stdout=json.dumps({"replayed_ok": 5, "replayed_drift": 0, "halted": 0}))}
+        {
+            "alpha": _completed(
+                stdout=json.dumps({"replayed_ok": 5, "replayed_drift": 0, "halted": 0})
+            )
+        }
     )
     result = verify_restore(
         dsn=_DSN,

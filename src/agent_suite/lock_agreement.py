@@ -227,7 +227,8 @@ def has_disagreement(results: list[SpineAgreement]) -> bool:
 
 
 def has_failure(results: list[SpineAgreement]) -> bool:
-    """True if any member has a failing status (disagreement, missing lock, or identity mismatch)."""
+    """True if any member has a failing status (disagreement, missing lock,
+    or identity mismatch)."""
     return any(
         r.status
         in (

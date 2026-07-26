@@ -33,7 +33,7 @@ class Installed(Protocol):
 
 
 def _default_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
 
 
 def _default_installed(cli_name: str) -> bool:
@@ -217,7 +217,11 @@ def _component_doctor_check(
     except json.JSONDecodeError:
         payload = None
     raw_checks = payload.get("checks") if isinstance(payload, dict) else None
-    checks = [item for item in raw_checks if isinstance(item, dict)] if isinstance(raw_checks, list) else []
+    checks = (
+        [item for item in raw_checks if isinstance(item, dict)]
+        if isinstance(raw_checks, list)
+        else []
+    )
     if not checks:
         return VerifyCheck(
             f"direct_install_overlap:{plugin_id.value}",
@@ -316,7 +320,9 @@ def verify_codex_profile(
                 if plugin.status is CodexPluginHealthStatus.INSTALLED_ENABLED
                 else VerifyStatus.FAIL
             )
-            checks.append(VerifyCheck(f"plugin_pin:{plugin.plugin_id.value}", status, plugin.detail))
+            checks.append(
+                VerifyCheck(f"plugin_pin:{plugin.plugin_id.value}", status, plugin.detail)
+            )
 
     for entry in catalog:
         checks.append(
@@ -350,7 +356,10 @@ def verify_codex_profile(
             VerifyCheck(
                 "hook_trust_handoff",
                 VerifyStatus.ACTION_REQUIRED,
-                "open a trusted Codex session, review Cairn command hooks with /hooks, then rerun with --hooks-reviewed",
+                (
+                    "open a trusted Codex session, review Cairn command hooks "
+                    "with /hooks, then rerun with --hooks-reviewed"
+                ),
             )
         )
 

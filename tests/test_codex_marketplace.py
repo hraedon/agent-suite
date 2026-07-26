@@ -48,7 +48,10 @@ def test_builds_owned_marketplace_with_links_to_component_assets(tmp_path: Path)
         "source": "local",
         "path": "./plugins/agent-notes",
     }
-    assert json.loads((output / ".agent-suite-marketplace.json").read_text())["owner"] == "agent-suite"
+    assert (
+        json.loads((output / ".agent-suite-marketplace.json").read_text())["owner"]
+        == "agent-suite"
+    )
 
 
 def test_build_is_idempotent_and_dry_run_writes_nothing(tmp_path: Path) -> None:
