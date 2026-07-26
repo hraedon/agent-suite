@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Protocol, assert_never
 
 from agent_suite import identity
+from agent_suite._redact import redact_url
 from agent_suite.harness import (
     HarnessTarget,
     expand_harness_target,
@@ -534,7 +535,7 @@ def _step_memory_provider(
     return StepResult(
         StepKind.MEMORY_PROVIDER,
         StepStatus.DONE,
-        f"memory provider: hindsight (engine: {engine_name}) reachable at {hindsight_url}",
+        f"memory provider: hindsight (engine: {engine_name}) reachable at {redact_url(hindsight_url)}",
     )
 
 

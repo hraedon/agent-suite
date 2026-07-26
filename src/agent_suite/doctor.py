@@ -33,6 +33,7 @@ from agent_suite import key_watch
 from agent_suite import lock
 from agent_suite import runtime_provenance
 from agent_suite import verify_restore
+from agent_suite._redact import redact_url as _redact_url
 from agent_suite.codex_catalog import CODEX_PLUGIN_CATALOG, CodexPluginId, with_marketplace
 from agent_suite.codex_health import CodexHealthReport, check_codex_health, format_codex_health_text
 from agent_suite.components import COMPONENTS, Component, Locality, Tier
@@ -134,9 +135,9 @@ def _default_remote_check(url: str) -> RemoteHealthResult:
     if parsed.scheme not in ("http", "https"):
         return RemoteHealthResult(
             ok=False,
-            detail=f"refusing non-http(s) URL scheme '{parsed.scheme}' for {url}",
+            detail=f"refusing non-http(s) URL scheme '{parsed.scheme}' for {_redact_url(url)}",
         )
-    healthz_url = f"{url.rstrip('/')}/healthz"
+    healthz_url = f"{_redact_url(url).rstrip('/')}/healthz"
 
     class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args: object, **kwargs: object) -> None:
@@ -330,7 +331,7 @@ def _check_shared_service(
         tier=comp.tier,
         status=ComponentStatus.FAILED,
         ok=False,
-        detail=f"remote endpoint {endpoint}: {result.detail}",
+        detail=f"remote endpoint {_redact_url(endpoint)}: {result.detail}",
     )
 
 
