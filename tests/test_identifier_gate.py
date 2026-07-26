@@ -299,7 +299,7 @@ def test_staged_path_blocks_a_forbidden_staged_file(tmp_path: Path) -> None:
         f"--staged must block a staged forbidden file; got rc=0.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
-    assert "staged.md" in result.stdout + result.stderr
+    assert "staged.md" in _combined(result)
 
 
 def test_staged_path_passes_when_index_clean(tmp_path: Path) -> None:
@@ -394,4 +394,4 @@ def test_utf16_file_with_forbidden_token_is_caught(tmp_path: Path) -> None:
         f"UTF-16 file with a forbidden token must be caught; got rc=0.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
-    assert "windows_export.txt" in result.stdout + result.stderr
+    assert "windows_export.txt" in _combined(result)
