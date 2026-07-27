@@ -336,6 +336,60 @@ def _mutation_command(
             assert_never(other)
 
 
+def _check_command(
+    record: RuntimeProvenance,
+    requirement: str,
+) -> tuple[str, ...] | None:
+    """Build a read-only latest-version probe for the detected installation.
+
+    The probe targets the *same* interpreter and manager that
+    :func:`_mutation_command` would mutate, so ``check`` and ``apply`` can never
+    disagree about which environment owns the component. ``pip install
+    --dry-run`` is the read-only view of the ``pip``/``pipx`` mutations; for a
+    ``uv``-managed tool there is no dry-run equivalent of ``uv tool install``,
+    so the probe resolves the latest version against the tool's own interpreter
+    via ``uv pip install --python <interpreter> --dry-run`` — the package
+    database ``uv tool install --force`` re-resolves from.
+    """
+    match record.mode:
+        case InstallMode.PIP_USER | InstallMode.VENV | InstallMode.PIPX:
+            return _pip_install_command(record, requirement, dry_run=True)
+        case InstallMode.UV_TOOL:
+            if record.interpreter is None or record.manager is None:
+                return None
+            return (
+                record.manager,
+                "pip",
+                "install",
+                "--python",
+                record.interpreter,
+                "--dry-run",
+                "--upgrade",
+                "--no-deps",
+                requirement,
+            )
+        case (
+            InstallMode.EDITABLE
+            | InstallMode.SYSTEM
+            | InstallMode.ABSENT
+            | InstallMode.UNKNOWN
+        ):
+            return None
+        case other:
+            assert_never(other)
+
+
+def _mutation_requirement(record: RuntimeProvenance, comp: Component) -> str:
+    """The bare distribution name a check/apply pair must target.
+
+    Both the read-only probe and the mutation resolve the *actual* installed
+    distribution (``record.distribution``) so a renamed or forked distribution
+    is never probed under the canonical ``upgrade_package`` yet mutated under
+    its real name (or vice versa).
+    """
+    return record.distribution or comp.upgrade_package
+
+
 def _mutation_refusal(record: RuntimeProvenance) -> str:
     return (
         f"refused: {record.component} is installed as {record.mode.value}; "
@@ -462,7 +516,12 @@ def _check_one_advancement(
         )
 
     match comp.upgrade_kind:
-        case UpgradeKind.PYTHON:
+        case UpgradeKind.PYTHON | UpgradeKind.PIPX:
+            # Both Python-distribution kinds are checked through the runtime
+            # that actually owns the visible CLI. The probe resolves the same
+            # distribution name and targets the same interpreter/manager that a
+            # later apply would mutate, so check and apply cannot diverge. The
+            # legacy ``PIPX`` descriptor never falls back to a global ``pip``.
             record = provenance_probe(comp)
             if record.mode is InstallMode.ABSENT:
                 return ComponentAdvancement(
@@ -472,9 +531,8 @@ def _check_one_advancement(
                     status=AdvancementStatus.NOT_INSTALLED,
                     detail=record.detail,
                 )
-            command = _pip_install_command(
-                record, comp.upgrade_package, dry_run=True
-            )
+            distribution = _mutation_requirement(record, comp)
+            command = _check_command(record, distribution)
             if command is None:
                 return ComponentAdvancement(
                     component=comp.ident,
@@ -484,22 +542,11 @@ def _check_one_advancement(
                     detail=_mutation_refusal(record),
                 )
             _, latest_ver, status, detail = _pip_check_latest(
-                comp.upgrade_package, runner=runner, command=command
+                distribution, runner=runner, command=command
             )
             return ComponentAdvancement(
                 component=comp.ident,
                 current_version=record.version,
-                target_version=latest_ver,
-                status=status,
-                detail=detail,
-            )
-        case UpgradeKind.PIPX:
-            installed_ver, latest_ver, status, detail = _pip_check_latest(
-                comp.upgrade_package, runner=runner
-            )
-            return ComponentAdvancement(
-                component=comp.ident,
-                current_version=installed_ver,
                 target_version=latest_ver,
                 status=status,
                 detail=detail,
@@ -562,11 +609,11 @@ def check_advancements(
 
 
 # ---------------------------------------------------------------------------
-# Apply step — pipx upgrade / docker pull / service restart
+# Apply step — distribution install / docker pull / service restart
 # ---------------------------------------------------------------------------
 
 
-def _apply_python(
+def _apply_distribution(
     comp: Component,
     record: RuntimeProvenance,
     target_version: str,
@@ -574,8 +621,15 @@ def _apply_python(
     runner: Runner,
     dry_run: bool,
 ) -> ApplyStep:
-    """Install one exact version through the manager owning the visible CLI."""
-    distribution = record.distribution or comp.upgrade_package
+    """Install one exact version through the manager owning the visible CLI.
+
+    Shared by every Python-distribution component (``UpgradeKind.PYTHON`` and
+    the legacy ``UpgradeKind.PIPX`` descriptor): the mutation is dispatched on
+    the *detected* ``record.mode`` (pip user/venv, pipx, or uv tool), never on
+    the component descriptor, and pins ``record.distribution==target_version``
+    so apply targets exactly what the read-only check probed.
+    """
+    distribution = _mutation_requirement(record, comp)
     requirement = f"{distribution}=={target_version}"
     cmd = _mutation_command(record, requirement)
     if cmd is None:
@@ -635,76 +689,6 @@ def _apply_python(
         from_version=record.version,
         to_version=target_version,
         detail=f"installed {requirement} via {record.mode.value}",
-    )
-
-
-def _apply_pipx(
-    comp: Component,
-    *,
-    runner: Runner,
-    dry_run: bool,
-) -> ApplyStep:
-    """Apply a pipx upgrade for one component."""
-    if dry_run:
-        return ApplyStep(
-            component=comp.ident,
-            status=ApplyStatus.SKIPPED,
-            from_version=None,
-            to_version=None,
-            detail=f"would run: pipx upgrade {comp.upgrade_package}",
-        )
-    cmd: tuple[str, ...] = ("pipx", "upgrade", comp.upgrade_package)
-    try:
-        result = runner(cmd)
-    except FileNotFoundError:
-        return ApplyStep(
-            component=comp.ident,
-            status=ApplyStatus.FAILED,
-            from_version=None,
-            to_version=None,
-            detail="pipx not found on PATH",
-        )
-    except subprocess.TimeoutExpired:
-        return ApplyStep(
-            component=comp.ident,
-            status=ApplyStatus.FAILED,
-            from_version=None,
-            to_version=None,
-            detail="pipx upgrade timed out",
-        )
-    except OSError as exc:
-        return ApplyStep(
-            component=comp.ident,
-            status=ApplyStatus.FAILED,
-            from_version=None,
-            to_version=None,
-            detail=f"pipx upgrade failed: {exc}",
-        )
-
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        if "already" in stderr.lower() or "latest" in stderr.lower():
-            return ApplyStep(
-                component=comp.ident,
-                status=ApplyStatus.ALREADY_CURRENT,
-                from_version=None,
-                to_version=None,
-                detail=f"{comp.upgrade_package} already at latest",
-            )
-        return ApplyStep(
-            component=comp.ident,
-            status=ApplyStatus.FAILED,
-            from_version=None,
-            to_version=None,
-            detail=f"pipx upgrade exit {result.returncode}: {stderr[:200]}",
-        )
-
-    return ApplyStep(
-        component=comp.ident,
-        status=ApplyStatus.APPLIED,
-        from_version=None,
-        to_version=None,
-        detail=f"pipx upgrade {comp.upgrade_package} completed",
     )
 
 
@@ -900,7 +884,12 @@ def _apply_one(
     Returns a list of ApplySteps (the upgrade step + the restart step if applicable).
     """
     match comp.upgrade_kind:
-        case UpgradeKind.PYTHON:
+        case UpgradeKind.PYTHON | UpgradeKind.PIPX:
+            # Both Python-distribution kinds apply through the detected runtime:
+            # exact ``record.distribution==target_version`` via the owning
+            # manager/interpreter. The legacy PIPX descriptor never falls back
+            # to a bare ``pipx upgrade`` (which is neither exact nor topology-
+            # aware and would diverge from the read-only check).
             if provenance is None or target_version is None:
                 upgrade_step = ApplyStep(
                     component=comp.ident,
@@ -910,15 +899,13 @@ def _apply_one(
                     detail="runtime provenance and exact target version are required",
                 )
             else:
-                upgrade_step = _apply_python(
+                upgrade_step = _apply_distribution(
                     comp,
                     provenance,
                     target_version,
                     runner=runner,
                     dry_run=dry_run,
                 )
-        case UpgradeKind.PIPX:
-            upgrade_step = _apply_pipx(comp, runner=runner, dry_run=dry_run)
         case UpgradeKind.DOCKER:
             upgrade_step = _apply_docker(comp, runner=runner, dry_run=dry_run)
         case other:
@@ -948,7 +935,11 @@ def _rollback_one(
 ) -> ApplyStep:
     """Restore a component to a specific previously-pinned version."""
     match comp.upgrade_kind:
-        case UpgradeKind.PYTHON:
+        case UpgradeKind.PYTHON | UpgradeKind.PIPX:
+            # Both Python-distribution kinds roll back through the detected
+            # runtime, pinning ``record.distribution==target_version`` via the
+            # owning manager/interpreter — never a bare ``pipx install`` that
+            # would ignore the detected topology and the installed distribution.
             if provenance is None:
                 return ApplyStep(
                     component=comp.ident,
@@ -957,7 +948,7 @@ def _rollback_one(
                     to_version=target_version,
                     detail="runtime provenance is required for rollback",
                 )
-            step = _apply_python(
+            step = _apply_distribution(
                 comp,
                 provenance,
                 target_version,
@@ -970,13 +961,10 @@ def _rollback_one(
                     f"rolled back to {target_version} via {provenance.mode.value}"
                 )
             return step
-        case UpgradeKind.PIPX:
-            cmd: tuple[str, ...] = (
-                "pipx", "install", "--force", f"{comp.upgrade_package}=={target_version}",
-            )
-            label = f"pipx install {comp.upgrade_package}=={target_version}"
         case UpgradeKind.DOCKER:
-            cmd = ("docker", "pull", f"{comp.upgrade_package}:{target_version}")
+            cmd: tuple[str, ...] = (
+                "docker", "pull", f"{comp.upgrade_package}:{target_version}",
+            )
             label = f"docker pull {comp.upgrade_package}:{target_version}"
         case other:
             assert_never(other)
@@ -1040,14 +1028,14 @@ def _rollback_all(
         if comp.ident not in lock.components:
             continue
         pin = lock.components[comp.ident]
-        if comp.upgrade_kind is not UpgradeKind.PYTHON:
+        if comp.upgrade_kind not in (UpgradeKind.PYTHON, UpgradeKind.PIPX):
             return [
                 ApplyStep(
                     component=comp.ident,
                     status=ApplyStatus.FAILED,
                     from_version=None,
                     to_version=pin.version,
-                    detail="rollback preflight cannot capture this legacy install kind",
+                    detail="rollback preflight cannot capture this install kind",
                 )
             ]
         try:
@@ -1064,7 +1052,7 @@ def _rollback_all(
             ]
         if provenance is not None:
             requirement = (
-                f"{provenance.distribution or comp.upgrade_package}=={pin.version}"
+                f"{_mutation_requirement(provenance, comp)}=={pin.version}"
             )
             if _mutation_command(provenance, requirement) is None:
                 return [
@@ -1457,10 +1445,10 @@ def run_upgrade(
     refusals = [
         _mutation_refusal(plan.before)
         for plan in plans
-        if plan.component.upgrade_kind is UpgradeKind.PYTHON
+        if plan.component.upgrade_kind in (UpgradeKind.PYTHON, UpgradeKind.PIPX)
         and _mutation_command(
             plan.before,
-            f"{plan.before.distribution or plan.component.upgrade_package}"
+            f"{_mutation_requirement(plan.before, plan.component)}"
             f"=={plan.target_version}",
         )
         is None
@@ -1664,6 +1652,24 @@ def run_upgrade(
     temporary: tempfile.TemporaryDirectory[str] | None = None
     if intent == "advance":
         all_records = estate_records
+        # An advancement can change the memory-provider extension: ``agent-notes``
+        # is itself an upgradeable component and it is the source of the provider
+        # pin (``agent-notes memory-provider describe --json`` reports the adapter
+        # and protocol versions). Re-probe AFTER the upgrades land so the
+        # candidate lock pins the post-upgrade reality; the interop gate then
+        # independently re-probes and verifies the candidate against the live
+        # provider. Carrying the stale pre-upgrade value instead would make the
+        # gate report spurious provider drift and roll back a legitimate
+        # agent-notes advancement. For every other component the probe returns an
+        # unchanged value, so this is a no-op when agent-notes did not move.
+        try:
+            advanced_provider = provider_probe(
+                runner=gate_runner, installed=gate_installed
+            )
+        except (KeyError, OSError, RuntimeError, ValueError) as exc:
+            return rollback_journal(
+                f"post-upgrade memory-provider probe failed: {type(exc).__name__}"
+            )
         try:
             generated = lock_mod.generate_lock(
                 component_versions={
@@ -1686,7 +1692,7 @@ def run_upgrade(
                 release=generated.release,
                 regista_quad=generated.regista_quad,
                 components=generated.components,
-                provider_extension=current_lock.provider_extension,
+                provider_extension=advanced_provider,
             )
             temporary = tempfile.TemporaryDirectory(prefix="agent-suite-upgrade-")
             gate_path = Path(temporary.name) / "SUITE.lock"
