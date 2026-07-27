@@ -84,13 +84,14 @@ jobs:
       # install, the test errors (not skips), so a packaging regression is a red
       # run, not a silent skip (Plan 002 WI-2).
       INTEROP_REQUIRE_FACES: "1"
-      # Pinned revisions (Plan 015 WI-0.2 / WI-2.2): interop CI installs from
-      # immutable revisions, not moving @main branches. Update these SHAs when
-      # the candidate lock advances; do not revert to @main.
-      REGISTA_SHA: 069950e0fd42c795273bc942c83246d04a49baa7
-      AGENT_NOTES_SHA: 853b831c882db3bae72061ec222067832e7c4e28
-      DOSSIER_SHA: 6a88b1e65501db7edc4f379c5f6842b750e94e1f
-      CAIRN_SHA: 94cb874852ae6341b3388a93e101a362cf2217bd
+      # Component revisions AND repository origins are NOT literals here.
+      # SUITE.lock is the single source of truth (Plan 015 WI-2.2 / release-
+      # truth / Sol CI finding): the "Resolve pinned origins and revisions from
+      # SUITE.lock" step below reads the lock and exports <NAME>_REPO and
+      # <NAME>_SHA (REGISTA / AGENT_NOTES / DOSSIER / CAIRN) to GITHUB_ENV. A
+      # second set of literal SHAs or hard-coded origins drifts (the agent-notes
+      # SHA literal did in 2026-07) — advance a pin by updating SUITE.lock,
+      # never by re-adding a literal here.
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # actions/checkout@v5
@@ -110,25 +111,51 @@ jobs:
       - run: uv venv
       - run: uv sync --frozen --extra dev
 
+      # SUITE.lock is the single source of truth for BOTH the repository origin
+      # and the revision of every interop (Profile B) component (release-truth /
+      # Sol CI finding). Export <NAME>_REPO and <NAME>_SHA to GITHUB_ENV so the
+      # install + schema steps below use exactly the locked origin@revision —
+      # there are no literal SHAs and no hard-coded org/repo origins in this job
+      # to drift out of sync with the lock (and no work-domain identifier for
+      # the identifier gate to flag).
+      - name: Resolve pinned origins and revisions from SUITE.lock
+        run: |
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import tomllib
+          from pathlib import Path
+          comp = tomllib.loads(Path("SUITE.lock").read_text(encoding="utf-8"))["components"]
+          # agent-provenance's package/CLI name is cairn, hence the CAIRN prefix.
+          print(f"REGISTA_REPO={comp['regista']['repo']}")
+          print(f"REGISTA_SHA={comp['regista']['revision']}")
+          print(f"AGENT_NOTES_REPO={comp['agent-notes']['repo']}")
+          print(f"AGENT_NOTES_SHA={comp['agent-notes']['revision']}")
+          print(f"DOSSIER_REPO={comp['dossier']['repo']}")
+          print(f"DOSSIER_SHA={comp['dossier']['revision']}")
+          print(f"CAIRN_REPO={comp['agent-provenance']['repo']}")
+          print(f"CAIRN_SHA={comp['agent-provenance']['revision']}")
+          PY
+
       - name: Install regista (spine)
-        # regista-hraedon is the published PyPI distribution of hraedon/regista.
-        # The import name remains 'regista'. SUITE.lock still pins the source
-        # SHA for reproducibility checks; the install pulls from PyPI for speed.
-        # 0.5.3 is the Plan 018 P0 rollup (stderr logging default, CLI error
-        # envelope, no-traceback error paths, conformance kit); 0.5.2 predated it.
-        run: uv pip install regista-hraedon==0.5.3
+        # Install from the exact SUITE.lock source revision, not a version-only
+        # PyPI wheel: a tested-candidate freeze (Plan 015 WI-2.2) requires the
+        # interop set to BE the locked candidate, and a PyPI version (e.g. 0.5.3)
+        # can be built from a commit other than the pinned revision. The git
+        # origin and revision are both read from the lock (no org literal
+        # hardcoded here, so the identifier gate stays satisfied) — SUITE.lock is
+        # the single source of truth for both the repo and the revision.
+        run: uv pip install "git+https://github.com/${REGISTA_REPO}.git@${REGISTA_SHA}"
 
       # Both face repos are public — install as a hard required step. If the
       # install fails, CI fails: combined with INTEROP_REQUIRE_FACES=1 above,
       # the face-level interop proof can no longer silently regress to a skip
-      # (Plan 002 WI-1).
+      # (Plan 002 WI-1). Origins and revisions are lock-derived.
       - name: Install faces (agent-notes + dossier)
         run: |
-          uv pip install "git+https://github.com/hraedon/agent-notes.git@${AGENT_NOTES_SHA}" \
-                       "git+https://github.com/hraedon/dossier.git@${DOSSIER_SHA}"
+          uv pip install "git+https://github.com/${AGENT_NOTES_REPO}.git@${AGENT_NOTES_SHA}" \
+                       "git+https://github.com/${DOSSIER_REPO}.git@${DOSSIER_SHA}"
 
       - name: Install agent-provenance (cairn)
-        run: uv pip install "git+https://github.com/hraedon/agent-provenance.git@${CAIRN_SHA}"
+        run: uv pip install "git+https://github.com/${CAIRN_REPO}.git@${CAIRN_SHA}"
 
       - name: Set up agent-notes schema (skill-smoke prerequisite)
         run: |
@@ -148,7 +175,7 @@ jobs:
           # tip and apply main's schema instead — defeating the lock. Fetching
           # the SHA directly makes an unreachable/wrong pin a hard error.
           git init --quiet /tmp/an-src
-          git -C /tmp/an-src remote add origin https://github.com/hraedon/agent-notes.git
+          git -C /tmp/an-src remote add origin "https://github.com/${AGENT_NOTES_REPO}.git"
           git -C /tmp/an-src fetch --quiet --depth 1 origin "$AGENT_NOTES_SHA"
           git -C /tmp/an-src checkout --quiet "$AGENT_NOTES_SHA"
           SMOKE_DSN="postgresql://interop:interop_pw@localhost:5432/agent_notes_smoke"

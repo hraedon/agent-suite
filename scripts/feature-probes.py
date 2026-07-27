@@ -16,6 +16,13 @@ the status. Probes may honestly return ``partial``, ``absent``, or ``blocked``.
 If a probe cannot determine the status (sibling not available), it returns
 ``HAND_ASSESSED`` to preserve the prior hand-assessed status.
 
+A probe status is an **implementation-presence** measurement, not a behavioral
+qualification and not a gate-completion signal. A ``pass`` means the named
+probe found the module/function/route/CLI/test that constitutes the surface;
+it is a necessary precondition for a release-gate row, not the qualification
+itself. Qualification evidence (golden-journey proofs, the claims ledger, the
+release-board WI proofs) is tracked separately in ``data/release-board.json``.
+
 Usage:
     python3 scripts/feature-probes.py           # probe + update data/
     python3 scripts/feature-probes.py --check   # validate, exit non-zero on drift
@@ -42,6 +49,24 @@ from typing import Any, assert_never
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = REPO_ROOT / "data" / "v1-feature-matrix.json"
 DOCS_PATH = REPO_ROOT / "docs" / "v1-feature-matrix.md"
+
+# Shared wording that keeps the structural feature matrix from being read as a
+# behavioral qualification or a gate-completion signal (release-truth defect 3).
+# Owned here (the base probe module) and reused by feature-matrix.py, which
+# loads this file as ``_feature_probes`` — so the two markdown writers share one
+# string and can never drift on what a probe `pass` does and does not mean.
+# Keep the two axes explicit: probe `status` = implementation presence;
+# `release_status` / the release board = qualification.
+_STRUCTURAL_STATUS_DISCLAIMER = (
+    "Each status is an *implementation-presence* measurement: a named probe "
+    "found (or did not find) the module, function, route, CLI verb, and test "
+    "that constitute the surface. A `pass` row means the implementation is "
+    "structurally present and probed — it is NOT a behavioral qualification "
+    "and NOT gate completion. Qualification evidence (golden-journey proofs, "
+    "the claims ledger, the release-board WI proofs) is tracked separately in "
+    "data/release-board.json; each row's release-stage label is the "
+    "`release_status` field."
+)
 SIBLINGS_ROOT = Path(
     os.environ.get("AGENT_SUITE_SIBLINGS_ROOT", "/projects")
 )
@@ -2273,7 +2298,12 @@ def _matrix_to_markdown(matrix_data: dict[str, Any]) -> str:
     lines.append(f"**Version:** {matrix_data['version']}  ")
     lines.append(f"**Generated:** {matrix_data['generated_at']}  ")
     lines.append(f"**Status source:** {matrix_data['status_source']}")
-    lines.append("**Status values:** pass / partial / blocked / absent")
+    lines.append(
+        "**Status values (implementation presence, not qualification):** "
+        "pass / partial / blocked / absent"
+    )
+    lines.append("")
+    lines.append(_STRUCTURAL_STATUS_DISCLAIMER)
     lines.append("")
     if matrix_data["status_source"] == "probe-emitted":
         lines.append(

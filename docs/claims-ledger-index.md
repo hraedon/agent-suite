@@ -22,14 +22,14 @@ can see at a glance what is proven vs. provisional.
 | CL-011 | Delegation chain | experimental | regista | — |
 | CL-012 | External anchoring | experimental | regista | F-1, F-3 |
 | CL-013 | Offline verification | provisional | agent-provenance | F-2 — live proof PASSED against a real Claude Code session 2026-07-11 |
-| CL-014 | Upgrade safety | supported | agent-suite | — |
+| CL-014 | Upgrade safety | provisional | agent-suite | proofs necessary but not sufficient while WI-025 (in review; upgrade drift-reconciliation) is open; live N-1 proof is Gate 4 WI-4.3 |
 
 ## Maturity counts
 
 | Maturity | Count | Claims |
 |----------|-------|--------|
-| supported | 8 | CL-001, CL-003, CL-004, CL-005, CL-006, CL-007, CL-009, CL-014 |
-| provisional | 2 | CL-008, CL-013 |
+| supported | 7 | CL-001, CL-003, CL-004, CL-005, CL-006, CL-007, CL-009 |
+| provisional | 3 | CL-008, CL-013, CL-014 |
 | experimental | 4 | CL-002, CL-010, CL-011, CL-012 |
 
 ## Holistic review findings mapped to claims

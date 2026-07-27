@@ -5,8 +5,16 @@ Implements Plan 009 WI-0.1 / WI-0.3. The matrix defines the warranted v1 public
 surface per golden journey and component. This script emits both the machine
 JSON artifact and a human-readable Markdown table.
 
-Status values (Plan 009 §8 baseline vocabulary):
-  pass     — the surface works end-to-end against current main
+Status values (Plan 009 §8 baseline vocabulary). These are
+**implementation-presence** statuses: a named probe mechanically inspects the
+module/function/route/CLI/test that constitutes the surface and reports how
+much of it is present. They are NOT behavioral qualification and NOT gate
+completion — a `pass` row is a necessary precondition for a gate row, not the
+qualification itself. Qualification evidence (golden-journey proofs, the claims
+ledger, the release-board WI proofs) lives in the release board, and each row's
+release-stage label is carried separately in ``release_status``.
+
+  pass     — the surface's implementation is structurally present and probed
   partial  — the surface exists but has a documented gap or gate
   blocked  — implementation is stopped on an unresolved dependency/defect
   absent   — not yet implemented
@@ -76,6 +84,12 @@ class Matrix:
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = REPO_ROOT / "data" / "v1-feature-matrix.json"
 DOCS_PATH = REPO_ROOT / "docs" / "v1-feature-matrix.md"
+
+# The structural-status disclaimer wording (what a probe `pass` does and does
+# not mean — release-truth defect 3) is owned by the base probe module and
+# reused here so the two markdown writers can never drift. feature-matrix.py
+# loads feature-probes.py as ``_feature_probes`` above.
+_STRUCTURAL_STATUS_DISCLAIMER = _feature_probes._STRUCTURAL_STATUS_DISCLAIMER
 
 
 # Sol Gate 0 WS3 — owning WI per non-pass Profile B row. Each non-pass row in
@@ -751,6 +765,64 @@ def _matrix_rows() -> list[MatrixRow]:
     ]
 
 
+def _committed_metadata() -> dict[str, Any] | None:
+    """Read the metadata block (everything except ``rows``) from the committed
+    canonical JSON, or ``None`` when it is absent or unreadable.
+
+    Used to keep a regeneration's header (``generated_at``, ``status_source``,
+    ``observed_revisions``) anchored to the canonical probe-emitted artifact
+    even in an environment that cannot run a full probe (so the header does not
+    silently degrade to a partial local probe run — release-truth hygiene).
+    """
+    if not DATA_PATH.exists():
+        return None
+    try:
+        committed = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(committed, dict):
+        return None
+    return {k: v for k, v in committed.items() if k != "rows"}
+
+
+def _committed_rows() -> list[dict[str, Any]]:
+    """Read the committed canonical rows (status/proof), or ``[]`` if absent."""
+    if not DATA_PATH.exists():
+        return []
+    try:
+        committed = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    rows = committed.get("rows")
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def _matrix_from_data(payload: dict[str, Any]) -> Matrix:
+    """Reconstruct a :class:`Matrix` from a data payload (rows + metadata).
+
+    Applies the owning-WI and release-stage labels (structural, deterministic)
+    and rebuilds the derived WI-assignment summary. Does NOT probe — the
+    caller decides where ``status``/``proof``/``status_source`` come from.
+    """
+    for row in payload["rows"]:
+        key = (row["journey"], row["component"], row["surface"])
+        row["owning_wi"] = _WI_ASSIGNMENTS.get(key, "")
+        row["release_status"] = _release_status_for_row(
+            row["profile"], row["journey"], row["component"]
+        )
+    constructed_rows = [MatrixRow(**r) for r in payload["rows"]]
+    return Matrix(
+        version=payload["version"],
+        generated_at=payload["generated_at"],
+        status_source=payload["status_source"],
+        observed_revisions=payload["observed_revisions"],
+        profiles=payload["profiles"],
+        golden_journeys=payload["golden_journeys"],
+        rows=constructed_rows,
+        wi_assignment_summary=_wi_assignment_summary(constructed_rows),
+    )
+
+
 def _matrix() -> Matrix:
     """Build the v1 feature matrix with probe-emitted statuses.
 
@@ -791,39 +863,46 @@ def _matrix() -> Matrix:
     # Seed status/proof from the committed JSON so that CI (without siblings)
     # produces output matching the committed file. apply_probes will overwrite
     # these in environments where siblings are available.
-    if DATA_PATH.exists():
-        try:
-            committed = json.loads(DATA_PATH.read_text(encoding="utf-8"))
-            committed_map: dict[tuple[str, str, str], dict[str, Any]] = {
-                (r["journey"], r["component"], r["surface"]): r
-                for r in committed.get("rows", [])
-            }
-            for row in payload["rows"]:
-                key = (row["journey"], row["component"], row["surface"])
-                if key in committed_map:
-                    row["status"] = committed_map[key]["status"]
-                    row["proof"] = committed_map[key]["proof"]
-        except (json.JSONDecodeError, KeyError, TypeError):
-            pass  # Fall back to placeholders from _matrix_rows()
-    payload = _feature_probes.apply_probes(payload)
-    # Sol Gate 0 WS3: attach owning WI per row + release-stage label.
-    for row in payload["rows"]:
-        key = (row["journey"], row["component"], row["surface"])
-        row["owning_wi"] = _WI_ASSIGNMENTS.get(key, "")
-        row["release_status"] = _release_status_for_row(
-            row["profile"], row["journey"], row["component"]
+    for committed_row in _committed_rows():
+        key = (
+            committed_row.get("journey"),
+            committed_row.get("component"),
+            committed_row.get("surface"),
         )
-    constructed_rows = [MatrixRow(**r) for r in payload["rows"]]
-    return Matrix(
-        version=payload["version"],
-        generated_at=payload["generated_at"],
-        status_source=payload["status_source"],
-        observed_revisions=payload["observed_revisions"],
-        profiles=payload["profiles"],
-        golden_journeys=payload["golden_journeys"],
-        rows=constructed_rows,
-        wi_assignment_summary=_wi_assignment_summary(constructed_rows),
-    )
+        for row in payload["rows"]:
+            row_key = (row["journey"], row["component"], row["surface"])
+            if row_key == key:
+                row["status"] = committed_row["status"]
+                row["proof"] = committed_row["proof"]
+                break
+    payload = _feature_probes.apply_probes(payload)
+    # Release-truth hygiene: a regeneration in an environment that cannot run a
+    # full probe must not silently degrade the header (generated_at /
+    # status_source / observed_revisions) to a partial local probe run. When
+    # any probe falls back to HAND_ASSESSED, re-anchor the header to the
+    # canonical committed artifact (whose rows were just preserved). A full
+    # probe run — the only legitimate way to advance these values — leaves them
+    # as the probe computed them.
+    if payload.get("_hand_assessed_keys"):
+        committed_meta = _committed_metadata()
+        if committed_meta is not None:
+            for meta_key in ("generated_at", "status_source", "observed_revisions"):
+                if meta_key in committed_meta:
+                    payload[meta_key] = committed_meta[meta_key]
+    return _matrix_from_data(payload)
+
+
+def _matrix_from_canonical_json() -> Matrix:
+    """Render the matrix directly from the committed canonical JSON — no probe.
+
+    This is the source-faithful render path for the human-readable docs: it
+    reproduces ``data/v1-feature-matrix.json`` exactly (metadata and rows), so
+    ``docs/v1-feature-matrix.md`` can never drift from the canonical artifact
+    on the fields the docs surface. Raises ``FileNotFoundError`` when the
+    canonical JSON is absent.
+    """
+    payload = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    return _matrix_from_data(payload)
 
 
 def _validate(matrix: Matrix) -> list[str]:
@@ -851,6 +930,12 @@ def _matrix_to_json(matrix: Matrix) -> str:
         "version": matrix.version,
         "generated_at": matrix.generated_at,
         "status_source": matrix.status_source,
+        # In-band, machine-readable statement of what the `status` column means
+        # (release-truth finding 2): the structural probes measure
+        # implementation presence, not behavioral qualification or gate
+        # completion. Validators gate on this field so the semantics cannot live
+        # in markdown alone (which a consumer of the JSON would never see).
+        "status_semantics": _STRUCTURAL_STATUS_DISCLAIMER,
         "observed_revisions": matrix.observed_revisions,
         "profiles": matrix.profiles,
         "golden_journeys": matrix.golden_journeys,
@@ -868,7 +953,12 @@ def _matrix_to_markdown(matrix: Matrix) -> str:
     lines.append(f"**Version:** {matrix.version}  ")
     lines.append(f"**Generated:** {matrix.generated_at}")
     lines.append(f"**Status source:** {matrix.status_source}")
-    lines.append("**Status values:** pass / partial / blocked / absent")
+    lines.append(
+        "**Status values (implementation presence, not qualification):** "
+        "pass / partial / blocked / absent"
+    )
+    lines.append("")
+    lines.append(_STRUCTURAL_STATUS_DISCLAIMER)
     lines.append("")
     if matrix.status_source == "probe-emitted":
         lines.append(
@@ -948,7 +1038,38 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print Markdown to stdout instead of writing files",
     )
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help=(
+            "Render the Markdown docs from the committed canonical "
+            "data/v1-feature-matrix.json WITHOUT re-probing. Use this to keep "
+            "docs/v1-feature-matrix.md in sync with the canonical artifact in "
+            "an environment that cannot run a full probe (so the docs header — "
+            "generated_at / status_source / observed_revisions — cannot drift "
+            "to a partial local probe run)."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.render:
+        # Source-faithful render: reproduce the canonical JSON exactly (no
+        # probe), so the docs can never drift from the artifact on the fields
+        # they surface. The JSON itself is the source and is not rewritten.
+        matrix = _matrix_from_canonical_json()
+        errors = _validate(matrix)
+        if errors:
+            for error in errors:
+                print(f"ERROR: {error}", file=sys.stderr)
+            return 1
+        markdown = _matrix_to_markdown(matrix)
+        if args.stdout:
+            print(markdown)
+            return 0
+        args.docs.parent.mkdir(parents=True, exist_ok=True)
+        args.docs.write_text(markdown, encoding="utf-8")
+        print(f"Wrote {args.docs} (rendered from canonical {args.data})")
+        return 0
 
     matrix = _matrix()
     errors = _validate(matrix)

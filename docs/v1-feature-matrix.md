@@ -3,7 +3,9 @@
 **Version:** v1  
 **Generated:** 2026-07-25T21:10:56.665098Z
 **Status source:** probe-emitted
-**Status values:** pass / partial / blocked / absent
+**Status values (implementation presence, not qualification):** pass / partial / blocked / absent
+
+Each status is an *implementation-presence* measurement: a named probe found (or did not find) the module, function, route, CLI verb, and test that constitute the surface. A `pass` row means the implementation is structurally present and probed — it is NOT a behavioral qualification and NOT gate completion. Qualification evidence (golden-journey proofs, the claims ledger, the release-board WI proofs) is tracked separately in data/release-board.json; each row's release-stage label is the `release_status` field.
 
 This matrix is emitted by named probes; every row's status is mechanically determined. Do not hand-edit the status column.
 

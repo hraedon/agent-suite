@@ -109,13 +109,14 @@
     {
       "id": "CL-014",
       "title": "Upgrade safety",
-      "maturity": "supported",
-      "enforcing_components": ["agent-suite"]
+      "maturity": "provisional",
+      "enforcing_components": ["agent-suite"],
+      "maturity_note": "The existing proofs (stubbed-runner upgrade/rollback, schema-migration-boundary refusal) are necessary but NOT sufficient: they do not exercise the open correctness gap tracked by WI-025 (in human review) — an upgrade drift-reconciliation defect (titled, as of writing, 'shared-user pip installs that doctor identifies as drifted'; the blocking item is WI-025 itself, whatever its final scope). Live N-1 upgrade proof is Gate 4 WI-4.3 (not started). Downgraded from 'supported' 2026-07-26: with an open, in-review upgrade correctness gap, the claim is provisional, not supported."
     }
   ],
   "maturity_counts": {
-    "supported": 8,
-    "provisional": 2,
+    "supported": 7,
+    "provisional": 3,
     "experimental": 4
   },
   "holistic_review_findings_summary": [

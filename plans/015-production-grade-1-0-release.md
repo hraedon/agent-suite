@@ -1,22 +1,35 @@
 # Plan 015 — Production-grade 1.0 release closure
 
-**Status:** In Progress — Gate 0 complete; Gate 1 complete (2026-07-25).
+**Status:** In Progress — Gate 0 complete; Gate 1 in progress (NOT complete).
 Gate 0: WI-0.1 (executable probes) complete; WI-0.2 (state reconciliation)
 complete (SUITE.lock, identifier gate, inventory); WI-0.3 (support matrix)
-ratified (linux/k8s/Windows/docker, PostgreSQL 18+, Python 3.12/3.13/3.14,
-Chrome/Edge/Safari/Firefox); WI-0.4 (release board) complete.
-Gate 1: WI-1.1 (provider contracts) complete — seven Protocol interfaces,
-machine-readable contract registry, architecture boundary tests; WI-1.2 (work
-and knowledge journeys) complete — GJ-1–GJ-4 end-to-end through HTTP with
-two-principal review and negative cases; WI-1.3 (activity and evidence)
-complete — GJ-5/GJ-8 with verification verdicts and integrity reports;
-WI-1.4 (identity/keys/administration) complete — enrollment, rotation,
-revocation, break-glass dual control, no private key material in responses;
-WI-1.5 (notifications) complete — per-principal preferences, deep links,
-emission; WI-1.6 (console/accessibility) complete — six-area shell, accessible
-landmarks, aria-current, skip links. Dossier 649 tests pass, ruff + mypy
---strict clean. Known xfail: knowledge create (regista reserved-transition
-block, tracked separately).
+ratified (linux/k8s/Windows/docker, PostgreSQL 18+, Python 3.12/3.13/3.14;
+browsers ratified as a target matrix but recorded `not_qualified` in
+data/support-matrix.json until Gate 1 WI-1.6 lands a qualification lane);
+WI-0.4 (release board) complete.
+Gate 1 (authoritative status: data/release-board.json, gate 1 — corrected
+2026-07-26): WI-1.1 (provider contracts) in_progress — Protocol interfaces,
+the machine-readable contract registry, and architecture boundary tests have
+landed, but area-module adapter conformance for the Knowledge/Activity/
+Evidence/Operations/Delivery providers remains; WI-1.2 (work and knowledge
+journeys) in_progress — GJ-1–GJ-4 golden-journey tests have landed with
+two-principal review and negative cases, but the same-lineage, missing-
+lineage, expired-claim, and stale-form negative cases remain (plus a known
+xfail: knowledge create uses a regista reserved transition); WI-1.3 (activity
+and evidence), WI-1.4 (identity/keys/administration), WI-1.5 (daily operation
+and notifications), and WI-1.6 (console and accessibility qualification) are
+not_started. Browser and WCAG 2.2 AA qualification is WI-1.6 and has no CI
+lane yet — no browser is qualified (data/support-matrix.json).
+**Correction note (2026-07-26).** An earlier status line (commit abf40ff,
+"docs: Plan 015 Gate 1 complete") and the session reflection
+reflections/2026-07-25-qwen3-8-max-preview-2.md recorded Gate 1 as complete.
+That claim was false: it read structural feature-probe `pass` rows
+(implementation present) and partial dossier test landings as gate completion.
+The machine-readable release board (data/release-board.json) — which the
+release-artifact validator tests treat as authoritative — showed WI-1.1/WI-1.2
+in_progress and WI-1.3–WI-1.6 not_started. The release board is the single
+source of truth for gate/WI status; this header now agrees with it. The prior
+claim is preserved here and in the reflection as design history, not deleted.
 **Owner:** agent-suite coordinates the release; each constituent owns its
 domain; dossier owns the normal human interface.
 **Depends:** agent-suite Plans 008, 009, 013, and 014; dossier Plans 015 and
@@ -138,6 +151,13 @@ Finish agent-suite Plan 009 WI-0.3. Each feature-matrix row must be emitted by a
 named probe against an identified revision set. A probe reports `pass`,
 `partial`, `blocked`, or `absent`, plus evidence location and observed release
 identity. Hand-authored status remains commentary only.
+
+A probe status is an **implementation-presence** measurement — the named probe
+found (or did not find) the module, function, route, CLI verb, and test that
+constitute the surface. A `pass` row means the implementation is structurally
+present and probed; it is *not* a behavioral qualification and it is *not* gate
+completion. Qualification evidence (golden-journey proofs, the claims ledger,
+and the release-board WI proofs) is tracked separately in the release board.
 
 **AC:** regenerating `data/v1-feature-matrix.json` from a clean checkout
 reproduces every status; stale rows that conflict with landed dossier or suite
@@ -271,9 +291,14 @@ below templates and WCAG 2.2 AA for the agreed browser matrix, including
 keyboard, screen reader, 200% zoom, high contrast, reduced motion, narrow
 viewport, print/PDF, slow provider, and malicious attested strings.
 
-**Gate 1 exit:** every applicable Profile B product row is probe-emitted pass;
-dossier is the sole normal browser surface; no journey requires direct SQL,
-component-private Python, raw event JSON, or manual harness/config editing.
+**Gate 1 exit:** every applicable Profile B product row is probe-emitted pass
+— but a probe `pass` only certifies *implementation presence* (the structural
+feature probes found the surface, function, route, and test); it is a
+necessary precondition, not the qualification itself. The behavioral
+qualification evidence for each journey (golden-journey proofs, the claims
+ledger, and the release-board WI proofs) must also be landed. dossier is the
+sole normal browser surface; no journey requires direct SQL, component-private
+Python, raw event JSON, or manual harness/config editing.
 
 ## 6. Gate 2 — Make candidate artifacts immutable and reproducible
 
@@ -472,7 +497,9 @@ Optional feature expansion stops when it competes with this path.
 
 A release owner may promote 1.0 only when all are true:
 
-- [ ] Profile A and B feature-matrix rows are probe-emitted pass.
+- [ ] Profile A and B feature-matrix rows are probe-emitted pass (structural
+      implementation presence), AND the corresponding behavioral qualification
+      evidence (golden-journey proofs, claims ledger) is landed.
 - [ ] Dossier completes the six applicable human areas through public providers.
 - [ ] The candidate lock identifies every constituent and artifact immutably.
 - [ ] CI, clean installs, and dogfood use the same lock and bundle.

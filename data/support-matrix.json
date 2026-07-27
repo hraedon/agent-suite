@@ -127,8 +127,8 @@
     "rc_soak_days": 14
   },
   "availability_note": "Objectives are targets for Gate 0 WI-0.3 ratification, not yet proven by qualification.",
-  "compatibility_window": "N-1 upgrade supported",
-  "compatibility_window_note": "Upgrade/rollback logic is unit-tested with stubbed runners; live N-1 upgrade proof is Gate 4 WI-4.3.",
+  "compatibility_window": "N-1 upgrade target",
+  "compatibility_window_note": "N-1 is the compatibility window 1.0 commits to honour, not a proven claim. Upgrade/rollback logic is unit-tested with stubbed runners (necessary but not sufficient) and is 'provisional' in the claims ledger (CL-014): WI-025 (in review) is an open upgrade drift-reconciliation gap (titled, as of writing, 'shared-user pip installs that doctor flags as drifted'; the blocker is WI-025 itself). Live N-1 upgrade proof is Gate 4 WI-4.3 (not started).",
   "excluded_surfaces": [
     "Kubernetes operator (k8s is a dogfood substrate, not a required dependency)",
     "SaaS",

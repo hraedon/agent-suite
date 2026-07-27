@@ -1,11 +1,17 @@
 # Release Manifest
 
-The immutable release-time description of a published agent-suite candidate.
+The release-time description of an agent-suite **source candidate**.
 
 ## What the manifest is
 
-The release manifest (`release-manifest.json`) is the **immutable
-release-time description** of a published candidate. It records:
+The release manifest (`release-manifest.json`) is the **release-time
+description** of a candidate. Today that candidate is a **source candidate**:
+the `SUITE.lock`-pinned source revisions, checked out and tested. Until Gate 2
+(release-board WI-2.3) builds immutable wheels/bundle, there are **no immutable
+wheel artifacts**, and the manifest does **not** claim wheel reproducibility.
+When we say the manifest is *immutable* we mean the **record** is tamper-evident
+(a self-SHA over its content) — not that the candidate it describes is an
+immutable binary release. It records:
 
 - The umbrella tag SHA (the tagged commit in `agent-suite`)
 - All six constituent SHAs (from `SUITE.lock`)
@@ -29,8 +35,8 @@ The two are distinct artifacts with distinct purposes:
 
 | Aspect | Release Manifest | Candidate Inventory |
 |--------|-----------------|---------------------|
-| What it describes | What was published | What the operator's estate looks like right now |
-| Mutability | Immutable (attached to a tagged release) | Live state (regenerated on each `agent-suite inventory` run) |
+| What it describes | The source candidate that was cut | What the operator's estate looks like right now |
+| Mutability | Immutable record (attached to a tagged release); the candidate is a source candidate until Gate 2 | Live state (regenerated on each `agent-suite inventory` run) |
 | Scope | The suite's pinned candidate definition | The operator's installed + checkout state |
 | When it's generated | CI on tag push | CI on tag push + locally on demand |
 | Contains wheel hashes | Yes | No |
@@ -106,11 +112,14 @@ breaks consumers.
 ## Wheel hashes: current state and forward path
 
 Today, CI does not build wheels — the manifest's `wheel_sha256` and
-`source_archive_sha256` fields are empty strings for every constituent.
-This is **not** a failure: empty strings are an explicit "not provided"
-signal, distinct from "failed to compute." The schema is forward-compatible:
-when a future work item adds the wheel-build step to CI, the fields will
-be populated without a schema change.
+`source_archive_sha256` fields are empty strings for every constituent, and
+the candidate the manifest describes is a *source* candidate (locked source
+revisions), not an immutable wheel/bundle candidate. This is **not** a failure:
+empty strings are an explicit "not provided" signal, distinct from "failed to
+compute," and the manifest makes no wheel-reproducibility claim. The schema is
+forward-compatible: when Gate 2 (release-board WI-2.3) adds the wheel-build
+step to CI, the fields will be populated without a schema change and the
+candidate becomes an immutable wheel/bundle candidate.
 
 An operator verifying a manifest with `release-manifest verify` against a
 local wheels directory will see the wheel hashes verified for any

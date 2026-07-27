@@ -126,6 +126,37 @@ def test_committed_status_source_is_probe_emitted() -> None:
     )
 
 
+def test_committed_json_carries_status_semantics_in_band() -> None:
+    """The committed feature-matrix JSON must state, in-band, that `status`
+    measures implementation presence — not behavioral qualification or gate
+    completion (release-truth finding 2).
+
+    Consumers of the JSON (not just readers of the rendered markdown) must see
+    the semantics, so they live in a machine-readable ``status_semantics`` field
+    that this test gates on. A regeneration that drops or weakens the field
+    fails here; ``test_committed_json_matches_generator`` (which does not ignore
+    this field) additionally pins it to the generator's shared constant.
+    """
+    committed = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    semantics = committed.get("status_semantics")
+    assert isinstance(semantics, str) and semantics, (
+        "data/v1-feature-matrix.json must carry a non-empty 'status_semantics' "
+        "field stating what the status column means."
+    )
+    assert "implementation-presence" in semantics, (
+        "status_semantics must state that the status column measures "
+        "implementation presence."
+    )
+    assert "NOT a behavioral qualification" in semantics, (
+        "status_semantics must state that a probe `pass` is not a behavioral "
+        "qualification or gate completion."
+    )
+    assert semantics == feature_matrix._STRUCTURAL_STATUS_DISCLAIMER, (
+        "status_semantics must equal the shared _STRUCTURAL_STATUS_DISCLAIMER "
+        "(single source of truth)."
+    )
+
+
 def test_committed_observed_revisions_are_populated() -> None:
     """Every component must have a non-None observed revision.
 
@@ -287,3 +318,94 @@ def test_cli_stdout_outputs_markdown() -> None:
     assert result.returncode == 0
     assert "# v1 Feature Matrix" in result.stdout
     assert "| Journey | Profile |" in result.stdout
+
+
+def test_docs_metadata_matches_canonical_json() -> None:
+    """The rendered docs must not drift from the canonical JSON on the header
+    metadata they surface (release-truth hygiene).
+
+    ``docs/v1-feature-matrix.md`` is rendered from ``data/v1-feature-matrix.json``
+    (via ``feature-matrix.py --render``, which does not re-probe). If the two
+    disagree on ``Generated`` / ``Status source`` / the observed revisions, the
+    docs are stale — regenerate with ``python3 scripts/feature-matrix.py
+    --render``.
+    """
+    committed = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    docs_text = (REPO_ROOT / "docs" / "v1-feature-matrix.md").read_text(
+        encoding="utf-8"
+    )
+    assert f"**Generated:** {committed['generated_at']}" in docs_text, (
+        "docs/v1-feature-matrix.md Generated timestamp drifted from the "
+        "canonical JSON; run: python3 scripts/feature-matrix.py --render"
+    )
+    assert f"**Status source:** {committed['status_source']}" in docs_text, (
+        "docs/v1-feature-matrix.md Status source drifted from the canonical "
+        "JSON; run: python3 scripts/feature-matrix.py --render"
+    )
+    for component, rev in committed["observed_revisions"].items():
+        shown = rev if rev else "(unavailable)"
+        assert f"**{component}**: {shown}" in docs_text, (
+            f"docs/v1-feature-matrix.md observed revision for {component} "
+            "drifted from the canonical JSON; run: "
+            "python3 scripts/feature-matrix.py --render"
+        )
+
+
+def test_render_reproduces_docs_from_canonical_json() -> None:
+    """``feature-matrix.py --render`` reproduces the committed docs byte-for-byte
+    from the canonical JSON, with no partial local re-probe.
+
+    This is what keeps the docs↔JSON metadata guard meaningful: the render path
+    is deterministic and source-faithful, so a clean tree renders unchanged.
+    """
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--render", "--stdout"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"},
+    )
+    committed_docs = (REPO_ROOT / "docs" / "v1-feature-matrix.md").read_text(
+        encoding="utf-8"
+    )
+    # ``--stdout`` prints the markdown (one trailing newline beyond the file's
+    # own), so compare content with trailing newlines normalized.
+    assert result.stdout.rstrip("\n") == committed_docs.rstrip("\n"), (
+        "feature-matrix.py --render output differs from the committed "
+        "docs/v1-feature-matrix.md — regenerate with --render to sync the docs "
+        "to the canonical JSON."
+    )
+
+
+def test_docs_separate_implementation_presence_from_qualification() -> None:
+    """The generated matrix docs must label `status` as *implementation
+    presence*, not behavioral qualification or gate completion (release-truth).
+
+    A structural probe `pass` was historically read as "the feature is done /
+    the gate is complete" — that conflation let a false "Gate 1 complete" claim
+    pass review. The generated docs and the generator's shared disclaimer now
+    state explicitly that the status column is implementation presence and that
+    qualification evidence lives in the release board / claims ledger. This test
+    keeps that wording fail-closed so a regeneration cannot silently drop it.
+    """
+    docs_text = (REPO_ROOT / "docs" / "v1-feature-matrix.md").read_text(
+        encoding="utf-8"
+    )
+    assert "implementation presence, not qualification" in docs_text, (
+        "docs/v1-feature-matrix.md must label the status column as "
+        "implementation presence, not qualification."
+    )
+    assert "NOT a behavioral qualification" in docs_text, (
+        "docs/v1-feature-matrix.md must state that a probe `pass` is not a "
+        "behavioral qualification or gate completion."
+    )
+    assert "data/release-board.json" in docs_text, (
+        "docs/v1-feature-matrix.md must point to the release board as the home "
+        "of qualification evidence."
+    )
+    # The shared disclaimer is owned by the probe module and reused by the
+    # generator — confirm the generator exposes it (single source of truth).
+    assert feature_matrix._STRUCTURAL_STATUS_DISCLAIMER, (
+        "feature-matrix.py must expose the shared structural-status disclaimer"
+    )
+    assert "implementation-presence" in feature_matrix._STRUCTURAL_STATUS_DISCLAIMER

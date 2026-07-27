@@ -14,20 +14,30 @@ name: Release artifacts
 #    clean, tested source candidate, not just deployment metadata. Sibling
 #    components are checked out at SUITE.lock-pinned revisions, the
 #    feature-probe strict check must pass, and source_tree_converged must
-#    be true before the inventory is attached to the release.
+#    be true before the inventory is attached to the release. Until Gate 2
+#    (release-board WI-2.3) builds immutable wheels, the attached inventory
+#    therefore describes a *source* candidate (locked source revisions), not a
+#    wheel/bundle candidate — it is honest about being pre-immutability.
 #
-# 2. ``release-manifest.json`` — the immutable release-time description of
-#    the published candidate (Sol Gate 0 / Workstream 2). Records the
-#    umbrella tag SHA, all six constituent SHAs, package versions, wheel
-#    hashes, and the lock identity. The manifest is distinct from the
-#    inventory: the manifest describes what was published; the inventory
-#    describes what the operator's estate looks like right now. The two
-#    bind via ``Inventory.bind_to_manifest``.
+# 2. ``release-manifest.json`` — the release-time description of the SOURCE
+#    candidate (Sol Gate 0 / Workstream 2). Until Gate 2 (release-board
+#    WI-2.3) builds immutable wheels/bundle, the candidate is a *source*
+#    candidate — the SUITE.lock-pinned source revisions, checked out and
+#    tested; there are no immutable wheel artifacts yet and the manifest does
+#    NOT claim wheel reproducibility. It records the umbrella tag SHA, all six
+#    constituent source SHAs, package versions, the lock identity, and
+#    (forward-compatibly) wheel / source-archive hashes. The manifest is
+#    distinct from the inventory: the manifest describes the candidate that was
+#    cut; the inventory describes what the operator's estate looks like right
+#    now. The two bind via ``Inventory.bind_to_manifest``. "Immutable" here
+#    refers to the manifest record (a tamper-evident self-SHA over its
+#    content), not to the candidate: the record is immutable, the candidate is
+#    a source candidate until Gate 2 produces immutable wheels.
 #
 #    The wheel-build step is NOT yet wired in CI — the manifest's
 #    ``wheel_sha256`` and ``source_archive_sha256`` fields honestly
-#    record empty strings ("not provided"). A future work item will add
-#    the wheel-build step; the manifest schema is forward-compatible
+#    record empty strings ("not provided"). Gate 2 (release-board WI-2.3) will
+#    add the wheel-build step; the manifest schema is forward-compatible
 #    (empty strings are explicit "not provided", not "failed to compute").
 #
 # Triggers only on tag pushes matching ``v*``. Both artifacts are uploaded
@@ -115,12 +125,13 @@ jobs:
           print('source_tree_converged: true')
           "
 
-      # The release manifest is the immutable release-time description of the
-      # published candidate. It records the umbrella tag SHA (resolved from
-      # the git tag that triggered this run), all six constituent SHAs from
-      # SUITE.lock, the regista version quad, and the lock identity. Wheel
-      # hashes are empty strings today (no wheel-build step); a future WI
-      # will add the build and populate these fields.
+      # The release manifest is the release-time description of the SOURCE
+      # candidate (see the file-header note). It records the umbrella tag SHA
+      # (resolved from the git tag that triggered this run), all six constituent
+      # source SHAs from SUITE.lock, the regista version quad, and the lock
+      # identity. Wheel hashes are empty strings today — there is no wheel-build
+      # step until Gate 2 (release-board WI-2.3) — so the manifest does not claim
+      # wheel reproducibility yet.
       - name: Build release manifest
         env:
           RELEASE_TAG: ${{ github.ref_name }}
