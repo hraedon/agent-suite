@@ -16,12 +16,12 @@ revision = "3655a72ea6c1813488c7d7360e80489f2bc80026"
 [components.agent-notes]
 repo = "hraedon/agent-notes"
 version = "1.0.0"
-revision = "eeb8eb2cde546fc2dc1ac22cde5a63c2a981688d"
+revision = "fdef94b4682c5a201e9dd09ff37d487760b3fc5e"
 
 [components.agent-provenance]
 repo = "hraedon/agent-provenance"
 version = "0.1.0"
-revision = "94cb874852ae6341b3388a93e101a362cf2217bd"
+revision = "2ac0797ba288a0365348166bbf5d3ee7c03046bd"
 
 [components.agent-wake]
 repo = "hraedon/agent-wake"
@@ -31,7 +31,7 @@ revision = "12d6b52092599a801ceaee5ecdfc04d0655f9055"
 [components.dossier]
 repo = "hraedon/dossier"
 version = "0.1.0"
-revision = "6a88b1e65501db7edc4f379c5f6842b750e94e1f"
+revision = "ccf1ce3b31758d9fca3b43a98701b0545c4283e4"
 
 [components.regista]
 repo = "hraedon/regista"
@@ -43,4 +43,3 @@ provider_name = "hindsight"
 protocol_version = "1.0"
 deployment_mode = "remote"
 support_level = "supported"
-

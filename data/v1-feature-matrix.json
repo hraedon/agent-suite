@@ -1,14 +1,14 @@
 {
   "version": "v1",
-  "generated_at": "2026-07-25T21:10:56.665098Z",
+  "generated_at": "2026-07-27T02:07:38.761778Z",
   "status_source": "probe-emitted",
   "status_semantics": "Each status is an *implementation-presence* measurement: a named probe found (or did not find) the module, function, route, CLI verb, and test that constitute the surface. A `pass` row means the implementation is structurally present and probed \u2014 it is NOT a behavioral qualification and NOT gate completion. Qualification evidence (golden-journey proofs, the claims ledger, the release-board WI proofs) is tracked separately in data/release-board.json; each row's release-stage label is the `release_status` field.",
   "observed_revisions": {
-    "agent-suite": "e4daddc",
+    "agent-suite": "f1a657e",
     "regista": "069950e",
-    "agent-notes": "eeb8eb2",
-    "dossier": "6a88b1e",
-    "agent-provenance": "94cb874",
+    "agent-notes": "fdef94b",
+    "dossier": "ccf1ce3",
+    "agent-provenance": "2ac0797",
     "agent-capability-broker": "3655a72",
     "agent-wake": "12d6b52"
   },
