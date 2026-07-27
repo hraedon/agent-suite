@@ -151,11 +151,12 @@ jobs:
       # (Plan 002 WI-1). Origins and revisions are lock-derived.
       - name: Install faces (agent-notes + dossier)
         run: |
-          uv pip install "git+https://github.com/${AGENT_NOTES_REPO}.git@${AGENT_NOTES_SHA}" \
+          uv pip install --no-sources \
+                       "git+https://github.com/${AGENT_NOTES_REPO}.git@${AGENT_NOTES_SHA}" \
                        "git+https://github.com/${DOSSIER_REPO}.git@${DOSSIER_SHA}"
 
       - name: Install agent-provenance (cairn)
-        run: uv pip install "git+https://github.com/${CAIRN_REPO}.git@${CAIRN_SHA}"
+        run: uv pip install --no-sources "git+https://github.com/${CAIRN_REPO}.git@${CAIRN_SHA}"
 
       - name: Set up agent-notes schema (skill-smoke prerequisite)
         run: |

@@ -362,6 +362,7 @@ def test_render_reproduces_docs_from_canonical_json() -> None:
         [sys.executable, str(SCRIPT_PATH), "--render", "--stdout"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
         env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"},
     )
@@ -375,6 +376,20 @@ def test_render_reproduces_docs_from_canonical_json() -> None:
         "docs/v1-feature-matrix.md — regenerate with --render to sync the docs "
         "to the canonical JSON."
     )
+
+
+def test_render_capture_preserves_utf8_punctuation() -> None:
+    """Regression: Windows' host locale must not replace UTF-8 renderer output."""
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--render", "--stdout"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"},
+    )
+    assert "—" in result.stdout
+    assert "\ufffd" not in result.stdout
 
 
 def test_probe_writer_matches_canonical_markdown_renderer() -> None:

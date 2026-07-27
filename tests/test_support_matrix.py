@@ -270,3 +270,24 @@ def test_interop_ci_derives_origins_and_revisions_from_suite_lock() -> None:
         "the interop job must not install regista from a version-only PyPI "
         "wheel; install the exact SUITE.lock source revision instead."
     )
+
+
+def test_interop_remote_installs_ignore_local_development_sources() -> None:
+    """Pinned Git installs must not resolve sibling-only ``tool.uv.sources``.
+
+    A remote agent-notes build previously interpreted its development mapping
+    to ``../regista`` relative to uv's Git checkout and failed before interop
+    could run. The spine is installed explicitly from SUITE.lock, so remote face
+    and provenance installs must resolve only their publishable metadata.
+    """
+    ci_text = CI_PATH.read_text(encoding="utf-8")
+    assert re.search(
+        r"uv pip install --no-sources\s+\\?\s*"
+        r'"git\+https://github\.com/\$\{AGENT_NOTES_REPO\}'
+        r"\.git@\$\{AGENT_NOTES_SHA\}",
+        ci_text,
+    )
+    assert (
+        'uv pip install --no-sources "git+https://github.com/'
+        '${CAIRN_REPO}.git@${CAIRN_SHA}"'
+    ) in ci_text
