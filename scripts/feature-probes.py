@@ -2296,7 +2296,7 @@ def _matrix_to_markdown(matrix_data: dict[str, Any]) -> str:
     lines.append("# v1 Feature Matrix (Plan 009 WI-0.1)")
     lines.append("")
     lines.append(f"**Version:** {matrix_data['version']}  ")
-    lines.append(f"**Generated:** {matrix_data['generated_at']}  ")
+    lines.append(f"**Generated:** {matrix_data['generated_at']}")
     lines.append(f"**Status source:** {matrix_data['status_source']}")
     lines.append(
         "**Status values (implementation presence, not qualification):** "

@@ -377,6 +377,21 @@ def test_render_reproduces_docs_from_canonical_json() -> None:
     )
 
 
+def test_probe_writer_matches_canonical_markdown_renderer() -> None:
+    """The probe updater and canonical renderer must emit identical Markdown.
+
+    A full probe regeneration previously inserted different Markdown line-break
+    whitespace than ``feature-matrix.py --render``. The committed docs then
+    failed their render-equivalence gate even though both writers consumed the
+    same JSON. Keep the two writer paths byte-for-byte equivalent.
+    """
+    payload = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    probe_markdown = feature_matrix._feature_probes._matrix_to_markdown(payload)
+    canonical = feature_matrix._matrix_from_data(payload)
+    rendered_markdown = feature_matrix._matrix_to_markdown(canonical)
+    assert probe_markdown == rendered_markdown
+
+
 def test_docs_separate_implementation_presence_from_qualification() -> None:
     """The generated matrix docs must label `status` as *implementation
     presence*, not behavioral qualification or gate completion (release-truth).
