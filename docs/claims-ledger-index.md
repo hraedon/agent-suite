@@ -10,7 +10,7 @@ can see at a glance what is proven vs. provisional.
 | ID | Title | Maturity | Enforcing component | Holistic review |
 |----|-------|----------|---------------------|------------------|
 | CL-001 | Event integrity | supported | regista | — |
-| CL-002 | Per-principal attribution | experimental | regista | — |
+| CL-002 | Per-principal attribution | supported | agent-suite + regista | — |
 | CL-003 | Tamper detection | supported | agent-suite + regista | — |
 | CL-004 | Cross-face interop | supported | agent-suite | — |
 | CL-005 | Post-restore integrity | supported | agent-suite | — |
@@ -18,7 +18,7 @@ can see at a glance what is proven vs. provisional.
 | CL-007 | Honest health | supported | agent-suite | F-6 fixed |
 | CL-008 | Secret safety | provisional | agent-suite + regista | F-4/F-5 fixed; canonical identifier gate installed |
 | CL-009 | Lock integrity | supported | agent-suite | — |
-| CL-010 | Key rotation safety | experimental | regista | — |
+| CL-010 | Key rotation safety | provisional | agent-suite + regista | — |
 | CL-011 | Delegation chain | experimental | regista | — |
 | CL-012 | External anchoring | experimental | regista | F-1, F-3 |
 | CL-013 | Offline verification | provisional | agent-provenance | F-2 — live proof PASSED against a real Claude Code session 2026-07-11 |
@@ -28,9 +28,9 @@ can see at a glance what is proven vs. provisional.
 
 | Maturity | Count | Claims |
 |----------|-------|--------|
-| supported | 7 | CL-001, CL-003, CL-004, CL-005, CL-006, CL-007, CL-009 |
-| provisional | 3 | CL-008, CL-013, CL-014 |
-| experimental | 4 | CL-002, CL-010, CL-011, CL-012 |
+| supported | 8 | CL-001, CL-002, CL-003, CL-004, CL-005, CL-006, CL-007, CL-009 |
+| provisional | 4 | CL-008, CL-010, CL-013, CL-014 |
+| experimental | 2 | CL-011, CL-012 |
 
 ## Holistic review findings mapped to claims
 

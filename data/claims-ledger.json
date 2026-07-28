@@ -18,10 +18,10 @@
     {
       "id": "CL-002",
       "title": "Per-principal attribution",
-      "maturity": "experimental",
-      "enforcing_components": ["regista"],
+      "maturity": "supported",
+      "enforcing_components": ["regista", "agent-suite"],
       "holistic_review_findings": [],
-      "maturity_note": "Tamper tests use HMAC keys, not Ed25519 per-principal signing; the envelope/signature path is exercised but full per-principal asymmetric signing chain (regista Plan 026) is not yet exercised in suite-level interop."
+      "maturity_note": "Scope: 'supported' covers the store-level cryptographic property — every event is bound to the principal whose Ed25519 key signed it, and a spoofed actor, a wrong key, or a revoked key is detected. It does NOT assert that the dossier web layer derives actor_id from an authenticated session rather than a client-supplied value (residual T3, below); that is a separate web-authentication concern tracked under dossier's auth surface, not this claim. Suite interop drives the canonical workflow end-to-end with per-principal Ed25519 signing at both spine and face level (tests/test_interop.py::test_drive_work_item_per_principal_ed25519_to_done and ..._across_real_faces; the face-level proof requires agent-notes and dossier installed in CI, INTEROP_REQUIRE_FACES=1). The project is created strict_asymmetric=True so HMAC fallback is rejected; every event is asserted per-transition to carry scheme_id ed25519, the acting principal as actor_id, and the matching ed-<principal> key_id. Per-event verify_event_principal_binding (which fails on unregistered-signer / signature mismatch, unlike replay's binding pass that silently skips unregistered actors) and chain-level replay(verify_principal_binding=True) verify against the principal_keys registry with zero binding failures; each event verifies under its own principal's exported public key and under no other principal's key; revocation of a principal's key makes its past events fail binding with key-revoked, surfaced by both the per-event API and replay. The shipped faces (agent-notes RegistaFace, dossier RegistaGateway) sign per-principal transparently and dossier's read path + verify_event surface the scheme and principal binding. Residuals: T3 (dossier session->actor_id binding untested in agent-suite CI) and T1 (a compromised signing proxy can forge validly-signed events — attribution proves who signed, not that the signatory intended the action)."
     },
     {
       "id": "CL-003",
@@ -76,9 +76,9 @@
     {
       "id": "CL-010",
       "title": "Key rotation safety",
-      "maturity": "experimental",
-      "enforcing_components": ["regista"],
-      "maturity_note": "Positive proof via Ed25519 revocation test; full replay-level revocation detection not yet exercised."
+      "maturity": "provisional",
+      "enforcing_components": ["regista", "agent-suite"],
+      "maturity_note": "Revocation detection is now exercised end-to-end through the real store at the principal-binding layer: suite interop revokes a principal's Ed25519 key and asserts its past event fails verify_event_principal_binding with key-revoked (tests/test_interop.py::test_drive_work_item_per_principal_ed25519_to_done). Stronger than the prior in-memory detached-event proof. Still provisional: a full rotate (new key signs new events while the old key's events verify under the old key, and replay(verify_principal_binding=True) over a mixed pre/post-rotation chain) is not yet a CI assertion."
     },
     {
       "id": "CL-011",
@@ -115,9 +115,9 @@
     }
   ],
   "maturity_counts": {
-    "supported": 7,
-    "provisional": 3,
-    "experimental": 4
+    "supported": 8,
+    "provisional": 4,
+    "experimental": 2
   },
   "holistic_review_findings_summary": [
     {"finding": "F-1", "severity": "critical", "claim": "CL-012", "status": "experimental"},

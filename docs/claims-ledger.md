@@ -68,12 +68,12 @@ Each entry follows the structure required by Plan 008 §6.1:
 | **Protected asset** | The actor identity on each event. |
 | **Threat actor** | An attacker who modifies the `actor_id` column to attribute a mutation to a different principal. |
 | **Trust boundary** | The database row — an attacker with direct DB access changes `actor_id`. |
-| **Enforcing component** | regista — canonical envelope binds actor to signature; `regista verify` checks actor↔signer equality. |
-| **Positive proof** | `tests/test_interop.py` — the mixed chain contains distinct agent and human actors (`agent`, `reviewer`, `acceptor`), each with their own role registration. The spine-level test asserts `{"agent", "human"} <= {actor_ids}`. |
-| **Adversarial/failure proof** | `tests/test_tamper.py::test_tamper_detection` — Scenario 2: spoofed `actor_id` with nulled `canonical_envelope` produces `halted > 0` (HMAC no longer matches). |
-| **Residual risk** | The current test exercises HMAC-based attribution, not Ed25519 per-principal signing (regista Plan 026 is not yet landed in the suite-level test). The key-custody threat model (T3) notes that `actor_id` is derived from the authenticated session, not the request body — this is a dossier-side enforcement not tested in agent-suite CI. A compromised signing proxy (T1) can forge validly-signed events attributed to the victim — attribution proves *who signed*, not that the signatory intended the action. |
+| **Enforcing component** | regista + agent-suite — canonical envelope binds actor to signature; `regista verify` checks actor↔signer equality; the suite interop test exercises the full per-principal Ed25519 chain. |
+| **Positive proof** | `tests/test_interop.py::test_drive_work_item_per_principal_ed25519_to_done` and `..._across_real_faces` — drive the canonical workflow to `done` with `strict_asymmetric=True` (HMAC fallback rejected); every event has `scheme_id == "ed25519"` and a `key_id` bound to the acting principal; per-event `verify_event_principal_binding` and `replay(verify_principal_binding=True)` verify against the principal_keys registry with zero binding failures; the shipped faces (agent-notes `RegistaFace`, dossier `RegistaGateway`) sign per-principal transparently and dossier's `verify_event` surfaces the scheme + principal binding. The HMAC mixed-chain test (`test_drive_work_item_across_workflow_to_done`) remains as the tamper-evidence baseline. |
+| **Adversarial/failure proof** | Per-principal interop: an event verified under the *wrong* principal's exported public key returns `False` (attribution is non-transferable); revoking a principal's key makes its past event fail `verify_event_principal_binding` with `key-revoked`. `tests/test_tamper.py::test_tamper_detection` Scenario 2: spoofed `actor_id` with nulled `canonical_envelope` produces `halted > 0`. |
+| **Residual risk** | Per-principal Ed25519 attribution is now exercised end-to-end in suite interop. Two gaps remain: the key-custody threat model (T3) notes `actor_id` is derived from the authenticated session, not the request body — a dossier-side enforcement not tested in agent-suite CI; and a compromised signing proxy (T1) can forge validly-signed events attributed to the victim — attribution proves *who signed*, not that the signatory intended the action. |
 | **Supported profiles** | A, B, and C |
-| **Maturity** | experimental |
+| **Maturity** | supported |
 | **Last verified release** | unverified |
 
 ---
@@ -212,12 +212,12 @@ Each entry follows the structure required by Plan 008 §6.1:
 | **Protected asset** | The key registry — the set of valid signing keys per principal. |
 | **Threat actor** | An attacker who uses a revoked key to sign events after revocation. |
 | **Trust boundary** | The key registry boundary — `regista verify` reads the registry at verify time, not a cached copy. |
-| **Enforcing component** | regista — key registry, `valid_from`/`valid_to` windows, `unregistered-signer` failure. |
+| **Enforcing component** | regista + agent-suite — key registry, `valid_from`/`valid_to` windows, `unregistered-signer`/`key-revoked` failures; suite interop exercises revocation end-to-end through the real store. |
 | **Positive proof** | `docs/key-custody-threat-model.md` T5 — "regista verify reads the registry at verify time, not a cached copy. A revoked key produces an `unregistered-signer` failure for post-revocation events." `valid_from`/`valid_to` windows are the design (regista Plan 026 WI-3.1). |
-| **Adversarial/failure proof** | `tests/test_adversarial_corpus.py::test_adversarial_mutation` (mutation `REVOKED_KEY`) — generates an Ed25519 keypair, registers the public key, creates an Ed25519-signed event, verifies the principal binding passes, revokes the key, and verifies the binding now fails with `key-revoked`. Exercises the `verify_event_principal_binding` path (regista Plan 026), not `replay`. |
-| **Residual risk** | The test exercises Ed25519 key revocation via `verify_event_principal_binding`, not the full `replay` chain. The key-custody threat model (T5) identifies "a verifier uses a stale public-key registry snapshot" as a threat — the mitigation depends on regista always reading the live registry, which is not verified by an agent-suite test. Key rotation cadence is documented in `docs/key-operations.md` but not enforced automatically. |
+| **Adversarial/failure proof** | `tests/test_interop.py::test_drive_work_item_per_principal_ed25519_to_done` — drives a per-principal Ed25519 chain to `done` through the real store, revokes the acceptor's key, and asserts its past event now fails `verify_event_principal_binding` with `key-revoked` (end-to-end, not a detached in-memory event). `tests/test_adversarial_corpus.py` (mutation `REVOKED_KEY`) covers the same `verify_event_principal_binding` path with a detached event. |
+| **Residual risk** | Revocation detection is exercised end-to-end at the binding layer, but a full *rotate* (new key signs new events while the old key's events still verify under the old key, and `replay(verify_principal_binding=True)` over a mixed pre/post-rotation chain) is not yet a CI assertion. The key-custody threat model (T5) identifies "a verifier uses a stale public-key registry snapshot" as a threat — the mitigation depends on regista always reading the live registry, which is not verified by an agent-suite test. Key rotation cadence is documented in `docs/key-operations.md` but not enforced automatically. |
 | **Supported profiles** | B and C (Profile A has no human principals requiring rotation) |
-| **Maturity** | experimental (positive proof via Ed25519 revocation test; full `replay`-level revocation detection not yet exercised) |
+| **Maturity** | provisional (end-to-end revocation detection at the binding layer; full rotate + `replay`-level detection over a mixed chain not yet a CI assertion) |
 | **Last verified release** | unverified |
 
 ---

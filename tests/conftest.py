@@ -189,6 +189,50 @@ def _generate_hmac_key(path: Path, key_id: str = "test-hmac-key") -> None:
     path.write_text(json.dumps(key_data))
 
 
+def _generate_per_principal_ed25519_keys(
+    path: Path, principal_ids: list[str]
+) -> dict[str, dict[str, bytes]]:
+    """Write a per-principal Ed25519 key-set file; return the raw key material.
+
+    Each principal gets its own Ed25519 keypair bound by ``principal_id``.
+    Returns the raw material ``{principal_id: {"secret": seed, "public":
+    verify_key}}`` so a test can register the matching public key in the
+    principal_keys registry (key_id is deterministic: ``f"ed-{principal_id}"``),
+    making signing (key-set file) and binding verification (registry) agree.
+    Mirrors ``regista`` 's ``tests/test_keys_multi_principal.json`` layout
+    (Plan 022 P3).
+
+    Requires PyNaCl (``regista[ed25519]``); callers guard with
+    ``pytest.importorskip("nacl.signing")``.
+    """
+    import nacl.signing
+
+    keys: list[dict[str, str]] = []
+    material: dict[str, dict[str, bytes]] = {}
+    for pid in principal_ids:
+        signing_key = nacl.signing.SigningKey.generate()
+        verify_key = signing_key.verify_key
+        material[pid] = {
+            "secret": bytes(signing_key),
+            "public": bytes(verify_key),
+        }
+        keys.append(
+            {
+                "key_id": f"ed-{pid}",
+                "principal_id": pid,
+                "secret": base64.b64encode(bytes(signing_key)).decode("ascii"),
+                "public_key": base64.b64encode(bytes(verify_key)).decode("ascii"),
+                "encoding": "base64",
+                "status": "active",
+                "scheme": "ed25519",
+                "alg": "Ed25519",
+                "role": "actor",
+            }
+        )
+    path.write_text(json.dumps({"keys": keys}))
+    return material
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
