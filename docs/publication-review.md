@@ -15,6 +15,11 @@ review's own deployment-topology standard are violated. The export has been
 removed from the tracked tree and replaced with a metadata manifest; a full
 re-review is required before the repository can be cleared for publication.
 
+**2026-07-27 note:** the identifier-gate correction below (restoring the
+`hraedon` org identity that was over-redacted) is scoped to that over-redaction
+only. It does **not** lift the REVOKED verdict above, which stems from the
+separate operating-history-export incident and still requires a full re-review.
+
 ## What was checked
 
 ### Identifier gate
@@ -24,17 +29,26 @@ identifiers were scrubbed and the gate is now **blocking** in CI:
 
 | Identifier | Type | Action |
 |------------|------|--------|
-| `the project owner` | real name | Replaced with `YOUR-ORG` placeholder |
-| `plm@hraedon.com` | personal email | Removed from `pyproject.toml` |
+| `the project owner` | real name | Replaced with placeholder (personal-name PII; scrub remains — separate from the org identity below) |
 | `mvmpostgres01` | internal hostname | Replaced with `suite-db.example` |
-| `hraedon.com` | internal domain | Scrubbed from `pyproject.toml` (was in email) |
-| `hraedon/` | internal GitHub org prefix | Scrubbed from all tracked files; replaced with `YOUR-ORG/` (2026-07-10) |
 | `regista_app` | internal DB service account | Replaced with `DB-SERVICE-ACCOUNT` placeholder (via F-4 scrub; was `regista_service`, itself a real identifier) |
 | `agent_notes_app` | internal DB service account | Added to gate (not present in tree) |
 | `itadmin` | OS username | Added to gate (not present in tree) |
 
-The `hraedon` GitHub org name is **now in the gate** (as `hraedon/`) — it is an
-internal org, not a public one. All tracked files use the `YOUR-ORG/` placeholder.
+**Correction (2026-07-27):** an earlier revision of this review scrubbed the
+`hraedon` GitHub org, `hraedon.com`, and `plm@hraedon.com` and recorded `hraedon/`
+as a forbidden "internal org." That was over-redaction. The canonical suite
+denylist (`~/.config/agent-suite/forbidden-identifiers`) deliberately excludes
+`hraedon`, `hraedon.com`, and `plm@hraedon.com` — they are the **published author
+identity**, not work-domain (work-domain) identifiers, and the publication-prep
+criterion forbids only the work-domain set. Forbidding `hraedon` false-positives
+on the real author and contradicts the rest of the codebase, which already uses
+`hraedon/<repo>` throughout (`src/agent_suite/components.py`,
+`src/agent_suite/release_manifest.py`, `SUITE.lock`, `tests/test_inventory.py`).
+The `hraedon/<repo>` links have therefore been **restored** in `README.md`,
+`pyproject.toml` (`Repository`), and `LICENSE`, and `hraedon` is **not** in the
+gate. The `the project owner` personal-name scrub above is a distinct PII decision and
+remains.
 
 ### Architecture boundary
 

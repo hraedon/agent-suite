@@ -5,12 +5,12 @@ description = "Deploy the agent suite as one system: bootstrap, compatibility lo
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "YOUR-ORG" }]
+authors = [{ name = "hraedon" }]
 keywords = ["agent-suite", "orchestration", "bootstrap", "health-check", "deployment"]
 dependencies = []  # stdlib-only core
 
 [project.urls]
-Repository = "https://github.com/YOUR-ORG/agent-suite"
+Repository = "https://github.com/hraedon/agent-suite"
 
 [project.optional-dependencies]
 dev = ["ruff>=0.16,<1", "mypy", "pytest", "build", "hatchling"]  # build+hatchling: conformance wheel build-test; ruff pinned to the 0.16 line with an explicit lint select (see [tool.ruff.lint])
