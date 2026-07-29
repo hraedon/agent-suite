@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-29
 **Reviewers:** OpenCode (primary), Kimi (independent adjudication)
-**Verdict:** PENDING — final personal-name history scrub and revalidation required.
+**Verdict:** PENDING — final recreated-remote CI required.
 
 ## Incident remediation
 
@@ -17,6 +17,13 @@ unreachable objects were pruned. The private GitHub repository was then deleted
 and recreated from a bare repository containing only the seven sanitized branch
 heads. This removed the former pull-request refs and cached objects without
 requiring GitHub Support.
+
+Independent re-review then found a separately designated personal name in old
+documentation history. Every local branch and stash was rewritten again with
+both `--replace-text` and `--replace-message`; all linked worktrees were clean
+before realignment, and local reflogs and unreachable objects were pruned. The
+GitHub repository was deleted and recreated a second time from the seven final
+sanitized heads. Pre-rewrite commit ids from both incidents now return not found.
 
 Recreation evidence:
 
@@ -40,8 +47,8 @@ passed.
 
 The canonical policy forbids the work-domain set only. The `hraedon` published
 author identity and lab identifiers are intentionally allowed. A personal name
-identified during the earlier review is governed by a separate PII decision and
-is being removed from both the current tree and history before final clearance.
+identified during the earlier review was governed by a separate PII decision
+and has been removed from both the current tree and history.
 
 CI injects `AGENT_SUITE_FORBIDDEN_IDENTIFIERS` from the repository secret and
 now fails closed if that secret is empty before invoking the canonical gate.
@@ -55,7 +62,7 @@ boundary. It passes.
 
 - `ruff check src tests scripts` — clean.
 - `mypy --strict src scripts/check_committed_identifiers.py` — clean in 42 files.
-- `pytest -q` — 1,102 passed, 18 skipped.
+- `pytest -q` — 1,103 passed, 18 skipped.
 - Recreated-remote CI will be required green before final clearance.
 
 ### Secrets
