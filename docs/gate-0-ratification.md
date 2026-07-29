@@ -48,17 +48,12 @@ AGENT_WAKE_DEPLOYED_VERSION=0.1.0
 
 ## Decision 3 — Git history publication policy
 
-One historical Git object still contains the deleted proof path (`golden/local/convergence-proof-20260718T232221Z.md`). The current tree is clean; the issue is in history only.
-
-The canonical identifier denylist (`~/.config/agent-suite/forbidden-identifiers`) forbids work-domain (work-domain) identifiers only. Lab identifiers (`hraedon`, `mvm*`, `itadmin`, `mvmpostgres01.ad.hraedon.com`, `hindsight-api.k8s.hraedon.com`) are ALLOWED in public repos per the publication-prep skill. The repo is currently private.
-
-**Three options:**
-
-1. **No action.** The repo stays private; lab identifiers are allowed in public repos anyway; no public flip is imminent. The tracked tree is clean.
-2. **Scrub history via `git filter-repo`.** Remove the path from every historical object. Rewrites all SHAs and requires force-push. Owner-gated per the publication-prep skill. Use `--replace-text` AND `--replace-message`.
-3. **Quarantine the sensitive commit.** Mark a specific commit as publication-blocked; do not flip public until that commit is at least N releases behind HEAD.
-
-**Recommendation:** Option 1 today (the repo is private). If/when the owner decides to flip public, re-evaluate against the canonical denylist at that time. Option 2 only if the denylist rules at that future time require it.
+**Superseded 2026-07-29.** The publication incident and its remediation are
+recorded in `docs/publication-review.md`, which is now the authority for public
+visibility. The canonical denylist continues to forbid the work-domain set only;
+the published author identity and lab identifiers remain allowed. Sensitive
+production data is independently disallowed even when it contains no canonical
+denylist match.
 
 ## Reconciliation — constituent plan statuses
 

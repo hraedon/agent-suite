@@ -31,7 +31,12 @@ jobs:
       - name: Identifier gate
         env:
           AGENT_SUITE_FORBIDDEN_IDENTIFIERS: ${{ secrets.AGENT_SUITE_FORBIDDEN_IDENTIFIERS }}
-        run: uv run python scripts/check_committed_identifiers.py
+        run: |
+          if [[ -z "${AGENT_SUITE_FORBIDDEN_IDENTIFIERS//[[:space:]]/}" ]]; then
+            echo "::error::AGENT_SUITE_FORBIDDEN_IDENTIFIERS must be configured"
+            exit 1
+          fi
+          uv run python scripts/check_committed_identifiers.py
 
       - name: Plan index check
         run: uv run python scripts/plan-index.py --check

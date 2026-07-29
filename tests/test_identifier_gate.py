@@ -181,6 +181,15 @@ def test_current_tree_is_clean_against_canonical_denylist() -> None:
     )
 
 
+def test_ci_refuses_an_unconfigured_denylist_secret() -> None:
+    """CI must not turn a missing publication policy into a green skip."""
+    ci = (_SCRIPT.parents[1] / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    assert '${AGENT_SUITE_FORBIDDEN_IDENTIFIERS//[[:space:]]/}' in ci
+    assert "AGENT_SUITE_FORBIDDEN_IDENTIFIERS must be configured" in ci
+
+
 # ---------------------------------------------------------------------------
 # WI-018 — fixture-driven tests for the fails-open branches.
 #

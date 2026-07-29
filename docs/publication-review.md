@@ -1,91 +1,73 @@
 # Publication review
 
-**Date:** 2026-07-04  
-**Reviewer:** Claude (GLM 5.2)  
-**Verdict:** REVOKED — re-review required before publication.
+**Date:** 2026-07-29
+**Reviewers:** OpenCode (primary), Kimi (independent adjudication)
+**Verdict:** PENDING — final personal-name history scrub and revalidation required.
 
-**2026-07-19 update:** The prior CLEARED verdict is revoked. A 5.18 MB
-production operating-history export (`golden/operating-history/regista-
-history-bundle-20260719.json`) was committed containing 1,508 complete
-operational events with real identifiers and content. The export was
-identified as coming from the production store in the committed README. A
-denylist scan returning zero hits is not equivalent to privacy review — the
-committed-identifier rule (AGENTS.md §"No work-domain identifiers") and this
-review's own deployment-topology standard are violated. The export has been
-removed from the tracked tree and replaced with a metadata manifest; a full
-re-review is required before the repository can be cleared for publication.
+## Incident remediation
 
-**2026-07-27 note:** the identifier-gate correction below (restoring the
-`hraedon` org identity that was over-redacted) is scoped to that over-redaction
-only. It does **not** lift the REVOKED verdict above, which stems from the
-separate operating-history-export incident and still requires a full re-review.
+On 2026-07-19, the prior clearance was revoked after a 5.18 MB production
+operating-history export was found in Git history. It contained 1,508 complete
+operational events with real identifiers and content. The tracked file was
+removed immediately.
 
-**2026-07-29 remediation update:** the repository was made private before its
-writable history was rewritten. The production operating-history export was
-removed from all six affected branch heads, including `main`, with
-`git-filter-repo --sensitive-data-removal`; the first changed commit was mapped
-from `8f2c94acc0bce9706e66cc7d86bdf1135c223662` to
-`8193f06afd1075f33278ad1c4ec79a48ed362c77`. The rewritten branch history no
-longer contains the export path. GitHub still retains 43 changed, owner-read-only
-`refs/pull/*/head` refs and serves the old object by commit id, so GitHub Support
-must complete the server-side purge. The verdict remains **REVOKED** and the
-repository must remain private until that purge and a full re-review are complete.
+On 2026-07-29, every writable remote and local branch was rewritten with
+`git-filter-repo --sensitive-data-removal`, all local reflogs were expired, and
+unreachable objects were pruned. The private GitHub repository was then deleted
+and recreated from a bare repository containing only the seven sanitized branch
+heads. This removed the former pull-request refs and cached objects without
+requiring GitHub Support.
+
+Recreation evidence:
+
+- The old sensitive commit and blob return not found through the GitHub API.
+- `git ls-remote` reports seven branch heads, no tags, and no `refs/pull/*` refs.
+- The recreated repository has zero issues, pull requests, releases, forks,
+  stars, and watchers.
+- `git log --all -- golden/operating-history/regista-history-bundle-20260719.json`
+  and `git rev-list --objects --all -- <same-path>` return no results.
+- The repository remains private during this re-review.
 
 ## What was checked
 
 ### Identifier gate
 
-`scripts/identifier-gate.py` was run against the full tree. The following
-identifiers were scrubbed and the gate is now **blocking** in CI:
+`scripts/check_committed_identifiers.py` was run against the full tracked tree
+with the canonical denylist from
+`~/.config/agent-suite/forbidden-identifiers`. A separate history scan checked
+both content changes and commit messages for every canonical entry. Both scans
+passed.
 
-| Identifier | Type | Action |
-|------------|------|--------|
-| `the project owner` | real name | Replaced with placeholder (personal-name PII; scrub remains — separate from the org identity below) |
-| `mvmpostgres01` | internal hostname | Replaced with `suite-db.example` |
-| `regista_app` | internal DB service account | Replaced with `DB-SERVICE-ACCOUNT` placeholder (via F-4 scrub; was `regista_service`, itself a real identifier) |
-| `agent_notes_app` | internal DB service account | Added to gate (not present in tree) |
-| `itadmin` | OS username | Added to gate (not present in tree) |
+The canonical policy forbids the work-domain set only. The `hraedon` published
+author identity and lab identifiers are intentionally allowed. A personal name
+identified during the earlier review is governed by a separate PII decision and
+is being removed from both the current tree and history before final clearance.
 
-**Correction (2026-07-27):** an earlier revision of this review scrubbed the
-`hraedon` GitHub org, `hraedon.com`, and `plm@hraedon.com` and recorded `hraedon/`
-as a forbidden "internal org." That was over-redaction. The canonical suite
-denylist (`~/.config/agent-suite/forbidden-identifiers`) deliberately excludes
-`hraedon`, `hraedon.com`, and `plm@hraedon.com` — they are the **published author
-identity**, not work-domain (work-domain) identifiers, and the publication-prep
-criterion forbids only the work-domain set. Forbidding `hraedon` false-positives
-on the real author and contradicts the rest of the codebase, which already uses
-`hraedon/<repo>` throughout (`src/agent_suite/components.py`,
-`src/agent_suite/release_manifest.py`, `SUITE.lock`, `tests/test_inventory.py`).
-The `hraedon/<repo>` links have therefore been **restored** in `README.md`,
-`pyproject.toml` (`Repository`), and `LICENSE`, and `hraedon` is **not** in the
-gate. The `the project owner` personal-name scrub above is a distinct PII decision and
-remains.
+CI injects `AGENT_SUITE_FORBIDDEN_IDENTIFIERS` from the repository secret and
+now fails closed if that secret is empty before invoking the canonical gate.
 
 ### Architecture boundary
 
-`tests/test_architecture.py` asserts that every core module (`cli`,
-`components`, `doctor`, `lock`, `bootstrap`, `verify_restore`) imports only the
-standard library and its own modules — never a backend SDK or a component's
-code. This is the mechanical enforcement of AGENTS.md's "thin orchestration"
-rule. **Passes.**
+`tests/test_architecture.py` mechanically enforces the stdlib-first thin-core
+boundary. It passes.
 
 ### Tests
 
-- `ruff check src tests scripts` — clean
-- `mypy --strict src` — 7 files, no issues
-- `pytest` (venv, stubbed) — 115 passed
-- `pytest` (system, live Postgres via Docker) — interop + tamper tests pass
+- `ruff check src tests scripts` — clean.
+- `mypy --strict src scripts/check_committed_identifiers.py` — clean in 42 files.
+- `pytest -q` — 1,102 passed, 18 skipped.
+- Recreated-remote CI will be required green before final clearance.
 
 ### Secrets
 
-No secrets, keys, or passwords are committed. The `suite.env.example` file
-contains placeholders only (`suite-db.example`, `DB-SERVICE-ACCOUNT`). The
-`.gitignore` excludes `suite.env`, `*.env`, `secrets/`, `*.db`, and
-`SUITE.local.lock`.
+No secrets, keys, or passwords are committed. `detect-secrets` scanned every
+tracked file; each unverified candidate was manually reviewed as a synthetic
+test credential, placeholder DSN, keyword reference, or immutable Git SHA.
+`pip-audit` reported no known vulnerabilities. The canonical identifier scan
+also passed.
 
 ### Deployment topology
 
-The docs reference deployment topology (Postgres hosts, secret backends,
-service accounts) using **placeholders only** (`suite-db.example`,
-`vault.example:8200`, `WORK-DOMAIN.vault.azure.net`, `DB-SERVICE-ACCOUNT`). No
-real hostnames, domains, or principal IDs appear in any committed file.
+Deployment documentation uses placeholders for work-domain topology and service
+accounts. Lab topology and the published author identity are allowed by the
+canonical publication policy.
