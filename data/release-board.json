@@ -78,7 +78,8 @@
           "title": "Activity and evidence journeys",
           "owner_repo": "hraedon/dossier",
           "blocking_dependency": "WI-1.1",
-          "status": "not_started",
+          "status": "in_progress",
+          "status_note": "IN PROGRESS: GJ-5 landed (dossier 65857cf) with durable revocation/dual control. The GJ-5 activity/evidence journey ('a reviewer understands what an agent did') is a real golden-journey test in dossier tests/test_golden_journeys.py (ids=['GJ-5']). GJ-8 remains: no GJ-8 test exists yet (scoped case/export planning, offline bundle + self-contained human report, protected disclosure). proof_command runs in the owner repo (hraedon/dossier); -k 'GJ-5 or GJ-8' selects the landed GJ-5 test now and will add GJ-8 when it lands. Verified evidence: dossier full suite 799 passed / 6 skipped; ruff/mypy green.",
           "proof_command": "pytest tests/test_golden_journeys.py -k 'GJ-5 or GJ-8'",
           "proof_artifact": "golden/gj-5-gj-8.json"
         },
@@ -87,8 +88,9 @@
           "title": "Identity, keys, and protected administration",
           "owner_repo": "hraedon/dossier",
           "blocking_dependency": "WI-1.1",
-          "status": "not_started",
-          "proof_command": "pytest tests/test_identity_keys.py",
+          "status": "in_progress",
+          "status_note": "IN PROGRESS. Landed (dossier 65857cf/f3197cb/4ff451d/93a3fc9; regista 3c0e226/fbe37ec/184e037, schema 44 durable one-use challenges): durable public principal lifecycle via the regista public API only; file-custody client-signer exchange with no private key in the browser/ordinary dossier process; genuine second-principal approval (core approver separation, concurrent prepare idempotency); non-Entra step-up bound to a frozen action digest; durable one-use possession/effective challenges (replay rejected); a public ApprovalVerifier; signed effective-receipt metadata with chronology validation (future/predated/naive observed_at rejected); legacy in-process enrollment fail-closed against real regista. proof_command runs in the owner repo (hraedon/dossier) against the existing dossier tests: tests/test_plan015.py (lifecycle/custody/enroll-revoke-rotate, no-private-key, fail-closed), tests/test_signer_flow.py (client-signer exchange, challenge/effective-receipt durability + chronology), tests/test_step_up.py and tests/test_step_up_routes.py (non-Entra step-up, public ApprovalVerifier); tests/test_plan015_postgres.py is the PostgreSQL-backed variant. Private-key assurance is file development mode only (owner-permissioned file custody) -- no HSM/Entra-key or hardware-backed assurance is claimed. Remaining blockers: complete human enrollment/rotation UI; remote and Windows custody and qualification; multi-project repair/reconciliation; Entra/workplace identity and session lifecycle; break-glass (forms currently render not-available/not-implemented); and a clean published/locked regista artifact carrying schema 44. Verified evidence: regista focused 141 passed; dossier full 799 passed / 6 skipped; ruff/mypy green.",
+          "proof_command": "pytest tests/test_plan015.py tests/test_signer_flow.py tests/test_step_up.py tests/test_step_up_routes.py",
           "proof_artifact": "golden/identity-keys.json"
         },
         {

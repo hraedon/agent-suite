@@ -16,10 +16,24 @@ journeys) in_progress — GJ-1–GJ-4 golden-journey tests have landed with
 two-principal review and negative cases, but the same-lineage, missing-
 lineage, expired-claim, and stale-form negative cases remain (plus a known
 xfail: knowledge create uses a regista reserved transition); WI-1.3 (activity
-and evidence), WI-1.4 (identity/keys/administration), WI-1.5 (daily operation
-and notifications), and WI-1.6 (console and accessibility qualification) are
-not_started. Browser and WCAG 2.2 AA qualification is WI-1.6 and has no CI
-lane yet — no browser is qualified (data/support-matrix.json).
+and evidence) in_progress — GJ-5 landed (dossier 65857cf, with durable
+revocation/dual control) as a real golden-journey test, but GJ-8 (scoped
+case/export planning, offline bundle + self-contained report, protected
+disclosure) remains and has no test yet; WI-1.4 (identity/keys/administration)
+in_progress — durable public principal lifecycle (regista public API only),
+file-custody client-signer exchange, genuine second-principal approval,
+non-Entra step-up, durable one-use challenges, a public ApprovalVerifier,
+signed effective-receipt chronology, and fail-closed legacy enrollment have
+landed (dossier 65857cf/f3197cb/4ff451d/93a3fc9; regista
+3c0e226/fbe37ec/184e037, schema 44), with private-key assurance at file
+development mode only (no HSM/hardware claim); remaining blockers are the
+complete human enrollment/rotation UI, remote/Windows custody and
+qualification, multi-project repair/reconciliation, Entra/workplace identity
+and session lifecycle, break-glass, and a clean published/locked regista
+artifact carrying schema 44. WI-1.5 (daily operation and notifications) and
+WI-1.6 (console and accessibility qualification) are not_started. Browser and
+WCAG 2.2 AA qualification is WI-1.6 and has no CI lane yet — no browser is
+qualified (data/support-matrix.json).
 **Correction note (2026-07-26).** An earlier status line (commit abf40ff,
 "docs: Plan 015 Gate 1 complete") and the session reflection
 reflections/2026-07-25-qwen3-8-max-preview-2.md recorded Gate 1 as complete.
@@ -30,6 +44,24 @@ release-artifact validator tests treat as authoritative — showed WI-1.1/WI-1.2
 in_progress and WI-1.3–WI-1.6 not_started. The release board is the single
 source of truth for gate/WI status; this header now agrees with it. The prior
 claim is preserved here and in the reflection as design history, not deleted.
+**Reconciliation note (2026-07-29).** Gate 1 WI-1.3 and WI-1.4 advanced from
+not_started to in_progress on landed component evidence (regista
+3c0e226/fbe37ec/184e037 — schema 44 durable one-use challenges, concurrent
+prepare idempotency, core approver separation, public ApprovalVerifier, signed
+effective-receipt metadata/chronology; dossier 65857cf GJ-5 + durable
+revocation/dual control, f3197cb client-signer exchange, 4ff451d non-Entra
+step-up, 93a3fc9 custody/approval enforcement and verifier wiring; verified by
+regista focused 141 passed and dossier full 799 passed / 6 skipped, ruff/mypy
+green). Neither WI is complete: WI-1.3 still owes GJ-8; WI-1.4 still owes the
+human enrollment/rotation UI, remote/Windows custody and qualification,
+multi-project repair/reconciliation, Entra/workplace identity and session
+lifecycle, break-glass, and a clean published/locked regista artifact carrying
+schema 44. Private-key assurance is file development mode only — no
+HSM/hardware-backed claim. data/release-board.json gate 1 was updated to match
+(and WI-1.4's proof_command corrected from the nonexistent
+tests/test_identity_keys.py to the real dossier tests test_plan015.py,
+test_signer_flow.py, test_step_up.py, test_step_up_routes.py); the release
+board remains the single source of truth.
 **Owner:** agent-suite coordinates the release; each constituent owns its
 domain; dossier owns the normal human interface.
 **Depends:** agent-suite Plans 008, 009, 013, and 014; dossier Plans 015 and
