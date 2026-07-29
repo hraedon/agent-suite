@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-29
 **Reviewers:** OpenCode (primary), Kimi (independent adjudication)
-**Verdict:** PENDING — final recreated-remote CI required.
+**Verdict:** CLEARED — ready for an owner-authorized public visibility flip.
 
 ## Incident remediation
 
@@ -63,7 +63,9 @@ boundary. It passes.
 - `ruff check src tests scripts` — clean.
 - `mypy --strict src scripts/check_committed_identifiers.py` — clean in 42 files.
 - `pytest -q` — 1,103 passed, 18 skipped.
-- Recreated-remote CI will be required green before final clearance.
+- Recreated-remote CI run
+  [30490199384](https://github.com/hraedon/agent-suite/actions/runs/30490199384)
+  passed every Linux, Windows, feature-probe, lock-agreement, and interop job.
 
 ### Secrets
 
