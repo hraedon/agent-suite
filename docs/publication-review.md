@@ -20,6 +20,17 @@ re-review is required before the repository can be cleared for publication.
 only. It does **not** lift the REVOKED verdict above, which stems from the
 separate operating-history-export incident and still requires a full re-review.
 
+**2026-07-29 remediation update:** the repository was made private before its
+writable history was rewritten. The production operating-history export was
+removed from all six affected branch heads, including `main`, with
+`git-filter-repo --sensitive-data-removal`; the first changed commit was mapped
+from `8f2c94acc0bce9706e66cc7d86bdf1135c223662` to
+`8193f06afd1075f33278ad1c4ec79a48ed362c77`. The rewritten branch history no
+longer contains the export path. GitHub still retains 43 changed, owner-read-only
+`refs/pull/*/head` refs and serves the old object by commit id, so GitHub Support
+must complete the server-side purge. The verdict remains **REVOKED** and the
+repository must remain private until that purge and a full re-review are complete.
+
 ## What was checked
 
 ### Identifier gate
