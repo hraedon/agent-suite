@@ -64,6 +64,22 @@ jobs:
       - name: Run tests
         run: uv run pytest --tb=short -q
 
+  # The hooks are shell, and agent-suite AUTHORS them for the whole estate — but
+  # had no shellcheck job, so an SC2034 in githooks/pre-push was first discovered
+  # by a downstream repo's CI after the sync had already been pushed to twenty
+  # repositories. Validate them where they are written.
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # actions/checkout@v5
+      - name: ShellCheck the hooks and shell glue
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --version
+          shellcheck githooks/pre-commit githooks/commit-msg githooks/pre-push \
+                     scripts/install-git-hooks.sh scripts/agent-worktree
+
   # Commit messages are a publication channel the tracked-tree scan cannot see:
   # it reads files, so an identifier named only in a message is invisible to it.
   # That blind spot is not hypothetical — a sibling public repo carried
