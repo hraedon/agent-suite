@@ -174,11 +174,12 @@ def test_current_tree_is_clean_against_canonical_denylist() -> None:
     if not identifiers:
         pytest.skip("canonical denylist is empty")
     paths = collect_tracked_paths()
-    violations = scan_files(identifiers, paths)
+    violations, unreadable = scan_files(identifiers, paths)
     assert not violations, (
         f"canonical denylist violation(s) in tracked files: "
         f"{[(v.path, v.line_number, v.identifier) for v in violations[:5]]}"
     )
+    assert not unreadable, f"tracked files the gate could not read: {unreadable[:5]}"
 
 
 def test_ci_refuses_an_unconfigured_denylist_secret() -> None:
@@ -188,6 +189,57 @@ def test_ci_refuses_an_unconfigured_denylist_secret() -> None:
     )
     assert '${AGENT_SUITE_FORBIDDEN_IDENTIFIERS//[[:space:]]/}' in ci
     assert "AGENT_SUITE_FORBIDDEN_IDENTIFIERS must be configured" in ci
+
+
+def test_canonical_denylist_forbids_only_work_domain_identifiers() -> None:
+    """The denylist must NOT contain the published identity or lab identifiers.
+
+    Guards the *inverse* error, which has actually happened here: an earlier
+    hand-rolled gate carried ``hraedon`` — the published author identity — in its
+    denylist, and a later over-redaction pass clobbered legitimate lab references
+    that had to be restored in a follow-up commit (``905f0bb``).
+
+    Policy: the canonical denylist holds work-domain identifiers ONLY. Lab
+    topology and the published identity are deliberately allowed in public repos,
+    so an entry matching them would make the gate over-block — blocking honest
+    work rather than protecting anything. Skips when the operator denylist is not
+    present, since it cannot judge what it cannot read.
+    """
+    denylist_path = Path.home() / ".config" / "agent-suite" / "forbidden-identifiers"
+    if not denylist_path.is_file():
+        pytest.skip("canonical denylist not present locally")
+
+    from scripts.check_committed_identifiers import parse_identifier_set
+
+    identifiers = parse_identifier_set(denylist_path.read_text(encoding="utf-8"))
+    # Substrings that mark an entry as lab/published-identity rather than work.
+    allowed_markers = ("hraedon", "mvm")
+    offenders = [
+        i for i in identifiers if any(marker in i.lower() for marker in allowed_markers)
+    ]
+    assert not offenders, (
+        "the canonical denylist contains allowed identifiers, which makes the gate "
+        f"over-block: {offenders}. Lab topology and the published author identity "
+        "are permitted in public repos; the denylist is work-domain-only."
+    )
+
+
+def test_ci_scans_commit_messages() -> None:
+    """CI must scan commit messages, not only tracked file content.
+
+    A mechanical control, in the spirit of the existing secret check: the message
+    channel was unguarded everywhere until a public repo was found carrying
+    work-domain identifiers in three commit messages. If the message-gate job is
+    ever dropped or renamed away, this fails instead of the gap reopening
+    silently. The full-history checkout is part of the contract — a shallow clone
+    cannot resolve the push range.
+    """
+    ci = (_SCRIPT.parents[1] / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "message-gate:" in ci, "the commit-message gate job must exist"
+    assert "--rev-range" in ci, "CI must invoke the message-scanning mode"
+    assert "fetch-depth: 0" in ci, "the message scan needs full history"
 
 
 # ---------------------------------------------------------------------------
@@ -411,3 +463,214 @@ def test_utf16_file_with_forbidden_token_is_caught(tmp_path: Path) -> None:
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
     assert "windows_export.txt" in _combined(result)
+
+
+# ---------------------------------------------------------------------------
+# Multi-word identifiers.
+#
+# The parser used to split unconditionally on whitespace, so a multi-word
+# identifier could not be EXPRESSED: its halves became short tokens that the
+# length filter dropped, and the denylist silently contained nothing. A real
+# two-word work-domain name sat undetected in sixteen repositories — eight of
+# them public — for months because of that. These tests pin both halves of the
+# fix: the parser must keep a quoted phrase whole, and the matcher must catch
+# every spelling a phrase turns up in.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_identifier_set_keeps_quoted_phrase_whole() -> None:
+    """A double-quoted entry survives as ONE multi-word identifier."""
+    from scripts.check_committed_identifiers import parse_identifier_set
+
+    identifiers = parse_identifier_set('"two words"  single-token')
+    assert identifiers == frozenset({"two words", "single-token"}), identifiers
+
+
+def test_unquoted_multiword_entry_still_splits() -> None:
+    """Unquoted whitespace still separates tokens (the CI-secret form).
+
+    Pins the compatibility half: the secret is a whitespace-separated list, and
+    quoting is what opts an entry into phrase semantics. If this ever changed,
+    every existing single-token denylist would silently become one long phrase
+    that matches nothing.
+    """
+    from scripts.check_committed_identifiers import parse_identifier_set
+
+    assert parse_identifier_set("host.example svc-account") == frozenset(
+        {"host.example", "svc-account"}
+    )
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "zzq phrase",  # as written
+        "ZZQ Phrase",  # capitalized — the form that walked past the old gate
+        "zzq-phrase",  # hyphenated
+        "zzq_phrase",  # underscored
+        "zzq.phrase",  # dotted
+        "zzq  phrase",  # double-spaced
+        "zzq\nphrase",  # wrapped across a line break by prose reflow
+    ],
+)
+def test_phrase_matches_every_separator_spelling(spelling: str) -> None:
+    """One phrase entry must catch every separator a phrase gets written with.
+
+    The real leak survived a history scan because it appeared hyphenated in one
+    place and capitalized in another. A matcher that only handles the literal
+    spelling is a matcher that misses.
+    """
+    from scripts.check_committed_identifiers import parse_identifier_set, scan_text
+
+    identifiers = parse_identifier_set('"zzq phrase"')
+    violations = list(scan_text(f"prefix {spelling} suffix", identifiers))
+    assert len(violations) == 1, f"{spelling!r} must match; got {violations}"
+    assert violations[0].identifier == "zzq phrase"
+
+
+def test_phrase_in_tracked_file_blocks_end_to_end(tmp_path: Path) -> None:
+    """End-to-end: a phrase in a tracked file exits non-zero.
+
+    The unit tests above prove the parser and matcher; this proves the wiring,
+    because the leak's actual failure mode was a correct-looking gate that
+    returned 0 on a tree containing the identifier.
+    """
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "notes.md").write_text("the work-domain (Zzq Phrase) is named here\n")
+    subprocess.run(["git", "-C", str(repo), "add", "notes.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "t"], check=True)
+
+    result = _run_gate(repo, env_secret='"zzq phrase"')
+    assert result.returncode != 0, (
+        f"phrase in a tracked file must block; got rc=0.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "notes.md" in _combined(result)
+
+
+def test_unparseable_denylist_fails_closed() -> None:
+    """An unbalanced quote must fail the gate, not silently drop entries.
+
+    A denylist we cannot parse is a publication policy we cannot apply. Degrading
+    to a partial token set would be the worst outcome: a green gate enforcing
+    less than the operator declared.
+    """
+    from scripts.check_committed_identifiers import main, parse_identifier_set
+
+    with pytest.raises(ValueError):
+        parse_identifier_set('"unbalanced')
+
+    import os
+
+    os.environ["AGENT_SUITE_FORBIDDEN_IDENTIFIERS"] = '"unbalanced'
+    try:
+        assert main([]) == 1
+    finally:
+        os.environ.pop("AGENT_SUITE_FORBIDDEN_IDENTIFIERS", None)
+
+
+# ---------------------------------------------------------------------------
+# WI-027 — the residual fails-open branches.
+# ---------------------------------------------------------------------------
+
+
+def test_unreadable_tracked_file_is_reported_not_skipped(tmp_path: Path) -> None:
+    """An unreadable tracked file must fail the gate, not be silently skipped.
+
+    Skipping means a file the gate could not read — which may contain a
+    forbidden identifier — passes. The gate must never clear a tree it could not
+    fully scan. Uses monkeypatched open rather than chmod 000, which is flaky
+    under root and on Windows.
+    """
+    from scripts.check_committed_identifiers import scan_files
+
+    target = tmp_path / "secret.md"
+    target.write_text("harmless\n")
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise PermissionError("denied")
+
+    import unittest.mock
+
+    with unittest.mock.patch.object(Path, "open", _boom):
+        violations, unreadable = scan_files(frozenset({"zzq-token-abc"}), [target])
+    assert violations == []
+    assert unreadable == [target], "an unreadable file must be reported"
+
+
+def test_symlink_target_is_scanned_not_followed(tmp_path: Path) -> None:
+    """A tracked symlink's target string is scanned; the link is not followed.
+
+    Two bugs in one: following a link either leaves the repo (scanning the wrong
+    bytes) or fails on a broken link and reports a false "unreadable". And the
+    target path itself can carry a forbidden identifier, so it must be scanned
+    rather than skipped. Found live — a broken tracked symlink in a sibling repo
+    surfaced as an unreadable-file failure.
+    """
+    from scripts.check_committed_identifiers import scan_files
+
+    link = tmp_path / "link"
+    link.symlink_to("../elsewhere/zzq-token-abc/skill")  # deliberately broken
+
+    violations, unreadable = scan_files(frozenset({"zzq-token-abc"}), [link])
+    assert unreadable == [], "a broken symlink is not an unreadable file"
+    assert len(violations) == 1, "a forbidden identifier in a symlink target must be caught"
+    assert violations[0].path == link
+
+
+def test_git_failure_exits_clean_not_traceback(tmp_path: Path) -> None:
+    """A git command failure must exit 1 with a readable reason, not a traceback.
+
+    Running the gate outside a work tree makes ``git ls-files`` fail. A CI gate
+    that dies with CalledProcessError reads as broken infrastructure, which
+    invites a re-run or a bypass; it must read as a blocked check.
+    """
+    result = _run_gate(tmp_path, env_secret="zzq-token-abc")
+    assert result.returncode == 1, f"expected clean exit 1; got {result.returncode}"
+    combined = _combined(result)
+    assert "Traceback" not in combined, combined
+    assert "identifier gate could not complete" in combined, combined
+
+
+def test_staged_deletion_only_index_passes(tmp_path: Path) -> None:
+    """A deletion-only index yields no paths and passes.
+
+    ``--diff-filter=ACM`` excludes deletions because there is nothing to scan.
+    That is correct, but it is also indistinguishable from a broken path
+    collector, so pin it: removing a file must not be blocked by the gate.
+    """
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "doomed.md").write_text("harmless content\n")
+    subprocess.run(["git", "-C", str(repo), "add", "doomed.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "t"], check=True)
+    subprocess.run(["git", "-C", str(repo), "rm", "-q", "doomed.md"], check=True)
+
+    result = _run_gate(repo, env_secret="zzq-token-abc", staged=True)
+    assert result.returncode == 0, (
+        f"deletion-only index must pass; got rc={result.returncode}.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+def test_empty_and_short_denylist_messages_are_explicit(tmp_path: Path) -> None:
+    """The two no-op branches must SAY they are skipping.
+
+    Both return 0. If the message ever disappears, an unconfigured or unusable
+    denylist becomes an invisible green pass — the exact failure the CI
+    fail-closed wrapper exists to catch. Assert the operator-visible text.
+    """
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "f.md").write_text("content\n")
+    subprocess.run(["git", "-C", str(repo), "add", "f.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "t"], check=True)
+
+    empty = _run_gate(repo, env_secret="   ")
+    assert empty.returncode == 0
+    assert "is empty or unset; skipping identifier gate" in _combined(empty)
+
+    short = _run_gate(repo, env_secret="ab xyz")
+    assert short.returncode == 0
+    assert "no usable identifiers" in _combined(short)

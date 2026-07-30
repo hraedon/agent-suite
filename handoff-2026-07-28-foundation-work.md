@@ -97,7 +97,8 @@ Vault qualification (CL-008 → supported); then sol signoff over all converged 
 - **Implemented-but-unexercised is the recurring risk** (regista lifecycle was fully
   built but `skipif(True)`). Never trust a green suite where the relevant tests skip.
 - **Identifier gate:** canonical denylist `~/.config/agent-suite/forbidden-identifiers`
-  holds work-domain (work-domain) tokens ONLY; `hraedon`/`hraedon.com`/`plm@hraedon.com`
+  holds work-domain tokens ONLY (never named in a tracked file — see
+  `githooks/pre-commit`); `hraedon`/`hraedon.com`/`plm@hraedon.com`
   are the allowed published identity (the over-redaction of `hraedon` was a bug, now
   fixed). Run `scripts/check_committed_identifiers.py` before committing.
 - **Don't push or flip public** — publication-review verdict is still REVOKED

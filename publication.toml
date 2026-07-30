@@ -1,0 +1,37 @@
+# Publication plumbing declaration (WI-019).
+#
+# Read by githooks/pre-push via scripts/check_publication_plumbing.py before any
+# push. The content denylist answers "may these bytes be published"; this file
+# answers "may this repository be published HERE, by THIS identity, at THIS
+# visibility" — the accident class that content scanning cannot see.
+#
+# Keep this in sync with reality in the SAME commit that changes reality. If a
+# publication review clears the repo for public release, flip `visibility` to
+# "public" as part of that change, not afterwards.
+#
+# Honest scope: a git hook is layer 3/4 accident prevention, not a security
+# boundary (docs/process-calibration.md). CI is the hard gate.
+
+[publication]
+# Expected owner of the push URL. A push to any other owner is refused.
+remote_owner = "hraedon"
+
+# Expected author identity on every commit being pushed. Guards the
+# multi-identity-box accident: right code, wrong signature. May be a single
+# address or a list — real history often carries more than one (a web-UI commit
+# lands as <user>@users.noreply.github.com). List every identity that is
+# legitimate for this repo; anything else refuses the push.
+author_email = ["plm@hraedon.com", "hraedon@users.noreply.github.com"]
+
+# "private-until-review" | "public"
+#
+# private-until-review: the guard refuses the push if the remote is NOT private,
+# so a repository awaiting publication review cannot be pushed to a public
+# remote by accident.
+#
+# STATE: the 2026-07-29 publication review CLEARED this repo, but the owner-
+# authorized visibility flip has not happened yet, and the review's evidence is
+# being reconciled after the multi-word identifier audit (see
+# docs/publication-review.md). Until the flip, the honest declaration is
+# private-until-review.
+visibility = "private-until-review"
