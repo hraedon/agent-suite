@@ -692,3 +692,27 @@ def test_scan_files_returns_a_plain_list_for_copied_script_compat() -> None:
 
     result = scan_files(frozenset({"zzq-token-abc"}), [])
     assert isinstance(result, list), f"scan_files must return a list, got {type(result)}"
+
+
+def test_gate_script_fits_100_cols_with_the_longest_fleet_env_var() -> None:
+    """The script must stay under 100 columns AFTER per-repo substitution.
+
+    ``sync-identifier-gate.sh`` rewrites ``AGENT_SUITE_FORBIDDEN_IDENTIFIERS``
+    into a per-repo name, and some are much longer — 52 characters for
+    ``SYSADMIN_COMPETENCE_EVALUATION_...`` against 33 canonical. That +19 pushed
+    two message lines past the limit and reddened repositories whose CI lints the
+    whole tree, even though the canonical file was clean. A template distributed
+    by textual substitution has to budget for the longest substitution.
+    """
+    src = (_SCRIPT.parents[1] / "scripts" / "check_committed_identifiers.py").read_text(
+        encoding="utf-8"
+    )
+    longest = "SYSADMIN_COMPETENCE_EVALUATION_FORBIDDEN_IDENTIFIERS"
+    assert len(longest) >= 52, "keep this at least as long as the real worst case"
+    substituted = src.replace("AGENT_SUITE_FORBIDDEN_IDENTIFIERS", longest)
+    over = [
+        (n, len(line))
+        for n, line in enumerate(substituted.splitlines(), start=1)
+        if len(line) > 100
+    ]
+    assert not over, f"lines exceed 100 cols after substitution: {over}"
