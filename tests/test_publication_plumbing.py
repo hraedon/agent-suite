@@ -295,12 +295,37 @@ def test_remote_visibility_returns_none_without_gh(monkeypatch: pytest.MonkeyPat
     assert plumbing.remote_visibility("owner", "repo") is None
 
 
-@pytest.mark.skipif(
+_POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
     reason="githooks/pre-push is a bash script; git invokes it via Git-Bash, "
     "but pytest cannot exec it directly on Windows (WinError 193). The logic it "
     "wraps is covered cross-platform by the rev-range tests above.",
 )
+
+
+def _make_hook_repo(repo: Path) -> Path:
+    """Create a repo with the hook and scripts copied in; return the hook path."""
+    repo_root = _SCRIPT.parents[1]
+    _make_repo(repo)
+    (repo / "publication.toml").write_text(_DECLARATION)
+    for name in ("check_committed_identifiers.py", "check_publication_plumbing.py"):
+        (repo / "scripts").mkdir(exist_ok=True)
+        (repo / "scripts" / name).write_text((repo_root / "scripts" / name).read_text())
+    (repo / "githooks").mkdir(exist_ok=True)
+    hook = repo / "githooks" / "pre-push"
+    hook.write_text((repo_root / "githooks" / "pre-push").read_text())
+    hook.chmod(0o755)
+    return hook
+
+
+def _head_sha(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+@_POSIX_ONLY
 def test_pre_push_hook_survives_a_rewritten_remote_sha(tmp_path: Path) -> None:
     """A force-push after a history rewrite must not be blocked forever.
 
@@ -312,22 +337,9 @@ def test_pre_push_hook_survives_a_rewritten_remote_sha(tmp_path: Path) -> None:
 
     Found by dogfooding: this hook blocked the first real scrub push.
     """
-    repo_root = _SCRIPT.parents[1]
     repo = tmp_path / "repo"
-    _make_repo(repo)
-    (repo / "publication.toml").write_text(_DECLARATION)
-    for name in ("check_committed_identifiers.py", "check_publication_plumbing.py"):
-        (repo / "scripts").mkdir(exist_ok=True)
-        (repo / "scripts" / name).write_text((repo_root / "scripts" / name).read_text())
-    (repo / "githooks").mkdir(exist_ok=True)
-    hook = repo / "githooks" / "pre-push"
-    hook.write_text((repo_root / "githooks" / "pre-push").read_text())
-    hook.chmod(0o755)
-
-    local_sha = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
+    hook = _make_hook_repo(repo)
+    local_sha = _head_sha(repo)
     # A syntactically valid sha that does not exist in this repo — exactly what a
     # rewritten remote head looks like from the client's side.
     unreachable = "1" * 40
@@ -343,6 +355,103 @@ def test_pre_push_hook_survives_a_rewritten_remote_sha(tmp_path: Path) -> None:
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
     assert "Invalid revision range" not in result.stderr
+
+
+@_POSIX_ONLY
+def test_pre_push_hook_direct_url_push_new_branch(tmp_path: Path) -> None:
+    """A direct-URL push (git push <URL> ...) on a new branch must not fail.
+
+    When argv[1] is a URL rather than a configured remote name, the old code
+    passed ``--remotes=<URL>`` to git log, which matches nothing and either
+    errors or silently produces an empty range. The fix: detect that the name
+    is not a configured remote (via ``git remote get-url``) and conservatively
+    scan all commits reachable from local_sha.
+    """
+    repo = tmp_path / "repo"
+    hook = _make_hook_repo(repo)
+    local_sha = _head_sha(repo)
+    zero_sha = "0" * 40
+    direct_url = "https://github.com/expected-owner/repo.git"
+
+    result = subprocess.run(
+        [str(hook), direct_url, direct_url],
+        cwd=repo,
+        input=f"refs/heads/new-branch {local_sha} refs/heads/new-branch {zero_sha}\n",
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0, (
+        "a direct-URL push on a new branch must not be blocked\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+@_POSIX_ONLY
+def test_pre_push_hook_later_ref_violation_fails_whole_push(tmp_path: Path) -> None:
+    """A violation in a later ref update must fail the entire push.
+
+    The hook processes ref updates sequentially and accumulates status. A
+    first ref that passes must not mask a second ref that fails — the exit
+    code must reflect the worst outcome.
+    """
+    repo = tmp_path / "repo"
+    hook = _make_hook_repo(repo)
+    local_sha = _head_sha(repo)
+    zero_sha = "0" * 40
+
+    # Add a commit with a wrong author identity on a second branch.
+    subprocess.run(
+        ["git", "-C", str(repo), "checkout", "-q", "-b", "bad-branch"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "stranger@example.com"],
+        check=True,
+    )
+    (repo / "bad.md").write_text("bad\n")
+    subprocess.run(["git", "-C", str(repo), "add", "bad.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "bad"], check=True)
+    bad_sha = _head_sha(repo)
+
+    # Two ref updates: first is clean (main), second has a wrong identity.
+    stdin_lines = (
+        f"refs/heads/main {local_sha} refs/heads/main {zero_sha}\n"
+        f"refs/heads/bad-branch {bad_sha} refs/heads/bad-branch {zero_sha}\n"
+    )
+    result = subprocess.run(
+        [str(hook), "origin", "https://github.com/expected-owner/repo.git"],
+        cwd=repo,
+        input=stdin_lines,
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 1, (
+        "a violation in a later ref must fail the whole push\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "stranger@example.com" in result.stderr
+
+
+@_POSIX_ONLY
+def test_pre_push_hook_branch_deletion_only_passes(tmp_path: Path) -> None:
+    """A push that only deletes branches must pass — nothing is published.
+
+    A deletion has local_sha == 0{40}. The hook must skip it (no commits are
+    being published) and exit 0.
+    """
+    repo = tmp_path / "repo"
+    hook = _make_hook_repo(repo)
+    zero_sha = "0" * 40
+    # A plausible remote sha for the branch being deleted.
+    remote_sha = _head_sha(repo)
+
+    result = subprocess.run(
+        [str(hook), "origin", "https://github.com/expected-owner/repo.git"],
+        cwd=repo,
+        input=f"refs/heads/old-branch {zero_sha} refs/heads/old-branch {remote_sha}\n",
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0, (
+        "a deletion-only push must pass\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
 
 
 def test_this_repo_declares_publication_plumbing() -> None:

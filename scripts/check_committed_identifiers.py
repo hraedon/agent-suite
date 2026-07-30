@@ -215,6 +215,12 @@ def scan_files(
     unreadable file lets one containing a forbidden identifier pass, which is
     precisely the fails-open case this gate exists to prevent.
 
+    **Fail-closed default**: when the caller omits *unreadable*, the function
+    owns an internal collector and raises :class:`GateError` after scanning if
+    any path was unreadable. Callers that supply their own list (the CLI, for
+    detailed reporting) retain full control and receive the paths without an
+    exception.
+
     The out-parameter is deliberate. This script is COPIED into every repo in the
     estate and several of them test ``scan_files`` directly, so returning a tuple
     instead of a list broke seven repositories' test suites at once. An optional
@@ -222,6 +228,7 @@ def scan_files(
     the CLI fail closed on an unreadable file.
     """
     violations: list[Violation] = []
+    owns_collector = unreadable is None
     if unreadable is None:
         unreadable = []
     for path in paths:
@@ -231,7 +238,11 @@ def scan_files(
         # looks like an unreadable file. The target itself can carry a forbidden
         # identifier, so it is scanned rather than skipped.
         if path.is_symlink():
-            target = os.readlink(path)
+            try:
+                target = os.readlink(path)
+            except OSError:
+                unreadable.append(path)
+                continue
             for violation in scan_text(target, identifiers):
                 violations.append(replace(violation, path=path, line=target))
             continue
@@ -251,6 +262,12 @@ def scan_files(
             continue
         for violation in scan_text(text, identifiers):
             violations.append(replace(violation, path=path))
+    if owns_collector and unreadable:
+        names = ", ".join(str(p) for p in unreadable[:5])
+        raise GateError(
+            f"{len(unreadable)} tracked file(s) could not be read ({names}); "
+            "the gate cannot clear a tree it could not fully scan"
+        )
     return violations
 
 

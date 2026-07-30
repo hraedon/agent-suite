@@ -56,10 +56,10 @@ jobs:
         run: uv run pytest tests/test_architecture.py -q
 
       - name: Lint (ruff)
-        run: uv run ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check-lock-agreement.py
+        run: uv run ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check_publication_plumbing.py scripts/check-lock-agreement.py
 
       - name: Type check (mypy)
-        run: uv run mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py
+        run: uv run mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py scripts/check_publication_plumbing.py
 
       - name: Run tests
         run: uv run pytest --tb=short -q
@@ -346,10 +346,10 @@ jobs:
         run: uv run python scripts/validate-contracts.py --check
 
       - name: Lint (ruff)
-        run: uv run ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check-lock-agreement.py
+        run: uv run ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check_publication_plumbing.py scripts/check-lock-agreement.py
 
       - name: Type check (mypy)
-        run: uv run mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py
+        run: uv run mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py scripts/check_publication_plumbing.py
 
       - name: Run tests
         run: uv run pytest --tb=short -q

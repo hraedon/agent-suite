@@ -622,6 +622,29 @@ def test_symlink_target_is_scanned_not_followed(tmp_path: Path) -> None:
     assert violations[0].path == link
 
 
+def test_symlink_readlink_failure_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An OSError from os.readlink on a symlink must fail closed, not traceback.
+
+    The symlink branch calls os.readlink, which can raise OSError (e.g.
+    permission denied on the link inode). Before the fix this escaped as an
+    unhandled traceback. The fix feeds the path through the same unreadable
+    collector / GateError semantics as ordinary files.
+    """
+    from scripts.check_committed_identifiers import GateError, scan_files
+
+    link = tmp_path / "link"
+    link.symlink_to("target")
+
+    def _deny_readlink(_path: object) -> str:
+        raise OSError("denied")
+
+    monkeypatch.setattr("os.readlink", _deny_readlink)
+    with pytest.raises(GateError, match="could not be read"):
+        scan_files(frozenset({"zzq-token-abc"}), [link])
+
+
 def test_git_failure_exits_clean_not_traceback(tmp_path: Path) -> None:
     """A git command failure must exit 1 with a readable reason, not a traceback.
 
@@ -692,6 +715,56 @@ def test_scan_files_returns_a_plain_list_for_copied_script_compat() -> None:
 
     result = scan_files(frozenset({"zzq-token-abc"}), [])
     assert isinstance(result, list), f"scan_files must return a list, got {type(result)}"
+
+
+def test_scan_files_fails_closed_when_unreadable_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """scan_files without unreadable= must raise GateError on an unreadable path.
+
+    Before WI-027's fail-closed default, omitting the collector silently skipped
+    unreadable files — a forbidden identifier inside one would pass undetected.
+    The fix: scan_files owns an internal collector and raises GateError after
+    scanning if it is non-empty. Callers that supply their own list (the CLI)
+    still receive the paths without an exception.
+
+    Uses monkeypatched Path.open rather than chmod 000 (flaky under root and on
+    Windows).
+    """
+    from scripts.check_committed_identifiers import GateError, scan_files
+
+    target = tmp_path / "secret.md"
+    target.write_text("harmless\n")
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "open", _boom)
+    with pytest.raises(GateError, match="could not be read"):
+        scan_files(frozenset({"zzq-token-abc"}), [target])
+
+
+def test_scan_files_caller_owned_collector_does_not_raise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Supplying unreadable= preserves the old contract: collect, don't raise.
+
+    The CLI passes its own list so it can emit a detailed report. That path must
+    NOT raise — the caller is responsible for acting on the collected paths.
+    """
+    from scripts.check_committed_identifiers import scan_files
+
+    target = tmp_path / "secret.md"
+    target.write_text("harmless\n")
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "open", _boom)
+    unreadable: list[Path] = []
+    violations = scan_files(frozenset({"zzq-token-abc"}), [target], unreadable=unreadable)
+    assert violations == []
+    assert unreadable == [target]
 
 
 def test_gate_script_fits_100_cols_with_the_longest_fleet_env_var() -> None:
