@@ -12,7 +12,7 @@
 # regular-vs-namespace collision in practice.
 #
 # VERSION MUST EQUAL agent_suite.conformance.KIT_VERSION. The guard test
-# tests/test_conformance_packaging.py fails CI if they drift.
+# tests/test_packaging.py fails CI if they drift.
 
 [project]
 name = "agent-suite-conformance"
@@ -30,16 +30,30 @@ dependencies = []  # stdlib-only, by design
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# The conformance source is force-included by the custom build hook
+# (hatch_build.py): ONE source of truth (../../src/agent_suite/conformance), no
+# symlink (Git for Windows core.symlinks=false materializes a link as a stray
+# text file, silently shipping nothing) and no copy (the kit must not be
+# duplicated). The hook resolves the source per build context — the canonical
+# monorepo path for a source-tree build, the materialized local subtree for a
+# wheel-from-sdist build — and ships itself + the README in the sdist so the
+# wheel-from-sdist step is self-contained. See hatch_build.py for the logic.
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
 [tool.hatch.build.targets.wheel]
-# Map the shared source subtree into the wheel as agent_suite/conformance/.
-# No agent_suite/__init__.py is shipped -> PEP 420 namespace on the consumer.
-force-include = { "../../src/agent_suite/conformance" = "agent_suite/conformance" }
-# force-include alone defines the wheel contents; no auto-detected packages.
+# The hook supplies the force-include; bypass-selection means the wheel ships
+# ONLY what the hook force-includes (the conformance subtree), with no
+# auto-detected packages. No agent_suite/__init__.py -> PEP 420 namespace.
 bypass-selection = true
-# Keep byte-caches out of the published artifact (explicit intent; the build
-# test asserts the wheel is pyc-free).
+# Keep byte-caches out of the published artifact (the build test asserts pyc-free).
 exclude = ["**/__pycache__", "**/*.py[cod]"]
 
 [tool.hatch.build.targets.sdist]
-force-include = { "../../src/agent_suite/conformance" = "agent_suite/conformance", "README.md" = "README.md" }
+# The hook force-includes the conformance subtree + hatch_build.py + README.
+# bypass-selection keeps the sdist to the hook's force-includes plus the build
+# metadata hatchling always adds (pyproject.toml, PKG-INFO); without it the
+# default file selection would broaden the sdist.
+bypass-selection = true
 exclude = ["**/__pycache__", "**/*.py[cod]"]
