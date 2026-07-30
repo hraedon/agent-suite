@@ -162,7 +162,7 @@ The identifier is a work-domain *name*; nothing access-bearing was disclosed
 | Branches and tags on every remote | **clean** (force-pushed, all refs) |
 | `refs/pull/*` | **residual** — server-side, not rewritable by a client; only delete-and-recreate purges it |
 | Unreachable objects by SHA | **residual** — a force-push does not purge GitHub's retained objects; old commits stay fetchable by SHA |
-| PyPI `dossier_hraedon-0.0.1.tar.gz` (2026-07-20) | **permanent** — ships `githooks/pre-commit`; sdists are immutable and mirrored. No git operation can affect this |
+| PyPI `dossier_hraedon-0.0.1.tar.gz` (2026-07-20) | **permanent, and narrow** — see the measured scope below |
 | Third-party clones taken 2026-07-05 → 2026-07-30 | unknowable; clone traffic in that window was overwhelmingly CI |
 
 Exposure window ≈ 25 days. Human attention was low: GitHub traffic showed a peak
@@ -174,11 +174,110 @@ low sensitivity, on projects built primarily for that work context, and that a
 complete purge is unachievable anyway once an immutable PyPI artifact exists.
 The controls, not the purge, are the remediation.
 
+### PyPI exposure, measured
+
+Every file of every version of all four published packages was downloaded and
+scanned (14 artifacts). **Exactly one contains the identifier:**
+
+- `dossier_hraedon-0.0.1.tar.gz` — 364,754 bytes, uploaded
+  2026-07-20T06:47:58Z, not yanked. Of its **180 members, one file**:
+  `githooks/pre-commit`, **3 occurrences, all comment lines** (5, 15, 17), and
+  only the two-word org name. The bare form and the internal `.local` domain
+  never reached PyPI at all.
+- The matching **wheel is clean** (wheels package only `src/dossier`).
+- **`PKG-INFO` and `README` are clean**, so the identifier never appeared in
+  PyPI's rendered metadata — not on the project page, not in PyPI search, not
+  indexed by search engines. Discovery requires downloading and unpacking the
+  tarball.
+- All other 13 artifacts (regista-hraedon 0.5.1–0.5.4, agent-notes-hraedon
+  1.0.0, agent-suite-conformance 1.0.0; sdist and wheel each) are clean.
+- Package downloads: 412 with mirrors / 144 without. PyPI's public API does not
+  break down by file type, so the tarball's own fetch count is unknown; a normal
+  `pip install` resolves the universally-compatible wheel and never touches it.
+
+**Fixed forward, not retracted:** dossier now declares
+`[tool.hatch.build.targets.sdist]` excludes (`githooks`, `.github`, `plans`,
+`reflections`, `samples`), so no future release can carry dev tooling — 163
+members instead of 180, verified by building it. `0.0.1` is deliberately **not**
+yanked: yanking stops resolution but leaves the file downloadable, so it is
+signal rather than protection.
+
+### gpo-lens: deleted and recreated, 2026-07-30
+
+gpo-lens held the most sensitive item found — an internal `.local` AD domain
+paired with an explicit `(work)` label — in three commit messages, two of which
+were the commits that redacted those identifiers from files. A history rewrite
+plus force-push cleaned its branches and tags, but the three commits survived in
+`refs/pull/*`, which no client can rewrite.
+
+It was therefore deleted and recreated from the rewritten history: cheapest
+purge in the estate (2 PR discussions, 1 release) against the highest-sensitivity
+content. Restored: `main` + 11 tags, the `GPO_LENS_FORBIDDEN_IDENTIFIERS` secret,
+the v1.2.0 release with its original notes, description, and public visibility.
+
+Verification: the three pre-rewrite commit ids return HTTP 422 "No commit found";
+a mirror clone shows `refs/heads/*` 1 and `refs/tags/*` 11 with **no
+`refs/pull/*`**; scanning 1,366 blobs and every commit message across all refs
+yields zero violations. Backups retained in the session scratchpad (full
+pre-deletion mirror including the PR refs, plus a bundle of the rewritten
+history).
+
+### No over-redaction
+
+The inverse failure was checked, because it has happened here before (an earlier
+gate carried the published author identity in its denylist; a later pass
+clobbered real lab links, restored in `905f0bb`). Against pre-rewrite state, the
+two all-entries rewrites touched **only** work-domain identifiers: one reflection
+file in acme-adcs-ra, three commit messages in gpo-lens. Lab references survive
+intact everywhere (gpo-studio 94 files referencing the lab identity, cert-watch
+40, and so on). The canonical denylist contains no lab-shaped entry, now pinned
+by `test_canonical_denylist_forbids_only_work_domain_identifiers`.
+
+### BLOCKING PRECONDITION for the public visibility flip
+
+**This repository's own history still contains the identifier.** The 2026-07-30
+remediation fixed agent-suite's tracked tree forward (a normal commit) but did
+**not** rewrite its history, because doing so would have invalidated the open
+pull requests carrying the fix. Still present across `--all`:
+
+| Location | Versions |
+|---|---|
+| `githooks/pre-commit` | 1 |
+| `handoff-2026-07-28-foundation-work.md` | 1 |
+| `reflections/2026-07-13-glm-5-2-2.md` | 1 |
+| `docs/gate-0-ratification.md` | 1 |
+| `docs/publication-review.md` | 2 |
+
+plus two commit messages (`905f0bbe5`, `7df3ca089`) and three `refs/pull/*`.
+
+The tracked tree is clean, so nothing is currently *indexed* — and the repository
+is private, so nothing is exposed at all. But a visibility flip performed without
+first rewriting this history would publish the identifier into public history and
+`refs/pull/*` in one action, recreating exactly the condition this remediation
+just spent a session undoing.
+
+**Therefore:** `publication.toml` stays `visibility = "private-until-review"`, and
+the flip is gated on a `git-filter-repo --replace-text --replace-message` pass
+over all refs, performed **in a fresh clone** (filter-repo prompts on sanity
+checks in a working repo and dies under no TTY — silently, if stderr is
+discarded), followed by delete-and-recreate to clear `refs/pull/*`. The verdict
+above remains CLEARED on content; this is a sequencing requirement, not a new
+content finding.
+
 ### Known gaps
 
-- `sysadmin_competence_evaluation` is **public with no identifier gate at all**
-  and no CI denylist secret configured.
-- `patina` has no gate and no remote.
 - `ad-steward`'s default branch is `eam-tier-rules-impl`, not `main`; both were
   remediated, but a default branch that is not `main` is easy to overlook when
   reasoning about the indexed surface.
+- `refs/pull/*` residual remains on `dossier`, `vitrine`,
+  `agent-capability-broker`, `gpo-studio`, `cert-watch`, `usage-dashboard`,
+  `acme-adcs-ra` and `ad-steward` — the two-word org name only, accepted.
+- Retained unreachable objects remain fetchable by SHA on every force-pushed
+  repository — the two-word org name only, accepted.
+
+### Closed since
+
+- `sysadmin_competence_evaluation` was public with **no gate at all** and no CI
+  secret; both are now configured.
+- `patina` had no gate; it now has one (still no remote, so declared
+  private-until-review).
