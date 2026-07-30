@@ -233,36 +233,40 @@ intact everywhere (gpo-studio 94 files referencing the lab identity, cert-watch
 40, and so on). The canonical denylist contains no lab-shaped entry, now pinned
 by `test_canonical_denylist_forbids_only_work_domain_identifiers`.
 
-### BLOCKING PRECONDITION for the public visibility flip
+### Precondition DISCHARGED, and the flip — 2026-07-30
 
-**This repository's own history still contains the identifier.** The 2026-07-30
-remediation fixed agent-suite's tracked tree forward (a normal commit) but did
-**not** rewrite its history, because doing so would have invalidated the open
-pull requests carrying the fix. Still present across `--all`:
+The blocking precondition recorded here (this repository's own history still
+contained the identifier, because its tree was fixed forward rather than
+rewritten) has been cleared, in the order the record demanded:
 
-| Location | Versions |
-|---|---|
-| `githooks/pre-commit` | 1 |
-| `handoff-2026-07-28-foundation-work.md` | 1 |
-| `reflections/2026-07-13-glm-5-2-2.md` | 1 |
-| `docs/gate-0-ratification.md` | 1 |
-| `docs/publication-review.md` | 2 |
+1. History rewritten with `git-filter-repo --replace-text --replace-message`
+   across **all seven branches**, in a **bare clone** — bare clones fetch
+   `refs/heads/*` and tags but not `refs/pull/*`, and filter-repo prompts on
+   sanity checks in a working repo and dies under no TTY.
+2. Verified before touching the remote: 888 blobs scanned with the hardened
+   multi-word gate, **0 violating**; **0 violating commit messages** across
+   `--all`; tracked tree clean.
+3. Repository **deleted and recreated** to drop its six `refs/pull/*`, which no
+   client can rewrite. All seven branches restored, default branch set to `main`,
+   the `AGENT_SUITE_FORBIDDEN_IDENTIFIERS` secret restored, description restored.
+   No tags or releases existed to restore.
+4. Verified after: pre-rewrite commit ids (`905f0bbe5`, `7df3ca089`, `ccc0b4109`)
+   return "No commit found"; a mirror clone shows `refs/heads/*` 7 and **no
+   `refs/pull/*`**; full blob and message scan of the recreated remote clean.
+5. Visibility flipped to **public**, owner-authorized.
 
-plus two commit messages (`905f0bbe5`, `7df3ca089`) and three `refs/pull/*`.
+Recovery path retained: a full pre-deletion mirror (including the PR refs) plus
+the rewritten bare clone, in the session scratchpad.
 
-The tracked tree is clean, so nothing is currently *indexed* — and the repository
-is private, so nothing is exposed at all. But a visibility flip performed without
-first rewriting this history would publish the identifier into public history and
-`refs/pull/*` in one action, recreating exactly the condition this remediation
-just spent a session undoing.
+Residual, unchanged from the accepted set: GitHub retains unreachable objects by
+SHA on repositories that were force-pushed rather than recreated, and the
+immutable PyPI sdist. Neither applies to this repository, which was recreated.
 
-**Therefore:** `publication.toml` stays `visibility = "private-until-review"`, and
-the flip is gated on a `git-filter-repo --replace-text --replace-message` pass
-over all refs, performed **in a fresh clone** (filter-repo prompts on sanity
-checks in a working repo and dies under no TTY — silently, if stderr is
-discarded), followed by delete-and-recreate to clear `refs/pull/*`. The verdict
-above remains CLEARED on content; this is a sequencing requirement, not a new
-content finding.
+**Local note:** fourteen local-only branches in the operator's checkout still sit
+on the pre-rewrite history line and therefore still contain the identifier. They
+are local disk only, never pushed, and the `pre-push` message gate now blocks any
+attempt to publish them. They need triage (rebase onto the new history or delete)
+by whoever owns that unmerged work.
 
 ### Known gaps
 

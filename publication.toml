@@ -29,9 +29,11 @@ author_email = ["plm@hraedon.com", "hraedon@users.noreply.github.com"]
 # so a repository awaiting publication review cannot be pushed to a public
 # remote by accident.
 #
-# STATE: the 2026-07-29 publication review CLEARED this repo, but the owner-
-# authorized visibility flip has not happened yet, and the review's evidence is
-# being reconciled after the multi-word identifier audit (see
-# docs/publication-review.md). Until the flip, the honest declaration is
-# private-until-review.
-visibility = "private-until-review"
+# STATE: PUBLIC as of 2026-07-30, owner-authorized. The blocking precondition
+# recorded in docs/publication-review.md — that this repository's own history
+# still contained a work-domain identifier — was cleared first: history rewritten
+# across all seven branches in a bare clone, then the repository deleted and
+# recreated to drop its six pull-request refs. Verified before the flip: 888
+# blobs and every commit message clean, pre-rewrite commit ids returning "No
+# commit found", zero refs/pull/*.
+visibility = "public"
