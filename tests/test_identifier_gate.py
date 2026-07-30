@@ -174,7 +174,8 @@ def test_current_tree_is_clean_against_canonical_denylist() -> None:
     if not identifiers:
         pytest.skip("canonical denylist is empty")
     paths = collect_tracked_paths()
-    violations, unreadable = scan_files(identifiers, paths)
+    unreadable: list[Path] = []
+    violations = scan_files(identifiers, paths, unreadable=unreadable)
     assert not violations, (
         f"canonical denylist violation(s) in tracked files: "
         f"{[(v.path, v.line_number, v.identifier) for v in violations[:5]]}"
@@ -593,8 +594,9 @@ def test_unreadable_tracked_file_is_reported_not_skipped(tmp_path: Path) -> None
 
     import unittest.mock
 
+    unreadable: list[Path] = []
     with unittest.mock.patch.object(Path, "open", _boom):
-        violations, unreadable = scan_files(frozenset({"zzq-token-abc"}), [target])
+        violations = scan_files(frozenset({"zzq-token-abc"}), [target], unreadable=unreadable)
     assert violations == []
     assert unreadable == [target], "an unreadable file must be reported"
 
@@ -613,7 +615,8 @@ def test_symlink_target_is_scanned_not_followed(tmp_path: Path) -> None:
     link = tmp_path / "link"
     link.symlink_to("../elsewhere/zzq-token-abc/skill")  # deliberately broken
 
-    violations, unreadable = scan_files(frozenset({"zzq-token-abc"}), [link])
+    unreadable: list[Path] = []
+    violations = scan_files(frozenset({"zzq-token-abc"}), [link], unreadable=unreadable)
     assert unreadable == [], "a broken symlink is not an unreadable file"
     assert len(violations) == 1, "a forbidden identifier in a symlink target must be caught"
     assert violations[0].path == link
@@ -674,3 +677,18 @@ def test_empty_and_short_denylist_messages_are_explicit(tmp_path: Path) -> None:
     short = _run_gate(repo, env_secret="ab xyz")
     assert short.returncode == 0
     assert "no usable identifiers" in _combined(short)
+
+
+def test_scan_files_returns_a_plain_list_for_copied_script_compat() -> None:
+    """scan_files must return a LIST, not a tuple.
+
+    This script is copied into every repo in the estate and several of them test
+    scan_files directly. Returning a tuple to carry the unreadable-file list broke
+    seven repositories' suites at once (`assert len(violations) == 1` became
+    `assert 2 == 1`). The unreadable collector is an optional keyword out-param
+    precisely so this signature stays stable; pin it.
+    """
+    from scripts.check_committed_identifiers import scan_files
+
+    result = scan_files(frozenset({"zzq-token-abc"}), [])
+    assert isinstance(result, list), f"scan_files must return a list, got {type(result)}"
