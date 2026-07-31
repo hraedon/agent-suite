@@ -273,6 +273,19 @@ def _path_within(path: Path, root: Path) -> bool:
     return True
 
 
+def _path_within_lexical(path: Path, root: Path) -> bool:
+    """Containment on the path as written (expanduser, no symlink resolution).
+
+    Needed for venv interpreters, whose ``bin/python`` is usually a symlink
+    out of the venv: resolving it discards the very location being tested.
+    """
+    try:
+        path.expanduser().absolute().relative_to(root.expanduser().absolute())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
 def _manager_context(runner: Runner, which: Which) -> _ManagerContext:
     pipx_apps: dict[str, str] = {}
     pipx_executable = which("pipx")
@@ -487,8 +500,14 @@ def probe_runtime_provenance(
         mode = InstallMode.PIPX
         manager = context.pipx_executable
         manager_package = context.pipx_apps[resolved_cli]
-    elif isinstance(interpreter, str) and context.uv_root is not None and _path_within(
-        Path(interpreter), context.uv_root
+    elif isinstance(interpreter, str) and context.uv_root is not None and (
+        _path_within(Path(interpreter), context.uv_root)
+        # A uv tool venv's bin/python is typically a SYMLINK to the base
+        # interpreter, so the resolving check above sees /usr/bin/pythonX
+        # and misses. Compare the unresolved (lexical) path too — the
+        # interpreter path as invoked is inside the tool dir even when its
+        # target is not.
+        or _path_within_lexical(Path(interpreter), context.uv_root)
     ):
         mode = InstallMode.UV_TOOL
         manager = context.uv_executable
