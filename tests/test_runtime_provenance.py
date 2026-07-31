@@ -176,3 +176,23 @@ def test_path_shadow_script_is_not_misattributed_by_module_ownership(
 
     assert record.mode is InstallMode.UNKNOWN
     assert record.distribution is None
+
+
+def test_uv_tool_detected_when_interpreter_is_symlink(tmp_path):
+    """A uv tool venv's bin/python is usually a symlink to the base
+    interpreter; containment must be judged on the path as invoked, not
+    its resolved target, or every uv tool reads UNKNOWN and the strict
+    provenance probe fails the whole doctor (WI-036)."""
+    from agent_suite.runtime_provenance import _path_within, _path_within_lexical
+
+    uv_root = tmp_path / "uv" / "tools"
+    venv_bin = uv_root / "some-tool" / "bin"
+    venv_bin.mkdir(parents=True)
+    base = tmp_path / "usr" / "bin" / "python3.14"
+    base.parent.mkdir(parents=True)
+    base.write_text("")
+    interp = venv_bin / "python"
+    interp.symlink_to(base)
+
+    assert _path_within(interp, uv_root) is False  # the resolving check misses
+    assert _path_within_lexical(interp, uv_root) is True
