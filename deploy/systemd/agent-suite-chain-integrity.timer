@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly full cairn chain replay; records the verdict doctor reports (timer)
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -18,6 +18,9 @@ from agent_suite.schedule import (
     ScheduleKind,
     ScheduleReport,
     ScheduleResult,
+    _systemd_service,
+    _systemd_timer,
+    _windows_task_script,
     format_schedule_report,
     generate_schedule_files,
     install_schedules,
@@ -249,3 +252,54 @@ def test_format_schedule_report() -> None:
     assert "systemd" in text
     assert "backup-verify" in text
     assert "installed" in text
+
+
+def test_chain_integrity_schedule_is_declared():
+    """cairn WI-030: the full chain replay is a scheduled operation, weekly to
+    match cairn's default verdict staleness window (168h), and its failure
+    path closes through the hourly DOCTOR_ALERT schedule."""
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.CHAIN_INTEGRITY)
+    assert spec.command == "cairn integrity"
+    assert spec.on_calendar == "weekly"
+    assert spec.windows_trigger == "WEEKLY"
+    assert spec.name == "agent-suite-chain-integrity"
+
+
+def test_windows_weekly_trigger_includes_days_of_week():
+    """New-ScheduledTaskTrigger's Weekly parameter set makes -DaysOfWeek
+    mandatory; a bare -Weekly dies non-interactively (review round 1 M1)."""
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.CHAIN_INTEGRITY)
+    script = _windows_task_script(spec)
+    assert "-Weekly -DaysOfWeek" in script
+    daily = next(s for s in SCHEDULES if s.kind is ScheduleKind.BACKUP_VERIFY)
+    assert "-Daily -At 2am" in _windows_task_script(daily)
+
+
+def test_chain_integrity_unit_pins_shared_verdict_dir():
+    """The timer runs as root while doctors run as humans: without a shared
+    CAIRN_INTEGRITY_DIR every human-run doctor reads its own empty state
+    home and reports never_run forever (review round 1 M2). Environment=
+    renders before EnvironmentFile so suite.env still overrides."""
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.CHAIN_INTEGRITY)
+    unit = _systemd_service(spec)
+    env_pos = unit.index("Environment=CAIRN_INTEGRITY_DIR=/var/lib/agent-suite/cairn")
+    file_pos = unit.index("EnvironmentFile=")
+    assert env_pos < file_pos
+
+
+def test_deploy_reference_copies_match_generator_output():
+    """docs/operating-the-suite.md promises the reference copies in deploy/
+    are identical to what `schedule install` generates — enforce it."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    for spec in SCHEDULES:
+        assert (repo / "deploy/systemd" / f"{spec.name}.service").read_text() == (
+            _systemd_service(spec)
+        ), spec.name
+        assert (repo / "deploy/systemd" / f"{spec.name}.timer").read_text() == (
+            _systemd_timer(spec)
+        ), spec.name
+        assert (repo / "deploy/windows" / f"{spec.name}.ps1").read_text() == (
+            _windows_task_script(spec)
+        ), spec.name

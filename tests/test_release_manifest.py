@@ -626,6 +626,25 @@ def test_collect_wheel_artifacts_finds_wheels(tmp_path: Path) -> None:
     assert "agent-notes" not in result
 
 
+def test_collect_wheel_artifacts_matches_published_distribution_names(
+    tmp_path: Path,
+) -> None:
+    """Real distributions carry suffixed or renamed dist names
+    (regista-hraedon, cairn for agent-provenance) — matching must go
+    through Component.distribution_names, not the ident (Gate 2 fix)."""
+    wheels_dir = tmp_path / "wheels"
+    wheels_dir.mkdir()
+    (wheels_dir / "regista_hraedon-0.5.1-py3-none-any.whl").write_bytes(b"w1")
+    (wheels_dir / "cairn-0.1.0-py3-none-any.whl").write_bytes(b"w2")
+    (wheels_dir / "agent_notes_hraedon-1.0.0-py3-none-any.whl").write_bytes(b"w3")
+
+    lock = _build_lock()
+    result = collect_wheel_artifacts(wheels_dir, lock)
+    assert result["regista"][0] == "regista_hraedon-0.5.1-py3-none-any.whl"
+    assert result["agent-provenance"][0] == "cairn-0.1.0-py3-none-any.whl"
+    assert result["agent-notes"][0] == "agent_notes_hraedon-1.0.0-py3-none-any.whl"
+
+
 def test_verify_manifest_against_wheels_passes(tmp_path: Path) -> None:
     """A manifest with correct wheel hashes verifies cleanly."""
     wheels_dir = tmp_path / "wheels"
