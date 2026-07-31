@@ -1,7 +1,10 @@
 [project]
 name = "agent-suite"
-version = "0.0.1"
-description = "Deploy the agent suite as one system: bootstrap, compatibility lock, and health umbrella over regista + its faces."
+# Single-sourced from src/agent_suite/__init__.py, which is identity-checked
+# against data/release-board.json's release (WI-035). Do not re-add a literal
+# version here: two sources of the release identity is exactly the defect.
+dynamic = ["version"]
+description ="Deploy the agent suite as one system: bootstrap, compatibility lock, and health umbrella over regista + its faces."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -23,8 +26,14 @@ windows-full = ["agent-suite[windows]", "agent-suite[azure]"]  # all Windows dep
 agent-suite = "agent_suite.cli:main"
 
 [build-system]
-requires = ["hatchling"]
+# Pinned exactly (WI-035): the PEP 517 backend is part of the wheel's byte
+# identity, so an unpinned backend means two builds of the same source can
+# produce different bytes and therefore different manifest wheel hashes.
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/agent_suite/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_suite"]

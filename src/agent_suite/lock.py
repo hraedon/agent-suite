@@ -47,13 +47,14 @@ def _is_valid_sha(value: str) -> bool:
 def _suite_release() -> str:
     """Derive the suite release identity.
 
-    The agent-suite package is at 0.0.1 in pyproject (pre-1.0 development),
-    but the suite's actual release identity is declared in
-    ``data/release-board.json`` (currently ``"1.0.0-dev"``). The lock's
-    ``release`` field is a release identity, not a package version: it must
-    agree with the release board so the two artifacts don't drift. Prefer
-    the declared release; fall back to the package version; finally fall
-    back to ``"0.0.1"`` when neither is available.
+    The suite's release identity is declared in ``data/release-board.json``
+    (currently ``"1.0.0-dev"``). The lock's ``release`` field is a release
+    identity, not a package version: it must agree with the release board so
+    the two artifacts don't drift. Prefer the declared release; fall back to
+    the installed package version (which since WI-035 is the PEP 440 form of
+    that same identity, so the fallback is a grammar change at worst, not a
+    different fact); finally fall back to ``"0.0.0"`` when neither is
+    available.
     """
     try:
         release_path = Path(__file__).resolve().parents[2] / "data" / "release-board.json"
@@ -68,11 +69,11 @@ def _suite_release() -> str:
         from importlib.metadata import version
 
         pkg_version = version("agent-suite")
-        if pkg_version and pkg_version != "0.0.1":
+        if pkg_version:
             return pkg_version
     except Exception:
         pass
-    return "0.0.1"
+    return "0.0.0"
 
 
 class VersionRunner(Protocol):

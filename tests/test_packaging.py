@@ -593,3 +593,145 @@ def test_conformance_wheel_from_sdist_isolated_release_path(tmp_path: Path) -> N
     wheels = list(out.glob("agent_suite_conformance-*.whl"))
     assert len(wheels) == 1, f"expected exactly one wheel, got {wheels}"
     _assert_namespace_layout(_wheel_source_names(wheels[0]), "wheel (isolated release path)")
+
+
+# ---------------------------------------------------------------------------
+# Umbrella release identity (WI-035)
+#
+# The umbrella wheel used a static ``0.0.1`` while releases were cut as
+# ``1.0.0-rc.N``, so every release attached an identically named wheel with
+# different contents. These tests make the identity mechanical: the wheel
+# version is the PEP 440 form of the release board's release, and there is
+# exactly one place it is written down.
+# ---------------------------------------------------------------------------
+
+
+def test_pyproject_version_is_dynamic_and_single_sourced() -> None:
+    """No literal version in pyproject — two sources of the identity is the bug."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    project = data["project"]
+    assert "version" not in project, (
+        "pyproject must not carry a literal version; it is single-sourced from "
+        "src/agent_suite/__init__.py (WI-035)"
+    )
+    assert project["dynamic"] == ["version"]
+    assert data["tool"]["hatch"]["version"]["path"] == "src/agent_suite/__init__.py"
+
+
+def test_build_backend_is_pinned_exactly() -> None:
+    """An unpinned PEP 517 backend means unreproducible wheel bytes (WI-035)."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    requires = data["build-system"]["requires"]
+    assert requires, "build-system.requires must not be empty"
+    for req in requires:
+        assert "==" in req, (
+            f"build-system requirement {req!r} is not pinned exactly; the backend "
+            "is part of the wheel's byte identity"
+        )
+
+
+def test_umbrella_version_is_the_declared_release_identity() -> None:
+    """``__version__`` must be the PEP 440 form of the declared release.
+
+    This is the enforcement: cutting 1.0.0-rc.3 fails this test until the
+    umbrella wheel version is bumped with it, so two releases can never attach
+    an identically named umbrella wheel with different contents.
+
+    The declared release is read through ``check_release_identity``, which uses
+    the canonical accessor WI-037 established — not a fourth hand-edited copy.
+    """
+    from agent_suite.release_artifacts import (
+        check_release_identity,
+        format_release_identity,
+    )
+
+    identity = check_release_identity()
+    assert identity.ok, format_release_identity(identity)
+
+
+def test_release_identity_check_rejects_a_mismatched_tag() -> None:
+    """A genuine deny case: the CI gate must red a tag naming another release."""
+    from agent_suite.release_artifacts import check_release_identity
+
+    identity = check_release_identity("v0.0.0-not-the-release")
+    assert not identity.ok
+    assert any("does not name the declared release" in p for p in identity.problems)
+    # And the remediation names every file that must move together.
+    joined = " ".join(identity.problems)
+    assert "release-board.json" in joined
+    assert "support-matrix.json" in joined
+    assert "__init__.py" in joined
+
+
+def test_release_identity_check_accepts_the_declared_tag() -> None:
+    from agent_suite.release_artifacts import check_release_identity
+
+    identity = check_release_identity()
+    assert check_release_identity(identity.expected_tag).ok
+
+
+def test_built_wheel_carries_the_dunder_version(tmp_path: Path) -> None:
+    """The dynamic-version hook must actually be wired up.
+
+    Asserted by *building*, not by reading installed metadata: an editable
+    install's recorded version is whatever it was at install time, so an
+    installed-metadata assertion reds in any dev tree between a version bump and
+    the next reinstall — a false failure that says nothing about the invariant
+    (WI-036 review MINOR-6).
+    """
+    import agent_suite
+
+    out = tmp_path / "dist"
+    subprocess.run(
+        [sys.executable, "-m", "build", "--wheel", "--outdir", str(out), str(REPO_ROOT)],
+        check=True,
+        capture_output=True,
+    )
+    wheels = list(out.glob("agent_suite-*.whl"))
+    assert len(wheels) == 1, f"expected exactly one umbrella wheel, got {wheels}"
+    assert wheels[0].name == f"agent_suite-{agent_suite.__version__}-py3-none-any.whl"
+
+
+@pytest.mark.parametrize(
+    ("release", "expected"),
+    [
+        ("1.0.0", "1.0.0"),
+        ("1.0.0-dev", "1.0.0.dev0"),
+        ("1.0.0-dev.3", "1.0.0.dev3"),
+        ("1.0.0-rc.2", "1.0.0rc2"),
+        ("1.0.0-alpha.1", "1.0.0a1"),
+        ("1.0.0-beta.10", "1.0.0b10"),
+        ("2.11.4", "2.11.4"),
+    ],
+)
+def test_pep440_release_version_translates_the_grammar(
+    release: str, expected: str
+) -> None:
+    from agent_suite.release_artifacts import pep440_release_version
+
+    assert pep440_release_version(release) == expected
+
+
+@pytest.mark.parametrize(
+    "release",
+    ["", "1.0", "1.0.0-rc", "1.0.0.rc2", "v1.0.0", "1.0.0-preview.1", "1.0.0-rc.x"],
+)
+def test_pep440_release_version_refuses_unknown_grammar(release: str) -> None:
+    """An unrecognized release identity must stop a release, not be guessed at."""
+    from agent_suite.release_artifacts import pep440_release_version
+
+    with pytest.raises(ValueError, match="not in the suite's grammar"):
+        pep440_release_version(release)
+
+
+def test_suite_lock_release_matches_the_umbrella_wheel_version() -> None:
+    """SUITE.lock's release identity and the wheel version are one fact.
+
+    Complements WI-037's board-vs-matrix and the existing matrix-vs-lock tests,
+    closing the chain: board == matrix == SUITE.lock == PEP 440 wheel version.
+    """
+    import agent_suite
+    from agent_suite.release_artifacts import pep440_release_version
+
+    lock_data = tomllib.loads((REPO_ROOT / "SUITE.lock").read_text())
+    assert pep440_release_version(lock_data["suite"]["release"]) == agent_suite.__version__
