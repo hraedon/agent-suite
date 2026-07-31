@@ -11,7 +11,14 @@ credential, from where, and what happens when it must die.*
 
 ## 1. Where we are (honest baseline)
 
-- One Vault (`kv/` KV-v2 mount; `approle/` and `kubernetes/` auth enabled).
+- One Vault whose **only** KV mount is `kv/` (KV-v2); `approle/` and
+  `kubernetes/` auth are enabled. There is no `secret/` mount: that is
+  Vault's *dev-mode* default, which an earlier revision of
+  [secrets-vault.md](secrets-vault.md) was written against — those
+  `vault:secret/...` refs never matched the production server. The runbook
+  and `suite.env.example` are reconciled to `vault:kv/...` alongside this
+  document, and the runbook's earlier flat `agent-suite/...` layout is
+  superseded by the per-deployment layout in §3.
   Operated today with a **root token held by the owner** — acceptable for a
   one-operator lab, disqualifying for a team.
 - regista signing keys are **file-backed** on each dev host
@@ -97,9 +104,13 @@ differs by principal type:
 
 Rotation and revocation are **regista lifecycle operations first** (so the
 event chain records them, with dual control), and Vault operations second
-(destroy the KV version / SecretID accessor). `agent-suite offboard`
-performs both and verifies the principal can no longer authenticate *or*
-sign, and that replay flags any post-revocation use.
+(destroy the KV version / SecretID accessor). Today's `agent-suite offboard`
+(multi-user-onboarding.md §6) revokes regista keys, deletes the custodied
+key ref, and removes the overlay; **it must be extended** to also destroy
+the principal's AppRole SecretID accessor and to assert both
+authentication and signing now fail (with replay flagging any
+post-revocation use) — that extension is part of the multi-user
+lifecycle exercise, not yet shipped behavior.
 
 ## 5. Bootstrap trust — how a new host/principal gets its first secret
 
@@ -109,8 +120,10 @@ sign, and that replay flags any post-revocation use.
 2. Vault issues the new AppRole's SecretID **response-wrapped**
    (`-wrap-ttl=15m`, single unwrap). The wrapping token travels to the new
    host over SSH/WinRM as part of bootstrap; the host unwraps it exactly
-   once. A failed/expired unwrap is visible in Vault's audit log and the
-   onboarding is re-run — a *second* unwrap attempt is the tamper signal.
+   once — single-use is a property of the wrapping mechanism itself, not
+   an added guarantee. A failed/expired unwrap is an ordinary error: the
+   onboarding is re-run, and the audit log shows whether the original
+   wrapping token was consumed by someone else in the interim.
 3. The host writes only `{role_id, unwrapped secret_id}` to its local
    plane file (0600) and exchanges them for short-lived tokens from then
    on.
@@ -120,9 +133,12 @@ sign, and that replay flags any post-revocation use.
 - Every `vault:` ref in the host's `suite.env` **resolves end-to-end** at
   bootstrap and at doctor time (a ref that is set-but-unresolvable is a
   fail, not a warn — closes the §1 latent bug class).
-- The host operates with **no `VAULT_TOKEN` in its environment** — AppRole
-  only (guards against the ambient-token class of bug found in the acb
-  Plan-009 review).
+- A production/AppRole host operates with **no `VAULT_TOKEN` in its
+  environment** — AppRole only (guards against the ambient-token class of
+  bug found in the acb Plan-009 review). Dev-mode installs per
+  [secrets-vault.md](secrets-vault.md) §2 legitimately use `VAULT_TOKEN`;
+  the check is scoped to hosts whose suite.env declares AppRole
+  credentials.
 - Cross-principal isolation: principal A's token cannot read principal
   B's `signing-key` path (negative test, asserted).
 - Revocation: after `agent-suite offboard`, the principal's AppRole login
@@ -132,8 +148,9 @@ sign, and that replay flags any post-revocation use.
 ## 7. Migration from the current estate (phased, per host)
 
 1. Stand up the layout + policies + AppRoles under
-   `kv/agent-suite/prod/` using the root token **once** (scripted,
-   reviewed; the script is idempotent and lives in `scripts/`).
+   `kv/agent-suite/prod/` using the root token **once**, via an
+   idempotent, reviewed script in `scripts/` — **a follow-up deliverable
+   of this document**, not yet in the tree.
 2. Move the shared DSN password and each host's cairn content key into the
    layout; fix `suite.env` refs to the canonical `vault:kv/...` form.
 3. Per host: issue the host AppRole (response-wrapped), switch `suite.env`

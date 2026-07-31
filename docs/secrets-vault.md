@@ -42,7 +42,7 @@ Stand up a Vault cluster per the
 then enable KV v2 and create an AppRole for the suite:
 
 ```bash
-vault secrets enable -path=secret kv-v2
+vault secrets enable -path=kv kv-v2
 
 vault auth enable approle
 vault write auth/approle/role/agent-suite \
@@ -68,7 +68,7 @@ Rotate `secret_id` per your organizational policy — see
 The password for the `DB-SERVICE-ACCOUNT` Postgres role:
 
 ```bash
-vault kv put secret/agent-suite/regista \
+vault kv put kv/agent-suite/regista \
   dsn_password="<the DB-SERVICE-ACCOUNT role password>"
 ```
 
@@ -78,17 +78,17 @@ The key regista uses for synthetic/migration events (the system principal —
 see the [threat model](key-custody-threat-model.md) §1.1):
 
 ```bash
-vault kv put secret/agent-suite/regista \
+vault kv put kv/agent-suite/regista \
   signing_key="<Ed25519 private key, base64>"
 ```
 
 ### Per-principal signing keys
 
 Each human and agent principal gets a key at a distinct path
-(`secret/agent-suite/principals/<principal_id>`):
+(`kv/agent-suite/principals/<principal_id>`):
 
 ```bash
-vault kv put secret/agent-suite/principals/<principal_id> \
+vault kv put kv/agent-suite/principals/<principal_id> \
   key="<Ed25519 private key, base64>"
 ```
 
@@ -103,8 +103,8 @@ In the system `suite.env` (`/etc/agent-suite/suite.env` on Linux,
 
 ```env
 REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista
-REGISTA_DSN_PASSWORD=vault:secret/agent-suite/regista#dsn_password
-REGISTA_KEY_PATH=vault:secret/agent-suite/regista#signing_key
+REGISTA_DSN_PASSWORD=vault:kv/agent-suite/regista#dsn_password
+REGISTA_KEY_PATH=vault:kv/agent-suite/regista#signing_key
 REGISTA_REQUIRE_SSL=true
 ```
 
@@ -115,15 +115,15 @@ file**. Compare with [`suite.env.example`](../suite.env.example), which carries
 placeholders only.
 
 Per-principal key paths are resolved by dossier at sign time
-(`vault:secret/agent-suite/principals/<principal_id>#key`) and are not stored
+(`vault:kv/agent-suite/principals/<principal_id>#key`) and are not stored
 in the system `suite.env` — they are looked up by `principal_id` from the
 authenticated session.
 
 ## 5. How resolution works
 
-`regista.secrets.resolve("vault:secret/agent-suite/regista#signing_key")`:
+`regista.secrets.resolve("vault:kv/agent-suite/regista#signing_key")`:
 
-1. Parses the `vault:` scheme, the KV path (`secret/agent-suite/regista`),
+1. Parses the `vault:` scheme, the KV path (`kv/agent-suite/regista`),
    and the field (`signing_key`).
 2. Authenticates to Vault via the configured AppRole (production) or static
    token (dev).
