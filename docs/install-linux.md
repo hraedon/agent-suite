@@ -105,6 +105,25 @@ A component that isn't installed is reported as `absent` (not a failure —
 Tier 2 may not be deployed). A component that's installed but unreachable is a
 failure. See the [bootstrap contract](bootstrap-contract.md) §3.
 
+On a host deployed from release wheels, add the release manifest so the doctor
+verifies the artifacts instead of trusting their version strings — a wheel
+install carries no VCS revision, so the manifest is the only thing it can be
+checked against:
+
+```bash
+agent-suite doctor --exit-code --profile B \
+  --release-manifest release-manifest.json \
+  --artifact-wheels-dir ./wheels          # keep the release wheels: they unlock
+                                          # the full manifest -> installed-files
+                                          # hash chain
+```
+
+`--profile X` also scopes the verdict to profile X's required components, so
+plumbing the host was never asked to run does not red an otherwise-healthy
+deployment (it is still reported, under `profile_scope.excluded_failures`). See
+the [bootstrap contract](bootstrap-contract.md) §3.1-§3.2 and
+[release manifest](release-manifest.md).
+
 ## 6. Verify the compatibility lock
 
 ```bash

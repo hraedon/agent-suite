@@ -106,6 +106,58 @@ intentional local source with `--codex-marketplace` or
 `AGENT_SUITE_CODEX_MARKETPLACE`. A same-name plugin from any other marketplace
 never satisfies the pin.
 
+### 3.1 `--profile` scopes the verdict (WI-036)
+
+Without `--profile`, **every** installed-but-broken component reds `suite_ok`.
+That is the right default for a host with no declared profile, but it means a
+Profile-B host that happens to have C-tier plumbing installed-but-unconfigured
+can never be green, no matter how healthy its Profile-B contract is.
+
+With `--profile X`, `suite_ok` is decided over `PROFILE_REQUIREMENTS[X]` only:
+
+- A **required** component that is failed, unreachable, absent, or
+  not-configured reds the verdict. Absence counts here — the operator declared
+  the profile, so its requirements are the contract (this is stricter than the
+  unscoped rule, which only fails on absence for the spine).
+- A component **outside** the profile never reds the verdict. It is still
+  probed and still reported with its true status; it is additionally named in
+  `profile_scope.excluded_failures`. Scoping the verdict is not hiding the
+  state — the JSON and text both say exactly which failures were excluded and
+  why.
+
+```
+profile_scope: { profile, required[], in_profile_failures[], excluded_failures[] }
+```
+
+The same host is therefore green at `--profile B` and red at `--profile C` when
+its C-tier plumbing is broken, which is the honest answer to two different
+questions. `--profile` remains additive: it also emits
+`profile_classification` (the *detected* profile), so the report shows both
+what the host is and what it was measured against.
+
+### 3.2 `--release-manifest` attests the installed artifacts (WI-036)
+
+Wheel-installed components carry no VCS revision by construction (PEP 610
+records `archive_info`, not `vcs_info`), so lock checking degrades to a
+version-only comparison — and a version string is a claim, not evidence. Point
+the doctor at the release manifest the host was deployed from to get real
+evidence:
+
+```sh
+agent-suite doctor --exit-code \
+  --release-manifest /path/to/release-manifest.json \
+  --artifact-wheels-dir /path/to/wheels
+```
+
+Both accept an env fallback (`AGENT_SUITE_RELEASE_MANIFEST`,
+`AGENT_SUITE_ARTIFACT_WHEELS_DIR`). Any mismatch makes `suite_ok` false. The
+report names the *strength* of the evidence it could actually reach, and
+whether that strength binds the install to the release identity — see
+`docs/release-manifest.md` § "Attesting an installed artifact" for the ladder
+and for what is not verifiable. `--require-artifact-binding` promotes "no
+cryptographic binding available" from an honestly named gap to a failure; use
+it in platform qualification, not in routine health.
+
 ## 4. The compatibility lock (`SUITE.lock`)
 
 A committed manifest pinning the known-good set:

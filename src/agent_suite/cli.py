@@ -74,6 +74,30 @@ def _build_parser() -> argparse.ArgumentParser:
             "(or AGENT_SUITE_CODEX_MARKETPLACE; default: release marketplace)"
         ),
     )
+    doctor.add_argument(
+        "--release-manifest",
+        help=(
+            "path to the release-manifest.json this host was deployed from "
+            "(or AGENT_SUITE_RELEASE_MANIFEST); attests installed artifacts "
+            "against the manifest's wheel hashes"
+        ),
+    )
+    doctor.add_argument(
+        "--artifact-wheels-dir",
+        help=(
+            "directory holding the release wheels this host installed from "
+            "(or AGENT_SUITE_ARTIFACT_WHEELS_DIR); unlocks the full "
+            "manifest -> wheel bytes -> installed files hash chain"
+        ),
+    )
+    doctor.add_argument(
+        "--require-artifact-binding",
+        action="store_true",
+        help=(
+            "fail when an installed artifact cannot be cryptographically bound "
+            "to the release manifest (platform qualification; off by default)"
+        ),
+    )
     lock = sub.add_parser(
         Command.LOCK.value, help="generate / check the SUITE.lock compatibility manifest"
     )
@@ -397,6 +421,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     rm_verify.add_argument("manifest", help="path to the release-manifest.json file")
     rm_verify.add_argument("--wheels-dir", help="directory containing built wheels")
+    rm_verify.add_argument(
+        "--installed",
+        action="store_true",
+        help=(
+            "attest the artifacts installed on THIS host against the manifest "
+            "instead of (or in addition to) local wheel files"
+        ),
+    )
+    rm_verify.add_argument(
+        "--require-binding",
+        action="store_true",
+        help="with --installed, fail when no cryptographic release binding is available",
+    )
     rm_verify.add_argument("--json", action="store_true", help="emit the result as JSON")
     return parser
 
@@ -454,6 +491,46 @@ def main(argv: list[str] | None = None) -> int:
             shared_endpoints = _shared_endpoints_from_env()
             from agent_suite.config import MemoryProviderConfig
 
+            # WI-036: artifact-era attestation. On a wheel-installed host there
+            # is no VCS revision to compare, so the release manifest is the only
+            # thing an installed artifact can be checked against.
+            manifest_arg = getattr(args, "release_manifest", None) or os.environ.get(
+                "AGENT_SUITE_RELEASE_MANIFEST"
+            )
+            release_manifest_obj = None
+            if manifest_arg:
+                from pathlib import Path as _Path
+
+                from agent_suite.release_manifest import deserialize_manifest
+
+                manifest_path = _Path(manifest_arg).expanduser()
+                try:
+                    release_manifest_obj = deserialize_manifest(
+                        manifest_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, ValueError) as exc:
+                    return emit_error(
+                        "MANIFEST_UNREADABLE",
+                        f"doctor --release-manifest: cannot load {manifest_path}",
+                        detail=str(exc),
+                        json_mode=getattr(args, "json", False),
+                    )
+            wheels_arg = getattr(args, "artifact_wheels_dir", None) or os.environ.get(
+                "AGENT_SUITE_ARTIFACT_WHEELS_DIR"
+            )
+            artifact_wheels_dir = None
+            if wheels_arg:
+                from pathlib import Path as _Path
+
+                artifact_wheels_dir = _Path(wheels_arg).expanduser()
+                if not artifact_wheels_dir.is_dir():
+                    return emit_error(
+                        "WHEELS_DIR_MISSING",
+                        f"doctor --artifact-wheels-dir: {artifact_wheels_dir} "
+                        "is not a directory",
+                        json_mode=getattr(args, "json", False),
+                    )
+
             report = aggregate(
                 verify_restore_dsn=verify_restore_dsn,
                 profile=profile,
@@ -463,6 +540,9 @@ def main(argv: list[str] | None = None) -> int:
                     getattr(args, "codex_marketplace", None)
                     or os.environ.get("AGENT_SUITE_CODEX_MARKETPLACE")
                 ),
+                release_manifest=release_manifest_obj,
+                artifact_wheels_dir=artifact_wheels_dir,
+                require_artifact_binding=getattr(args, "require_artifact_binding", False),
             )
             if getattr(args, "json", False):
                 print(_json.dumps(report.to_dict(), indent=2, default=str))
@@ -1247,6 +1327,7 @@ def main(argv: list[str] | None = None) -> int:
                 ReleaseManifestSubcommand,
                 build_manifest,
                 collect_source_artifacts,
+                collect_umbrella_artifact,
                 collect_wheel_artifacts,
                 deserialize_manifest,
                 format_build_text,
@@ -1259,6 +1340,7 @@ def main(argv: list[str] | None = None) -> int:
                 case ReleaseManifestSubcommand.BUILD:
                     from pathlib import Path
 
+                    from agent_suite import __version__ as agent_suite_version
                     from agent_suite.lock import DEFAULT_LOCK_PATH, load_lock_file
 
                     if not DEFAULT_LOCK_PATH.is_file():
@@ -1308,6 +1390,7 @@ def main(argv: list[str] | None = None) -> int:
                             pass
 
                     wheel_hashes = None
+                    umbrella_wheel = None
                     if args.wheels_dir:
                         wheel_dir = Path(args.wheels_dir)
                         if not wheel_dir.is_dir():
@@ -1318,6 +1401,12 @@ def main(argv: list[str] | None = None) -> int:
                             )
                             return 1
                         wheel_hashes = collect_wheel_artifacts(wheel_dir, lock_obj)
+                        # WI-035: the umbrella wheel is attached to every
+                        # release, so it is hashed like any other artifact
+                        # rather than shipping unattested.
+                        umbrella_wheel = collect_umbrella_artifact(
+                            wheel_dir, agent_suite_version
+                        )
 
                     source_hashes = None
                     if args.sources_dir:
@@ -1339,6 +1428,8 @@ def main(argv: list[str] | None = None) -> int:
                             umbrella_tag_sha=umbrella_tag_sha,
                             wheel_hashes=wheel_hashes,
                             source_archive_hashes=source_hashes,
+                            umbrella_package_version=agent_suite_version,
+                            umbrella_wheel=umbrella_wheel,
                         )
                     except ValueError as exc:
                         print(f"release-manifest build: {exc}", file=sys.stderr)
@@ -1370,6 +1461,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         return 1
 
+                    installed_wheel_dir: Path | None = None
                     if args.wheels_dir:
                         wheel_dir = Path(args.wheels_dir)
                         if not wheel_dir.is_dir():
@@ -1379,8 +1471,39 @@ def main(argv: list[str] | None = None) -> int:
                                 file=sys.stderr,
                             )
                             return 1
+                        installed_wheel_dir = wheel_dir
+
+                    # WI-036: attest what is actually installed on this host.
+                    # Wheels on disk (when present) upgrade the attestation from
+                    # "the install agrees with itself" to the full hash chain.
+                    if getattr(args, "installed", False):
+                        from agent_suite.artifact_attestation import (
+                            format_text as format_attestation_text,
+                        )
+                        from agent_suite.artifact_attestation import (
+                            verify_installed_artifacts,
+                        )
+                        from agent_suite.runtime_provenance import (
+                            read_runtime_provenance,
+                        )
+
+                        attestation = verify_installed_artifacts(
+                            manifest,
+                            read_runtime_provenance(),
+                            wheels_dir=installed_wheel_dir,
+                            require_binding=getattr(args, "require_binding", False),
+                        )
+                        if getattr(args, "json", False):
+                            print(
+                                _json.dumps(attestation.to_dict(), indent=2, default=str)
+                            )
+                        else:
+                            print(format_attestation_text(attestation))
+                        return 0 if attestation.ok else 1
+
+                    if installed_wheel_dir is not None:
                         manifest_verify_result = verify_manifest_against_wheels(
-                            manifest, wheel_dir
+                            manifest, installed_wheel_dir
                         )
                     else:
                         from agent_suite.release_manifest import ManifestVerifyResult

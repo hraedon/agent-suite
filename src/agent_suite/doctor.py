@@ -29,18 +29,26 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol, assert_never
 
-from agent_suite import key_watch, lock, runtime_provenance, verify_restore
+from agent_suite import (
+    artifact_attestation,
+    key_watch,
+    lock,
+    runtime_provenance,
+    verify_restore,
+)
 from agent_suite._redact import redact_url as _redact_url
 from agent_suite.codex_catalog import CODEX_PLUGIN_CATALOG, CodexPluginId, with_marketplace
 from agent_suite.codex_health import CodexHealthReport, check_codex_health, format_codex_health_text
 from agent_suite.components import COMPONENTS, Component, Locality, Tier
 from agent_suite.config import MemoryProviderConfig
 from agent_suite.profiles import (
+    PROFILE_REQUIREMENTS,
     Profile,
     ProfileClassification,
     classify_doctor,
     profile_label,
 )
+from agent_suite.release_manifest import ReleaseManifest
 
 DEFAULT_GLOBAL_DEADLINE: float = 60.0
 
@@ -74,6 +82,17 @@ class Installed(Protocol):
     """Detect whether a component's CLI is installed (matches `shutil.which`)."""
 
     def __call__(self, cli_name: str) -> bool: ...
+
+
+class ProvenanceProbe(Protocol):
+    """Probe full installed-artifact provenance for every component.
+
+    Defaults to
+    :func:`agent_suite.runtime_provenance.read_runtime_provenance`. Injectable
+    so the artifact-attestation path is testable without real installs.
+    """
+
+    def __call__(self) -> dict[str, runtime_provenance.RuntimeProvenance]: ...
 
 
 class RevisionProbe(Protocol):
@@ -263,8 +282,10 @@ class SuiteReport:
     key_rotation: key_watch.KeyRotationResult | None = None
     store_growth: key_watch.StoreGrowthResult | None = None
     profile_classification: ProfileClassification | None = None
+    profile_scope: ProfileScope | None = None
     memory_provider: dict[str, object] | None = None
     codex_health: CodexHealthReport | None = None
+    artifact_attestation: artifact_attestation.ArtifactAttestation | None = None
     duration_ms: float | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -282,10 +303,14 @@ class SuiteReport:
             d["store_growth"] = self.store_growth.to_dict()
         if self.profile_classification is not None:
             d["profile_classification"] = self.profile_classification.to_dict()
+        if self.profile_scope is not None:
+            d["profile_scope"] = self.profile_scope.to_dict()
         if self.memory_provider is not None:
             d["memory_provider"] = self.memory_provider
         if self.codex_health is not None:
             d["codex_health"] = self.codex_health.to_dict()
+        if self.artifact_attestation is not None:
+            d["artifact_attestation"] = self.artifact_attestation.to_dict()
         return d
 
 
@@ -457,24 +482,85 @@ def _check_one(
     )
 
 
-def _compute_suite_ok(reports: list[ComponentReport]) -> bool:
-    # Any installed-but-broken component fails the suite (contract: installed but
-    # unreachable is a failure). The `assert_never` in the default arm keeps the
-    # status enum closed — a newly added status can't slip through ungated.
+@dataclass(frozen=True)
+class ProfileScope:
+    """How a ``--profile X`` verdict was scoped (WI-036).
+
+    ``required`` is profile X's required component set. ``in_profile_failures``
+    are required components that are not healthy — those red the verdict.
+    ``excluded_failures`` are components *outside* the profile that are
+    unhealthy: still reported per-component with their real status, but
+    deliberately not counted against ``suite_ok``, because a Profile-B host is
+    not answerable for C-tier plumbing it was never asked to run.
+    """
+
+    profile: Profile
+    required: tuple[str, ...]
+    in_profile_failures: tuple[str, ...]
+    excluded_failures: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "profile": self.profile.value,
+            "required": list(self.required),
+            "in_profile_failures": list(self.in_profile_failures),
+            "excluded_failures": list(self.excluded_failures),
+        }
+
+
+def _status_is_unhealthy(status: ComponentStatus) -> bool:
+    """Installed but broken. `assert_never` keeps the status enum closed."""
+    match status:
+        case ComponentStatus.UNREACHABLE | ComponentStatus.FAILED:
+            return True
+        case (
+            ComponentStatus.OK
+            | ComponentStatus.DEGRADED
+            | ComponentStatus.ABSENT
+            | ComponentStatus.REMOTE
+            | ComponentStatus.NOT_CONFIGURED
+        ):
+            return False
+        case other:
+            assert_never(other)
+
+
+def _compute_suite_ok(
+    reports: list[ComponentReport],
+    *,
+    required: frozenset[str] | None = None,
+) -> bool:
+    """Fold per-component health into the top-level verdict.
+
+    Unscoped (``required is None``) any installed-but-broken component fails
+    the suite (contract: installed but unreachable is a failure).
+
+    When ``required`` is given (``--profile X``), the verdict is scoped to that
+    set: a required component that is broken *or absent* is red (that is what
+    "required" means), and a component outside the set never reds the verdict
+    — it is reported honestly and named as out-of-profile instead. Scoping the
+    verdict is not the same as hiding the state.
+    """
     for r in reports:
-        match r.status:
-            case ComponentStatus.UNREACHABLE | ComponentStatus.FAILED:
-                return False
-            case (
-                ComponentStatus.OK
-                | ComponentStatus.DEGRADED
-                | ComponentStatus.ABSENT
-                | ComponentStatus.REMOTE
-                | ComponentStatus.NOT_CONFIGURED
-            ):
-                continue
-            case other:
-                assert_never(other)
+        if not _status_is_unhealthy(r.status):
+            continue
+        if required is None or r.component in required:
+            return False
+
+    if required is not None:
+        # A required component that is absent or unconfigured is red: the
+        # operator declared the profile, so its requirements are the contract.
+        if any(
+            r.component in required
+            and r.status in (ComponentStatus.ABSENT, ComponentStatus.NOT_CONFIGURED)
+            for r in reports
+        ):
+            return False
+        # A required component with no report at all is equally red.
+        reported = {r.component for r in reports}
+        if required - reported:
+            return False
+        return True
 
     # Spine absent => no functioning suite.
     if any(r.tier is Tier.SPINE and r.status is ComponentStatus.ABSENT for r in reports):
@@ -487,6 +573,30 @@ def _compute_suite_ok(reports: list[ComponentReport]) -> bool:
         return False
 
     return True
+
+
+def _profile_scope(reports: list[ComponentReport], profile: Profile) -> ProfileScope:
+    """Describe how ``profile`` scopes the verdict over ``reports``."""
+    required = PROFILE_REQUIREMENTS[profile]
+    unhealthy = {
+        r.component
+        for r in reports
+        if _status_is_unhealthy(r.status)
+        or r.status in (ComponentStatus.ABSENT, ComponentStatus.NOT_CONFIGURED)
+    }
+    reported = {r.component for r in reports}
+    return ProfileScope(
+        profile=profile,
+        required=tuple(sorted(required)),
+        in_profile_failures=tuple(sorted((unhealthy & required) | (required - reported))),
+        excluded_failures=tuple(
+            sorted(
+                r.component
+                for r in reports
+                if r.component not in required and _status_is_unhealthy(r.status)
+            )
+        ),
+    )
 
 
 _MEMORY_PROVIDER_DOCTOR_CMD: tuple[str, ...] = (
@@ -587,6 +697,10 @@ def aggregate(
     codex_marketplace: str | None = None,
     lock_checks: bool = True,
     probe_deadline: float = DEFAULT_GLOBAL_DEADLINE,
+    release_manifest: ReleaseManifest | None = None,
+    artifact_wheels_dir: Path | None = None,
+    require_artifact_binding: bool = False,
+    provenance_probe: ProvenanceProbe | None = None,
 ) -> SuiteReport:
     """Run each component's doctor and fold into one umbrella report.
 
@@ -623,7 +737,25 @@ def aggregate(
     When ``profile`` is set (Plan 008 WI-0.1), the doctor classifies the
     installation against the profile matrix and attaches the result as
     ``profile_classification``. The classification reports the detected profile,
-    any missing required components, and any extra optional components.
+    any missing required components, and any extra optional components. It also
+    **scopes the verdict** (WI-036): ``suite_ok`` is decided over the profile's
+    required components only, and ``profile_scope.excluded_failures`` names the
+    out-of-profile components whose failure was deliberately not counted. A
+    Profile-B host with unconfigured C-tier plumbing can therefore be green;
+    an in-profile component that is broken or absent still reds the verdict.
+
+    When ``release_manifest`` is provided (WI-036), the doctor attests the
+    installed artifacts against it via
+    :func:`agent_suite.artifact_attestation.verify_installed_artifacts` and
+    attaches the result as ``artifact_attestation``. Any mismatch (wrong
+    version, wrong wheel filename, a modified installed file) makes
+    ``suite_ok`` False. ``artifact_wheels_dir`` points at the release wheels
+    the deployment installed from and unlocks the full manifest → wheel bytes →
+    installed files hash chain; without it the doctor reports the weaker rung
+    it could actually reach rather than claiming the chain.
+    ``require_artifact_binding`` promotes "no cryptographic binding to the
+    release identity" from an honestly named gap to a failure — for platform
+    qualification, not for routine health.
 
     When ``shared_endpoints`` is provided (Plan 004 WI-1.6), shared-service
     components that are not installed locally are checked by endpoint instead of
@@ -756,11 +888,45 @@ def aggregate(
         store_growth = key_watch.check_store_growth(runner=runner, installed=installed)
 
     profile_classification: ProfileClassification | None = None
+    scope: ProfileScope | None = None
     if profile is not None:
         component_statuses = {r.component: r.status.value for r in reports}
         profile_classification = classify_doctor(component_statuses, reference_profile=profile)
+        scope = _profile_scope(reports, profile)
 
-    suite_ok = _compute_suite_ok(reports)
+    attestation: artifact_attestation.ArtifactAttestation | None = None
+    if release_manifest is not None:
+        pprobe: ProvenanceProbe = (
+            provenance_probe
+            if provenance_probe is not None
+            else runtime_provenance.read_runtime_provenance
+        )
+        try:
+            provenance = pprobe()
+        except Exception as exc:  # the doctor must fail closed, never traceback
+            attestation = artifact_attestation.ArtifactAttestation(
+                ok=False,
+                release_tag=release_manifest.release_tag,
+                strength=artifact_attestation.AttestationStrength.NOT_APPLICABLE,
+                components=(),
+                unbound=(),
+                require_binding=require_artifact_binding,
+                note=f"runtime provenance probe failed: {type(exc).__name__}",
+            )
+        else:
+            attestation = artifact_attestation.verify_installed_artifacts(
+                release_manifest,
+                provenance,
+                wheels_dir=artifact_wheels_dir,
+                require_binding=require_artifact_binding,
+            )
+
+    suite_ok = _compute_suite_ok(
+        reports,
+        required=PROFILE_REQUIREMENTS[profile] if profile is not None else None,
+    )
+    if attestation is not None and not attestation.ok:
+        suite_ok = False
     if post_restore is not None and not post_restore.ok:
         suite_ok = False
     if key_rotation is not None and not key_rotation.ok:
@@ -800,8 +966,10 @@ def aggregate(
         key_rotation=key_rotation,
         store_growth=store_growth,
         profile_classification=profile_classification,
+        profile_scope=scope,
         memory_provider=memory_provider,
         codex_health=codex_health,
+        artifact_attestation=attestation,
         duration_ms=round((time.monotonic() - t0) * 1000, 1),
     )
 
@@ -839,6 +1007,18 @@ def format_text(report: SuiteReport) -> str:
         extra = ", ".join(cls.extra_optional) if cls.extra_optional else "(none)"
         lines.append(f"  missing required: {missing}")
         lines.append(f"  extra optional: {extra}")
+    if report.profile_scope is not None:
+        scope = report.profile_scope
+        lines.append("")
+        lines.append(f"verdict scoped to profile {profile_label(scope.profile)}:")
+        lines.append(f"  required: {', '.join(scope.required)}")
+        failing = ", ".join(scope.in_profile_failures) or "(none)"
+        lines.append(f"  in-profile failures (count against the verdict): {failing}")
+        excluded = ", ".join(scope.excluded_failures) or "(none)"
+        lines.append(f"  out-of-profile failures (reported, not counted): {excluded}")
+    if report.artifact_attestation is not None:
+        lines.append("")
+        lines.append(artifact_attestation.format_text(report.artifact_attestation))
     if report.memory_provider is not None:
         mp = report.memory_provider
         engine = str(mp.get("engine", "unknown"))

@@ -612,3 +612,193 @@ def test_doctor_without_profile_has_no_classification(
     assert rc == 0
     parsed = json.loads(buf.getvalue())
     assert "profile_classification" not in parsed
+
+
+# --- doctor artifact attestation flags (WI-036) -------------------------------
+
+
+def _write_manifest(path: Path) -> str:
+    """Write a real (self-SHA-valid) manifest and return its release tag."""
+    from agent_suite.lock import ComponentPin, RegistaVersionQuad, SuiteLock, serialize_lock
+    from agent_suite.release_manifest import build_manifest, serialize_manifest
+
+    lock = SuiteLock(
+        release="1.0.0-dev",
+        regista_quad=RegistaVersionQuad(
+            library_version="0.5.1",
+            schema_version=43,
+            canonical_workflow_version="2",
+            envelope_version=5,
+        ),
+        components={"regista": ComponentPin("hraedon/regista", "0.5.1", "a" * 40)},
+    )
+    manifest = build_manifest(
+        lock=lock,
+        lock_text=serialize_lock(lock),
+        release_tag="v1.0.0-rc.9",
+        umbrella_tag_sha="c" * 40,
+        generated_at="2026-07-31T00:00:00+00:00",
+    )
+    path.write_text(serialize_manifest(manifest), encoding="utf-8")
+    return manifest.release_tag
+
+
+def test_doctor_release_manifest_is_passed_to_aggregate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest_path = tmp_path / "release-manifest.json"
+    tag = _write_manifest(manifest_path)
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    seen: dict[str, object] = {}
+
+    def _fake_aggregate(**kwargs: object) -> doctor_mod.SuiteReport:
+        seen.update(kwargs)
+        return doctor_mod.SuiteReport(suite_ok=True, components=[])
+
+    monkeypatch.setattr(doctor_mod, "aggregate", _fake_aggregate)
+    rc = main(
+        [
+            "doctor",
+            "--release-manifest", str(manifest_path),
+            "--artifact-wheels-dir", str(wheels),
+            "--require-artifact-binding",
+        ]
+    )
+    assert rc == 0
+    manifest = seen["release_manifest"]
+    assert manifest is not None
+    assert getattr(manifest, "release_tag") == tag
+    assert seen["artifact_wheels_dir"] == wheels
+    assert seen["require_artifact_binding"] is True
+
+
+def test_doctor_release_manifest_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest_path = tmp_path / "release-manifest.json"
+    _write_manifest(manifest_path)
+    monkeypatch.setenv("AGENT_SUITE_RELEASE_MANIFEST", str(manifest_path))
+    seen: dict[str, object] = {}
+
+    def _fake_aggregate(**kwargs: object) -> doctor_mod.SuiteReport:
+        seen.update(kwargs)
+        return doctor_mod.SuiteReport(suite_ok=True, components=[])
+
+    monkeypatch.setattr(doctor_mod, "aggregate", _fake_aggregate)
+    assert main(["doctor"]) == 0
+    assert seen["release_manifest"] is not None
+
+
+def test_doctor_unreadable_manifest_is_a_named_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bad = tmp_path / "release-manifest.json"
+    bad.write_text("{not json", encoding="utf-8")
+    _stub_aggregate(monkeypatch, suite_ok=True)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["doctor", "--release-manifest", str(bad), "--json"])
+    assert rc != 0
+    assert "MANIFEST_UNREADABLE" in buf.getvalue()
+
+
+def test_doctor_missing_wheels_dir_is_a_named_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _stub_aggregate(monkeypatch, suite_ok=True)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(
+            [
+                "doctor",
+                "--artifact-wheels-dir", str(tmp_path / "nope"),
+                "--json",
+            ]
+        )
+    assert rc != 0
+    assert "WHEELS_DIR_MISSING" in buf.getvalue()
+
+
+def test_doctor_without_manifest_passes_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def _fake_aggregate(**kwargs: object) -> doctor_mod.SuiteReport:
+        seen.update(kwargs)
+        return doctor_mod.SuiteReport(suite_ok=True, components=[])
+
+    monkeypatch.setattr(doctor_mod, "aggregate", _fake_aggregate)
+    assert main(["doctor"]) == 0
+    assert seen["release_manifest"] is None
+    assert seen["artifact_wheels_dir"] is None
+    assert seen["require_artifact_binding"] is False
+
+
+def test_release_manifest_verify_installed_attests_this_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`release-manifest verify --installed` reports the installed artifacts."""
+    import agent_suite.runtime_provenance as rp_mod
+
+    manifest_path = tmp_path / "release-manifest.json"
+    _write_manifest(manifest_path)
+    monkeypatch.setattr(
+        rp_mod,
+        "read_runtime_provenance",
+        lambda *a, **kw: {
+            "regista": rp_mod.RuntimeProvenance(
+                component="regista",
+                distribution="regista-hraedon",
+                version="9.9.9",  # wrong: the manifest says 0.5.1
+                cli_path="/usr/local/bin/regista",
+                interpreter="/opt/env/bin/python",
+                mode=rp_mod.InstallMode.UV_TOOL,
+                source=rp_mod.ArtifactSource.ARCHIVE,
+            )
+        },
+    )
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(
+            ["release-manifest", "verify", str(manifest_path), "--installed", "--json"]
+        )
+    assert rc == 1
+    parsed = json.loads(buf.getvalue())
+    assert parsed["ok"] is False
+    assert any(
+        "version mismatch" in m
+        for c in parsed["components"]
+        for m in c["mismatches"]
+    )
+
+
+def test_release_manifest_verify_installed_green_when_versions_agree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import agent_suite.runtime_provenance as rp_mod
+
+    manifest_path = tmp_path / "release-manifest.json"
+    _write_manifest(manifest_path)
+    monkeypatch.setattr(
+        rp_mod,
+        "read_runtime_provenance",
+        lambda *a, **kw: {
+            "regista": rp_mod.RuntimeProvenance(
+                component="regista",
+                distribution="regista-hraedon",
+                version="0.5.1",
+                cli_path="/usr/local/bin/regista",
+                interpreter="/opt/env/bin/python",
+                mode=rp_mod.InstallMode.UV_TOOL,
+                source=rp_mod.ArtifactSource.ARCHIVE,
+            )
+        },
+    )
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["release-manifest", "verify", str(manifest_path), "--installed"])
+    assert rc == 0
+    out = buf.getvalue()
+    assert "artifact attestation: ok" in out
+    # ... and it is explicit that this is NOT a release-identity binding.
+    assert "unbound" in out

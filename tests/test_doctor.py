@@ -986,3 +986,302 @@ def test_codex_health_failure_does_not_affect_suite_ok() -> None:
     assert report.codex_health is not None
     assert report.codex_health.ok is False
     assert report.suite_ok is True
+
+
+# --- profile-scoped verdict (WI-036) ------------------------------------------
+
+
+def _fail_json(component: str, version: str = "1.0.0") -> str:
+    return json.dumps(
+        {
+            "component": component,
+            "version": version,
+            "ok": False,
+            "detail": "installed but unconfigured",
+            "checks": [{"name": "config", "status": "fail", "detail": "no config file"}],
+        }
+    )
+
+
+def _aggregate_with_profile(
+    tmp_path: Path,
+    *,
+    outputs: Mapping[str, str],
+    profile: Profile | None,
+    installed: Callable[[str], bool] | None = None,
+) -> SuiteReport:
+    return aggregate(
+        installed=installed if installed is not None else _installed_all(),
+        runner=_runner_for(outputs),
+        lock_path=tmp_path / "SUITE.lock",
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+        memory_provider_checks=False,
+        codex_health_checks=False,
+        profile=profile,
+    )
+
+
+def _outputs_with_c_tier_failing() -> dict[str, str]:
+    """The observed mvmcc03 shape: C-tier plumbing installed but unconfigured."""
+    c_tier = {"acb", "agent-wake"}
+    return {
+        c.doctor_cmd[0]: (
+            _fail_json(c.ident) if c.doctor_cmd[0] in c_tier else _ok_json(c.ident)
+        )
+        for c in COMPONENTS
+    }
+
+
+def test_profile_b_scopes_out_failing_c_tier_components(tmp_path: Path) -> None:
+    """A Profile-B host is not answerable for C-tier plumbing it wasn't asked to run."""
+    report = _aggregate_with_profile(
+        tmp_path, outputs=_outputs_with_c_tier_failing(), profile=Profile.B
+    )
+    assert report.suite_ok is True
+    assert report.profile_scope is not None
+    assert report.profile_scope.profile is Profile.B
+    assert report.profile_scope.in_profile_failures == ()
+    assert report.profile_scope.excluded_failures == (
+        "agent-capability-broker",
+        "agent-wake",
+    )
+    # Scoping the verdict is not hiding the state: the statuses stay honest.
+    failing = {r.component for r in report.components if r.status is ComponentStatus.FAILED}
+    assert failing == {"agent-capability-broker", "agent-wake"}
+
+
+def test_unscoped_verdict_still_reds_on_any_failing_component(tmp_path: Path) -> None:
+    report = _aggregate_with_profile(
+        tmp_path, outputs=_outputs_with_c_tier_failing(), profile=None
+    )
+    assert report.suite_ok is False
+    assert report.profile_scope is None
+
+
+def test_profile_c_counts_the_same_failures(tmp_path: Path) -> None:
+    """The same host at Profile C is red — agent-wake is required there."""
+    report = _aggregate_with_profile(
+        tmp_path, outputs=_outputs_with_c_tier_failing(), profile=Profile.C
+    )
+    assert report.suite_ok is False
+    assert report.profile_scope is not None
+    assert report.profile_scope.in_profile_failures == (
+        "agent-capability-broker",
+        "agent-wake",
+    )
+    assert report.profile_scope.excluded_failures == ()
+
+
+def test_in_profile_failure_still_reds_a_scoped_verdict(tmp_path: Path) -> None:
+    """Scoping must not smooth an in-profile failure."""
+    outputs = {
+        c.doctor_cmd[0]: (
+            _fail_json(c.ident) if c.ident == "agent-notes" else _ok_json(c.ident)
+        )
+        for c in COMPONENTS
+    }
+    report = _aggregate_with_profile(tmp_path, outputs=outputs, profile=Profile.B)
+    assert report.suite_ok is False
+    assert report.profile_scope is not None
+    assert report.profile_scope.in_profile_failures == ("agent-notes",)
+
+
+def test_absent_in_profile_component_reds_a_scoped_verdict(tmp_path: Path) -> None:
+    """A required component that isn't there fails the profile it was required by."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = _aggregate_with_profile(
+        tmp_path,
+        outputs=outputs,
+        profile=Profile.B,
+        installed=lambda name: name != "agent-notes",
+    )
+    assert report.suite_ok is False
+    assert report.profile_scope is not None
+    assert "agent-notes" in report.profile_scope.in_profile_failures
+
+
+def test_profile_a_ignores_an_unconfigured_shared_service(tmp_path: Path) -> None:
+    """dossier is required at B/C but not at A, so NOT_CONFIGURED is fine at A."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = _aggregate_with_profile(
+        tmp_path,
+        outputs=outputs,
+        profile=Profile.A,
+        installed=lambda name: name != "dossier",
+    )
+    assert report.suite_ok is True
+    b_report = _aggregate_with_profile(
+        tmp_path,
+        outputs=outputs,
+        profile=Profile.B,
+        installed=lambda name: name != "dossier",
+    )
+    assert b_report.suite_ok is False
+    assert b_report.profile_scope is not None
+    assert "dossier" in b_report.profile_scope.in_profile_failures
+
+
+def test_profile_scope_is_in_json_and_text(tmp_path: Path) -> None:
+    report = _aggregate_with_profile(
+        tmp_path, outputs=_outputs_with_c_tier_failing(), profile=Profile.B
+    )
+    d = report.to_dict()
+    assert "profile_scope" in d
+    scope = d["profile_scope"]
+    assert isinstance(scope, dict)
+    assert scope["profile"] == "B"
+    assert scope["excluded_failures"] == ["agent-capability-broker", "agent-wake"]
+    text = format_text(report)
+    assert "verdict scoped to profile B (Team workflow)" in text
+    assert "out-of-profile failures (reported, not counted): " in text
+
+
+def test_profile_scope_absent_without_profile(tmp_path: Path) -> None:
+    report = _aggregate_with_profile(
+        tmp_path, outputs=_outputs_with_c_tier_failing(), profile=None
+    )
+    assert "profile_scope" not in report.to_dict()
+
+
+def test_compute_suite_ok_scoped_handles_every_status() -> None:
+    """The scoped path must handle every status without hitting assert_never."""
+    for status in ComponentStatus:
+        report = ComponentReport(
+            component="regista", tier=Tier.SPINE, status=status, ok=False
+        )
+        assert isinstance(
+            _compute_suite_ok([report], required=frozenset({"regista"})), bool
+        )
+        assert isinstance(_compute_suite_ok([report], required=frozenset()), bool)
+
+
+# --- artifact attestation wiring (WI-036) ------------------------------------
+
+
+def _stub_manifest() -> object:
+    from agent_suite.lock import ComponentPin, RegistaVersionQuad, SuiteLock, serialize_lock
+    from agent_suite.release_manifest import build_manifest
+
+    lock = SuiteLock(
+        release="1.0.0-dev",
+        regista_quad=RegistaVersionQuad(
+            library_version="0.5.1",
+            schema_version=43,
+            canonical_workflow_version="2",
+            envelope_version=5,
+        ),
+        components={"regista": ComponentPin("hraedon/regista", "1.0.0", "a" * 40)},
+    )
+    return build_manifest(
+        lock=lock,
+        lock_text=serialize_lock(lock),
+        release_tag="v1.0.0-rc.9",
+        umbrella_tag_sha="c" * 40,
+        wheel_hashes={"regista": ("regista_hraedon-1.0.0-py3-none-any.whl", "d" * 64)},
+        generated_at="2026-07-31T00:00:00+00:00",
+    )
+
+
+def _artifact_report(
+    tmp_path: Path,
+    *,
+    provenance_probe: Callable[[], dict[str, object]],
+    require_binding: bool = False,
+) -> SuiteReport:
+    from agent_suite.release_manifest import ReleaseManifest
+
+    manifest = _stub_manifest()
+    assert isinstance(manifest, ReleaseManifest)
+    spine = _component_by_cli("regista")
+    return aggregate(
+        installed=lambda name: name == "regista",
+        runner=_runner_for({"regista": _ok_json("regista")}),
+        components=(spine,),
+        lock_path=tmp_path / "SUITE.lock",
+        version_installed=lambda _: False,
+        key_watch_checks=False,
+        memory_provider_checks=False,
+        codex_health_checks=False,
+        release_manifest=manifest,
+        provenance_probe=provenance_probe,  # type: ignore[arg-type]
+        require_artifact_binding=require_binding,
+    )
+
+
+def _archive_provenance(version: str) -> dict[str, object]:
+    from agent_suite.runtime_provenance import (
+        ArtifactSource,
+        InstallMode,
+        RuntimeProvenance,
+    )
+
+    return {
+        "regista": RuntimeProvenance(
+            component="regista",
+            distribution="regista-hraedon",
+            version=version,
+            cli_path="/usr/local/bin/regista",
+            interpreter="/opt/env/bin/python",
+            mode=InstallMode.UV_TOOL,
+            source=ArtifactSource.ARCHIVE,
+        )
+    }
+
+
+def test_artifact_attestation_absent_without_a_manifest(tmp_path: Path) -> None:
+    report = _aggregate_with_profile(
+        tmp_path,
+        outputs={c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS},
+        profile=None,
+    )
+    assert report.artifact_attestation is None
+    assert "artifact_attestation" not in report.to_dict()
+
+
+def test_artifact_version_mismatch_reds_the_suite(tmp_path: Path) -> None:
+    """A wheel host's only lock signal is the version — a wrong one must be red."""
+    report = _artifact_report(
+        tmp_path, provenance_probe=lambda: _archive_provenance("9.9.9")
+    )
+    assert report.artifact_attestation is not None
+    assert report.artifact_attestation.ok is False
+    assert report.suite_ok is False
+    assert "artifact_attestation" in report.to_dict()
+    assert "artifact attestation: FAILED" in format_text(report)
+
+
+def test_matching_artifact_version_keeps_the_suite_green(tmp_path: Path) -> None:
+    report = _artifact_report(
+        tmp_path, provenance_probe=lambda: _archive_provenance("1.0.0")
+    )
+    assert report.artifact_attestation is not None
+    assert report.artifact_attestation.ok is True
+    assert report.suite_ok is True
+
+
+def test_require_artifact_binding_reds_an_unbindable_host(tmp_path: Path) -> None:
+    """Qualification can demand a cryptographic binding routine health cannot."""
+    report = _artifact_report(
+        tmp_path,
+        provenance_probe=lambda: _archive_provenance("1.0.0"),
+        require_binding=True,
+    )
+    assert report.artifact_attestation is not None
+    assert report.artifact_attestation.ok is False
+    assert report.suite_ok is False
+
+
+def test_provenance_probe_failure_fails_closed(tmp_path: Path) -> None:
+    """A raising probe must not traceback out of the read-only doctor."""
+
+    def _boom() -> dict[str, object]:
+        raise RuntimeError("probe exploded")
+
+    report = _artifact_report(tmp_path, provenance_probe=_boom)
+    assert report.artifact_attestation is not None
+    assert report.artifact_attestation.ok is False
+    assert "runtime provenance probe failed: RuntimeError" in (
+        report.artifact_attestation.note
+    )
+    assert report.suite_ok is False
