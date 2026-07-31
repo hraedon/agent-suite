@@ -144,7 +144,7 @@ def test_per_user_harness_wiring_does_not_require_elevation_or_service_account()
     assert checks["elevation"].required is False
     assert checks["service_account"].required is False
     assert checks["postgres"].required is False
-    assert checks["secret_provider"].required is False
+    assert checks["secret_provider_present"].required is False
 
 
 def test_service_configuration_requires_elevation_and_service_account() -> None:

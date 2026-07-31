@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ from agent_suite import services as services_mod
 from agent_suite import upgrade as upgrade_mod
 from agent_suite import verify_restore as verify_restore_mod
 from agent_suite.alerting import AlertResult, EmissionStatus
-from agent_suite.cli import Command, main
+from agent_suite.cli import PREFLIGHT_ALIAS, Command, _build_parser, main
 from agent_suite.harness import HarnessTarget
 
 _DSN = "postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista"
@@ -274,7 +275,9 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
             # No component CLI is installed under test, so the install refuses
             # honestly rather than reporting a service it never brought up.
             assert main([command.value, "--dry-run"]) == 1
-        elif command is Command.PREFLIGHT:
+        elif command is Command.PREFLIGHT_WINDOWS:
+            # Exit 1 on Linux (PLATFORM_NOT_APPLICABLE) and on a blocked
+            # Windows host alike — see the WI-050 tests below for which.
             assert main([command.value]) == 1
         elif command is Command.SETUP_INSTALL:
             assert main([command.value, "--dry-run"]) == 1
@@ -817,3 +820,111 @@ def test_release_manifest_verify_installed_green_when_versions_agree(
     assert "artifact attestation: ok" in out
     # ... and it is explicit that this is NOT a release-identity binding.
     assert "unbound" in out
+
+
+# ---------------------------------------------------------------------------
+# WI-050 — the Windows preflight is named for the platform it checks
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_windows_is_the_canonical_name() -> None:
+    """A generically-named verb that only checks Windows misleads by its name.
+
+    `deploy` already uses "preflight" for a different step ("would check required
+    CLIs: agent-notes, cairn, dossier, regista"), and `docs/install-linux.md`
+    never mentions the standalone command — so on Linux the thing called
+    `preflight` was the one thing named after a check the operator could not run.
+    """
+    assert Command.PREFLIGHT_WINDOWS.value == "preflight-windows"
+    assert PREFLIGHT_ALIAS not in {c.value for c in Command}
+
+
+def test_the_old_preflight_name_still_works(capsys: pytest.CaptureFixture[str]) -> None:
+    """Backward compatibility: anyone scripting `agent-suite preflight` keeps working."""
+    code = main([PREFLIGHT_ALIAS, "--json"])
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "deprecated" in err
+    assert Command.PREFLIGHT_WINDOWS.value in err
+
+
+def test_the_alias_is_accepted_by_the_parser() -> None:
+    args = _build_parser().parse_args([PREFLIGHT_ALIAS, "--profile", "C"])
+    assert args.command == PREFLIGHT_ALIAS
+    assert args.profile == "C"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the not-applicable path is the non-Windows one")
+def test_on_a_non_windows_host_nothing_is_probed_and_the_report_says_why(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """WI-050's headline: the old report was red about a platform, not a host.
+
+    On a supported Linux host this printed `State: blocked`, exit 1, with
+    `windows unsupported (required)`, `powershell unsupported (required)` and
+    `dns/tls unavailable` — a failure report an operator naturally reads as "my
+    host is broken". The exit code is unchanged (contract §2, and a script that
+    stopped must keep stopping); the report is now true.
+    """
+    code = main([Command.PREFLIGHT_WINDOWS.value, "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "PLATFORM_NOT_APPLICABLE"
+    assert "Nothing was probed" in payload["error"]["detail"]
+    # None of the misleading probe rows appear, because no probe ran.
+    body = json.dumps(payload)
+    assert "blocked" not in body
+    assert "powershell" not in body
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the not-applicable path is the non-Windows one")
+def test_the_not_applicable_report_is_a_contract_envelope(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from agent_suite.conformance.envelope import validate_envelope
+
+    main([Command.PREFLIGHT_WINDOWS.value, "--json"])
+    assert validate_envelope(json.loads(capsys.readouterr().out)) == []
+
+
+def test_the_secret_provider_row_is_named_for_what_it_checks() -> None:
+    """It used to state in its own detail that it observes presence only.
+
+    A preflight runs before any config exists, so presence is genuinely all it
+    can establish — the honest fix is the name, not a check with no subject.
+    Resolution is verified by `bootstrap` step 0 (WI-041).
+    """
+    from agent_suite.profiles import Profile
+    from agent_suite.windows_setup import (
+        HostObservation,
+        ProbeState,
+        SetupRequest,
+        profile_operations,
+        run_preflight,
+    )
+
+    observation = HostObservation(
+        os_name="Windows",
+        python_version="3.12.3",
+        powershell=ProbeState.AVAILABLE,
+        elevation=ProbeState.AVAILABLE,
+        service_account=ProbeState.AVAILABLE,
+        postgres=ProbeState.AVAILABLE,
+        dns=ProbeState.AVAILABLE,
+        tls=ProbeState.AVAILABLE,
+        secret_provider=ProbeState.AVAILABLE,
+        artifact_release_identity="r",
+        artifact_lock_identity="l",
+        ownership_conflict=False,
+    )
+    request = SetupRequest(
+        profile=Profile.B,
+        target_release_identity="r",
+        target_lock_identity="l",
+        operations=profile_operations(Profile.B),
+    )
+    names = {check.name for check in run_preflight(observation, request).checks}
+    assert "secret_provider_present" in names
+    assert "secret_provider" not in names
