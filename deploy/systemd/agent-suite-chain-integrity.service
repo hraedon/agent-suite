@@ -1,11 +1,12 @@
 [Unit]
-Description=Periodic doctor health check + alert routing on state change
+Description=Weekly full cairn chain replay; records the verdict doctor reports
 Wants=network-online.target
 After=network-online.target postgresql.service
 
 [Service]
 Type=oneshot
-ExecStart=agent-suite alert-check
+ExecStart=cairn integrity
+Environment=CAIRN_INTEGRITY_DIR=/var/lib/agent-suite/cairn
 EnvironmentFile=-/etc/agent-suite/suite.env
 User=root
 

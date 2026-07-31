@@ -463,10 +463,10 @@ def collect_wheel_artifacts(
         candidates: list[Path] = []
         for dist in _distribution_names_for(ident):
             prefix = f"{dist.replace('-', '_')}-{pin.version}-"
-            candidates = [
+            candidates = sorted(
                 p for p in wheels_dir.glob(f"{prefix}*.whl")
                 if p.is_file()
-            ]
+            )
             if candidates:
                 break
         if candidates:

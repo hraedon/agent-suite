@@ -128,10 +128,12 @@ jobs:
       # Gate 2 (release-board WI-2.3): build immutable wheels from the exact
       # SUITE.lock-pinned checkouts already validated above, so the manifest
       # records real wheel hashes and the release ships installable artifacts
-      # — the candidate is no longer source-only.
+      # — the candidate is no longer source-only. `build` comes from the
+      # [dev] extras installed above; PEP 517 backend versions are not pinned
+      # (tracked follow-up, with umbrella-wheel attestation — the umbrella
+      # wheel is attached for convenience but is not a manifest constituent).
       - name: Build component wheels from pinned checkouts
         run: |
-          pip install build
           mkdir -p out/wheels
           for c in /tmp/siblings/*/; do
             if [ -f "$c/pyproject.toml" ]; then
