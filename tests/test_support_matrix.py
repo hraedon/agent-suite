@@ -291,3 +291,24 @@ def test_interop_remote_installs_ignore_local_development_sources() -> None:
         'uv pip install --no-sources "git+https://github.com/'
         '${CAIRN_REPO}.git@${CAIRN_SHA}"'
     ) in ci_text
+
+
+def test_release_board_and_support_matrix_agree() -> None:
+    """Release identity is declared in two data files; they must agree.
+
+    Cutting 1.0.0-rc.2 bumped data/release-board.json but not
+    data/support-matrix.json, and the existing lock-vs-matrix test only
+    fails once SUITE.lock is bumped too — i.e. on the release branch,
+    where nobody had run the unit suite. Asserting the two data files
+    agree fails a partial bump immediately, on any branch (WI-037).
+    """
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    board = json.loads((root / "data" / "release-board.json").read_text(encoding="utf-8"))
+    matrix = json.loads((root / "data" / "support-matrix.json").read_text(encoding="utf-8"))
+    assert board["release"] == matrix["release"], (
+        f"release-board.json release '{board['release']}' does not match "
+        f"support-matrix.json release '{matrix['release']}' — bump both"
+    )

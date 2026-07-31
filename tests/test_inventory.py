@@ -51,6 +51,13 @@ def _all_revisions(sha: str = _SHA_A) -> dict[str, str | None]:
     return {c.ident: sha for c in COMPONENTS}
 
 
+def _declared_release() -> str:
+    """The suite's declared release identity, from the canonical source."""
+    from agent_suite.lock import _suite_release
+
+    return _suite_release()
+
+
 def _lock(
     versions: dict[str, str] | None = None,
     *,
@@ -699,7 +706,11 @@ def test_cli_inventory_json(
     captured = capsys.readouterr()
     assert rc == 0
     data = json.loads(captured.out)
-    assert data["release"] == "1.0.0-dev"
+    # Read the declared release from the canonical source rather than
+    # hardcoding it: this assertion runs the real CLI against the real
+    # data files, so a literal here breaks on every release cut and the
+    # breakage is only visible on the release branch (WI-037).
+    assert data["release"] == _declared_release()
     assert "components" in data
     assert len(data["components"]) == len(COMPONENTS)
     assert (tmp_path / "candidate-inventory.json").is_file()
