@@ -16,8 +16,14 @@ After this guide, an operator will have a running suite with a green
 |------------|------------|
 | Python | 3.12, 3.13, or 3.14 |
 | Postgres | 18+ (reachable from this host) — the same floor as [deployment-guide.md](deployment-guide.md) §2.1 |
-| Postgres role | the DSN's role needs **CREATEROLE**: `regista provision` creates a per-project service role, and without it provisioning applies the schema migrations and then fails (WI-046) |
+| Postgres role | the DSN's role needs **CREATEROLE**: `regista provision` creates a per-project service role, and without it provisioning applies the schema migrations and then fails, leaving a half-provisioned project (WI-046) |
 | pgvector | required in the agent-notes database (`CREATE EXTENSION vector`, superuser) — see [deployment-guide.md](deployment-guide.md) §2.2 |
+
+**Verify these three before bootstrapping.** Nothing in the suite checks them
+first — `bootstrap`'s `probe_db` step establishes that Postgres is *reachable*,
+not that the role can do what provisioning needs. The three `psql` one-liners and
+the recovery procedure for a half-provisioned project are in
+[deployment-guide.md](deployment-guide.md) §2.2.1.
 | Secret backend | Vault, AKV, or Windows Credential Manager (this host is Linux, so Vault or AKV — see [secrets-vault.md](secrets-vault.md) or [secrets-akv.md](secrets-akv.md)) |
 | OS | systemd-based Linux (Ubuntu 22.04+, RHEL 9+) |
 | Permissions | root (or sudo) for system-level config and service install |

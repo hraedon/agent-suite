@@ -325,3 +325,88 @@ def test_deprecated_aliases_are_not_advertised() -> None:
         assert not _covers(text, name), (
             f"{name} is excluded as deprecated but suite.env.example sets it"
         )
+
+
+# ---------------------------------------------------------------------------
+# Vault custody: document the AppRole posture without claiming it works
+# ---------------------------------------------------------------------------
+
+
+def test_the_approle_variables_are_documented() -> None:
+    """An operator following the docs should be able to reach the AppRole posture.
+
+    The Linux qualification could not: regista's `VaultProvider` reads
+    `VAULT_TOKEN` and nothing else (regista WI-221), so the run proceeded behind
+    an undocumented shim that minted a token per invocation. regista WI-228 adds
+    the login; these are its variable names, verified against that branch.
+    """
+    text = _example_text()
+    for var in vars_for_component("vault-custody"):
+        assert _covers(text, var.name), f"suite.env.example does not name {var.name}"
+
+
+def test_the_file_forms_are_the_ones_shown_uncommented() -> None:
+    """`VAULT_SECRET_ID_FILE` over `VAULT_SECRET_ID`: the credential stays out of
+    every child process's environment. The example must lead with the safer form."""
+    text = _example_text()
+    for preferred, inline in (
+        ("VAULT_ROLE_ID_FILE", "VAULT_ROLE_ID"),
+        ("VAULT_SECRET_ID_FILE", "VAULT_SECRET_ID"),
+    ):
+        assert re.search(f"^\\s*{preferred}=", text, re.MULTILINE), (
+            f"{preferred} is not shown as a live setting"
+        )
+        assert not re.search(f"^\\s*{inline}=", text, re.MULTILINE), (
+            f"{inline} is uncommented; the file form should be the default"
+        )
+
+
+def test_vault_token_is_marked_dev_only_and_not_set() -> None:
+    """`docs/secrets-vault.md` §8: a production host operates AppRole-only.
+
+    Leaving `VAULT_TOKEN=` live in the canonical placeholder set would make the
+    dev-only method the path of least resistance for every new host.
+    """
+    text = _example_text()
+    assert not re.search(r"^\s*VAULT_TOKEN=", text, re.MULTILINE)
+    assert "VAULT_TOKEN" in text
+    assert "DEV ONLY" in text or "dev-only" in text
+
+
+def test_the_pending_status_is_stated_where_the_variables_are_printed() -> None:
+    """The honesty requirement, checked.
+
+    Printing WI-228's variables without saying they do not work yet would create
+    exactly the defect this lane exists to remove: a document asserting a state
+    nobody can reach. Both the example file and the runbook must say so, and both
+    must give the operator a way to check for themselves.
+    """
+    for text, where in (
+        (_example_text(), "suite.env.example"),
+        (
+            (REPO_ROOT / "docs" / "secrets-vault.md").read_text(encoding="utf-8"),
+            "docs/secrets-vault.md",
+        ),
+    ):
+        assert "WI-228" in text, f"{where} prints the AppRole vars without naming WI-228"
+        assert "custody:vault_auth" in text, (
+            f"{where} gives the operator no way to check which method authenticated"
+        )
+        assert "VAULT_TOKEN and nothing else" in text or "NOTHING ELSE" in text, (
+            f"{where} does not state what regista actually supports today"
+        )
+
+
+def test_the_runbook_does_not_rely_on_the_unmerged_strategy_doc() -> None:
+    """`docs/secrets-instantiation.md` is not on any main — it is an unmerged PR.
+
+    A runbook that builds on a document nobody has is worse than one that admits a
+    gap, so the merged runbook says which one it is.
+    """
+    docs = REPO_ROOT / "docs"
+    assert not (docs / "secrets-instantiation.md").exists(), (
+        "secrets-instantiation.md now exists — update this test and the note in "
+        "secrets-vault.md §8.1 that calls it unmerged"
+    )
+    runbook = (docs / "secrets-vault.md").read_text(encoding="utf-8")
+    assert "not on any main" in runbook

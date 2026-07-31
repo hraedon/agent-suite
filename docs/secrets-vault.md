@@ -23,8 +23,8 @@ for why the signing keys live in the backend, not on disk.
   (`uv tool install --with hvac …`) and confirm per component; the suite core
   stays stdlib-only (see `pyproject.toml`).
 - `VAULT_ADDR` set to the Vault endpoint (e.g. `https://vault.example:8200`).
-- `VAULT_TOKEN` (dev) or AppRole `role_id` + `secret_id` (production), reachable
-  by the process that runs `agent-suite bootstrap`.
+- Credentials reachable by every process that resolves a ref — see §8, which
+  states plainly which methods each component can actually use today.
 
 ## 2. Set up Vault
 
@@ -61,9 +61,14 @@ vault write -f -field=secret_id auth/approle/role/agent-suite/secret-id
 ```
 
 Store the `role_id` and `secret_id` where the suite process can read them (a
-systemd `EnvironmentFile=`, a Windows service env block, or a root-owned file).
-Rotate `secret_id` per your organizational policy — see
-[key-operations.md](key-operations.md) §Rotation.
+systemd `EnvironmentFile=`, a Windows service env block, or a root-owned file);
+§8.1 gives the variable names. Rotate `secret_id` per your organizational
+policy — see [key-operations.md](key-operations.md) §Rotation.
+
+> **Read §8.1 before you build a host on this.** Standing up the AppRole is not
+> the same as the suite being able to use it. On regista as currently released it
+> **cannot**: `VaultProvider` authenticates with `VAULT_TOKEN` and nothing else.
+> §8.1 says what that means and what changes it.
 
 ## 3. Store the secrets
 
@@ -178,8 +183,9 @@ authenticated session.
 1. Parses the `vault:` scheme, the mount (`kv`), the KV path
    (`agent-suite/regista`), and the field (`signing_key`) — the **last**
    segment.
-2. Authenticates to Vault via the configured AppRole (production) or static
-   token (dev).
+2. Authenticates to Vault. **On regista as currently released this is
+   `VAULT_TOKEN` and only `VAULT_TOKEN`** — see §8.1. AppRole login is regista
+   WI-228 and is not on regista's main at the time of writing.
 3. Reads the secret value from KV v2.
 4. Returns the value to the caller; the caller uses it and clears it from
    memory after the operation (transient custody — see the
@@ -237,3 +243,64 @@ which the step states in its own output: refs are resolved through **regista's**
 environment, so a ref belonging to another component still depends on that
 component having `hvac` in its own venv (§1), and that component's own doctor is
 what checks it. See the [bootstrap contract](bootstrap-contract.md) §1.
+
+## 8. How each component authenticates — and what does not work yet
+
+The Linux qualification (Plan 020 Lane C) proved the custody *design*: a scoped
+policy, an AppRole, response-wrapped SecretID delivery shown to be single-use, and
+cross-principal reads denied. It could not prove the AppRole *posture*, because:
+
+> **regista's `VaultProvider` has no AppRole login.** It reads `VAULT_TOKEN` and
+> NOTHING ELSE. With no `VAULT_TOKEN` set, resolving a host's own key fails with
+> `[KEY_LOAD_ERROR] vault: authentication failed`. The qualification had to write
+> an undocumented shim (`with-vault-approle`) that exchanged role_id+secret_id for
+> a one-hour token and exec'd the real command, purely so the rest of the run
+> could proceed. That shim is a compensating control, not evidence that
+> AppRole-only works. Filed as **regista WI-221**.
+
+So on regista as currently released, a Vault-backed host carries a `VAULT_TOKEN`.
+Anything in this runbook that reads as "the production posture is AppRole" is
+describing the target, not the present. Say so to whoever asks.
+
+### 8.1 The AppRole variables (regista WI-228 — not yet on regista main)
+
+regista WI-228 adds the AppRole login and a `custody:vault_auth` doctor row that
+reports **which** method authenticated, so an operator can tell an AppRole host
+from a token host without guessing. Its convention, which
+`suite.env.example` now carries:
+
+| Variable | Purpose |
+|----------|---------|
+| `VAULT_ADDR` | the Vault endpoint |
+| `VAULT_ROLE_ID` | the AppRole RoleID, inline |
+| `VAULT_ROLE_ID_FILE` | ...or a file holding it (preferred: keeps it out of the process env) |
+| `VAULT_SECRET_ID_FILE` | a file holding the SecretID — **preferred over inline** |
+| `VAULT_SECRET_ID` | inline SecretID, for cases where a file is impossible |
+| `VAULT_SECRET_ID_RESPONSE_WRAPPED` | `1` when `VAULT_SECRET_ID_FILE` holds a response-**wrapping token** rather than the SecretID itself. Requires `VAULT_SECRET_ID_FILE`; setting it with an inline SecretID is an error, not a silent downgrade |
+| `VAULT_APPROLE_MOUNT_POINT` | the auth mount (default `approle`) |
+| `VAULT_TOKEN` | **dev only.** A static token, kept so `vault server -dev` still works |
+
+Two properties worth knowing, both verified in regista's WI-228 branch:
+
+- **It never falls back to `VAULT_TOKEN`.** A RoleID present with no SecretID is
+  an error naming the missing variable, not a quiet downgrade to token auth — a
+  fallback would turn a hardening step into a silent weakening.
+- **Response-wrapped delivery is one-shot**, which the qualification confirmed
+  against the live Vault: a second unwrap of the same token returns HTTP 400.
+
+**Status check before you rely on this.** WI-228 was not merged to regista's main
+at the time of writing. Confirm with:
+
+```sh
+regista doctor --json | jq '.checks[] | select(.name == "custody:vault_auth")'
+```
+
+An AppRole host reports `ok` with `vault auth: AppRole at auth/<mount> … No
+VAULT_TOKEN required`. A token host reports `warn` and says it is the dev-only
+method. If the row is absent entirely, the installed regista predates WI-228 and
+`VAULT_TOKEN` is your only option.
+
+> The suite-wide custody *strategy* document referenced by Plan 020 §Lane C
+> (`docs/secrets-instantiation.md`) is **not on any main** — it lives in an
+> unmerged agent-suite PR. This runbook (`secrets-vault.md`) is the merged one.
+> Do not build a host against a claim that only exists there.

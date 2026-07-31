@@ -50,6 +50,7 @@ from typing import assert_never
 __all__ = [
     "DOSSIER_VARS_NOT_IN_SUITE_ENV",
     "PROFILE_B_CONFIG_SURFACE",
+    "VAULT_APPROLE_VARS_PENDING_REGISTA_WI228",
     "ConfigNeed",
     "ConfigVar",
     "need_label",
@@ -338,6 +339,84 @@ PROFILE_B_CONFIG_SURFACE: tuple[ConfigVar, ...] = (
         "*warn* — so --exit-code stays 0 over a plaintext-by-default posture "
         "(agent-provenance WI-035)",
     ),
+    # --- Vault custody: how a host authenticates -------------------------------
+    # Not scoped to Profile B, but a Profile B host is where it bites: dossier,
+    # cairn, agent-notes and regista each resolve their own refs in their own
+    # process, so every one of them needs credentials it can reach.
+    ConfigVar(
+        "VAULT_ADDR",
+        "vault-custody",
+        ConfigNeed.REQUIRED,
+        "the Vault endpoint; with it unset no vault: ref resolves anywhere",
+    ),
+    ConfigVar(
+        "VAULT_ROLE_ID_FILE",
+        "vault-custody",
+        ConfigNeed.POSTURE,
+        "a 0600 root-owned file holding the AppRole RoleID — preferred over the "
+        "inline form, which lands in every child process's environment",
+    ),
+    ConfigVar(
+        "VAULT_ROLE_ID",
+        "vault-custody",
+        ConfigNeed.OPTIONAL,
+        "inline RoleID, where a file is impossible",
+    ),
+    ConfigVar(
+        "VAULT_SECRET_ID_FILE",
+        "vault-custody",
+        ConfigNeed.POSTURE,
+        "a file holding the AppRole SecretID — preferred over inline",
+    ),
+    ConfigVar(
+        "VAULT_SECRET_ID",
+        "vault-custody",
+        ConfigNeed.OPTIONAL,
+        "inline SecretID, where a file is impossible",
+    ),
+    ConfigVar(
+        "VAULT_SECRET_ID_RESPONSE_WRAPPED",
+        "vault-custody",
+        ConfigNeed.OPTIONAL,
+        "'1' when VAULT_SECRET_ID_FILE holds a response-wrapping token rather "
+        "than the SecretID. Delivery is one-shot — the qualification confirmed a "
+        "second unwrap returns HTTP 400. Requires VAULT_SECRET_ID_FILE; setting "
+        "it inline is an error, not a silent downgrade",
+    ),
+    ConfigVar(
+        "VAULT_APPROLE_MOUNT_POINT",
+        "vault-custody",
+        ConfigNeed.OPTIONAL,
+        "the AppRole auth mount (default 'approle')",
+    ),
+    ConfigVar(
+        "VAULT_TOKEN",
+        "vault-custody",
+        ConfigNeed.OPTIONAL,
+        "DEV ONLY — a static token. It is also the *only* method regista's "
+        "released VaultProvider supports (regista WI-221), so a Vault-backed host "
+        "carries one today; a production host should not once WI-228 lands",
+    ),
+)
+
+#: The AppRole variables above come from regista WI-228, which was **not merged
+#: to regista's main** when this declaration was written. They are documented so
+#: an operator can reach the AppRole-only posture the moment it lands — the
+#: qualification found that posture impossible (regista WI-221) and had to run
+#: behind an undocumented token-minting shim.
+#:
+#: Kept as a named set so the honesty is checkable: `suite.env.example` and
+#: `docs/secrets-vault.md` §8 must both say the posture is not yet reachable,
+#: rather than printing the variables as though they worked.
+VAULT_APPROLE_VARS_PENDING_REGISTA_WI228: frozenset[str] = frozenset(
+    {
+        "VAULT_ROLE_ID",
+        "VAULT_ROLE_ID_FILE",
+        "VAULT_SECRET_ID",
+        "VAULT_SECRET_ID_FILE",
+        "VAULT_SECRET_ID_RESPONSE_WRAPPED",
+        "VAULT_APPROLE_MOUNT_POINT",
+    }
 )
 
 
