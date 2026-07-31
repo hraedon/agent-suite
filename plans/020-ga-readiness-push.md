@@ -54,6 +54,20 @@ be green today. Plus umbrella-wheel attestation and version alignment.
 manifest-verified artifacts; `--profile` scopes `suite_ok`.
 
 ### Lane C — platform qualification (task #4; the largest GA gap)
+
+**Linux leg RESULT (2026-07-31): DOES NOT PASS.** Evidence:
+`rc-build/qual-linux-evidence/README.md`. Passed: dry-run acts on nothing
+(byte-identical state fingerprint), idempotent rerun, reboot recovery with
+zero intervention, `doctor --exit-code` 0, `lock --check` clean. Failed: the
+signed end-to-end flow is only partially per-actor (the *human* leg used the
+shared store HMAC key — dossier WI-035), `--require-artifact-binding` cannot
+be reached with the documented install, and reaching a running suite at all
+took five undocumented steps, two of them hard artifact-only blockers. 28
+work items filed across five repos. Custody DID qualify: a scoped policy and
+AppRole with response-wrapped SecretID delivery proven single-use, and
+cross-principal reads denied — but an AppRole-only host is currently
+impossible because regista's `VaultProvider` supports only `VAULT_TOKEN`.
+Re-qualification is gated on Lanes I and H below.
 Fresh **artifact-only** deployments, each passing: dry-run → first bootstrap
 → idempotent rerun → reboot/service recovery → `doctor --exit-code` →
 `lock --check` → one signed end-to-end work-item flow.
@@ -94,6 +108,54 @@ dual-control revocation. Lane F also extends `agent-suite offboard` to
 destroy the AppRole SecretID accessor and assert auth+signing failure (the
 target state named in `docs/secrets-instantiation.md` §4).
 
+### Lane G — signing integrity (regista WI-223, dossier WI-035)
+The suite's core claim is attributable, non-repudiable action, and
+qualification found the claim unverified. A work item's entire chain can be
+signed by a key its project never registered while **four** surfaces report
+green — `replay` (`principal_binding_failures=0`, an affirmative claim),
+`cairn integrity`, `regista doctor`, `agent-suite doctor` — and only
+`bundle verify` catches it. Separately, a human's acceptance transition
+silently fell back to the shared store HMAC key, so the one signature
+representing human judgement is the one that cannot be attributed to a
+person; `bootstrap-contract.md` §5 requires otherwise. **Exit:** a
+cross-project key fails binding verification on every surface that reports
+on it, HMAC-only deployments stay green, and a mixed human+agent chain
+verifies per-actor end to end with no silent downgrade path.
+
+### Lane H — bootstrap honesty (agent-suite WI-039..WI-043)
+`bootstrap: OK` is not currently evidence of a working install: step 0
+reported "secret backend reachable" with the host's only `vault:` ref
+provably 403, and bootstrap reported OK over a provision that never created
+the service role, because `regista provision --json` exits 0 with an `error`
+body. The `CAIRN_PROJECT` schema is never provisioned and agent-notes'
+projection database is never migrated. Docs and `suite.env.example` also
+print a `vault:` ref shape that cannot resolve. One lane because every item
+is the same failure mode. **Exit:** bootstrap fails when a step failed, and
+every claim it prints is verified rather than attempted.
+
+### Lane I — artifact-only packaging (agent-notes WI-047, agent-suite WI-044/WI-045)
+The blockers that make the Linux leg fail rather than partially pass:
+agent-notes' wheel ships zero `schema/*.sql`, so `agent-notes-migrate` can
+never run from an artifact; no wheel ships any systemd unit and no
+`dossier.service` exists despite `install-linux.md` §7 telling operators to
+enable it; and all three agent-suite units fail `203/EXEC` because
+`ExecStart` is unqualified and systemd's fixed search path never includes
+`~/.local/bin` — which means the weekly chain-integrity timer added in PR #1
+has never fired on any host. Two review rounds missed that; qualification
+caught it by installing and starting the units. **Exit:** a documented
+artifact-only install reaches a running, scheduled suite with no
+undocumented steps.
+
+### Lane J — doctor honesty audit (cairn WI-034 generalised)
+Four independent instances in one week of checks that observe presence
+rather than verifying behaviour: a `vault:` ref set but unresolvable,
+`--require-artifact-binding` passing vacuously, cairn hooks wired but
+non-executable (all session attestation silently absent), and principal
+binding reporting `0` failures on a chain the verifier rejects. The pattern
+is systematic, not incidental. **Exit:** every doctor check in every
+component is audited against the first standing question below, and each
+either verifies or states plainly that it does not.
+
 ## Standing review questions (apply to every lane)
 
 - Does this path's cost grow with production history? If yes, it is not a
@@ -106,6 +168,17 @@ target state named in `docs/secrets-instantiation.md` §4).
 
 Lanes A, B, D, E in parallel now. Lane C starts as soon as Lane B lands
 (qualification should exercise the artifact-era doctor, not the pre-fix one).
-Lane F follows C on the same hosts. GA is called when C and F are both
-evidenced and the release board's gates are met — the tag push and any
-publication remain owner-gated.
+Lane F follows C on the same hosts. Lanes G, H and I gate a Linux re-qualification; C and F follow. GA is
+called when C and F are both evidenced and the release board's gates are
+met — the tag push and any publication remain owner-gated.
+
+**The GA review gate is cross-lineage.** When the suite reaches a state its
+maintainer is willing to defend, it goes through successive independent
+review rounds — Opus, Sol, and Qwen — iterating until a round returns no
+major-or-above findings. This matters because same-lineage review shares the
+implementer's blind spots by construction: the reviews run during this push
+were all same-lineage (`--same-lineage-acknowledged`) and, while they found
+real majors including four working exploits, the defect class they kept
+missing until qualification ran — checks that observe presence rather than
+verify — is precisely the kind a different lineage is likelier to see.
+Iteration is the mechanism; a round with no big findings is the signal.
