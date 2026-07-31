@@ -23,7 +23,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
-from agent_suite.components import COMPONENTS, Component, Locality
+from agent_suite.components import COMPONENTS, Component, Locality, Tier
 
 
 class Runner(Protocol):
@@ -624,6 +624,55 @@ def read_runtime_provenance(
                 source=ArtifactSource.UNKNOWN,
                 detail="runtime provenance probe failed safely",
             )
+    return records
+
+
+# The umbrella is not one of COMPONENTS — it is the layer that deploys them —
+# so a component-only probe leaves the single distribution the operator runs
+# ``doctor`` *from* unattested (WI-036 review MAJOR-2). This descriptor exists
+# solely so the umbrella can be probed through the same code path.
+UMBRELLA_COMPONENT = Component(
+    ident="agent-suite",
+    repo="hraedon/agent-suite",
+    tier=Tier.FACE,
+    doctor_cmd=("agent-suite", "doctor", "--json"),
+    upgrade_package="agent-suite",
+    distribution_names=("agent-suite",),
+    locality=Locality.PER_BOX,
+)
+
+
+def read_runtime_provenance_with_umbrella(
+    components: tuple[Component, ...] = COMPONENTS,
+    *,
+    runner: Runner = _default_runner,
+    which: Which = _default_which,
+) -> dict[str, RuntimeProvenance]:
+    """Component provenance plus the umbrella's own installed-artifact record.
+
+    Artifact attestation needs the umbrella: a release attaches an
+    ``agent_suite`` wheel and the manifest records its hash, so leaving it out
+    means the manifest entry WI-035 added could never be checked on any host.
+    Keyed by ``"agent-suite"``, matching
+    :data:`agent_suite.release_manifest.UMBRELLA_IDENT`.
+    """
+    records = read_runtime_provenance(components, runner=runner, which=which)
+    context = _manager_context(runner, which)
+    try:
+        records[UMBRELLA_COMPONENT.ident] = probe_runtime_provenance(
+            UMBRELLA_COMPONENT, runner=runner, which=which, managers=context
+        )
+    except (OSError, RuntimeError, ValueError):
+        records[UMBRELLA_COMPONENT.ident] = RuntimeProvenance(
+            component=UMBRELLA_COMPONENT.ident,
+            distribution=None,
+            version=None,
+            cli_path=None,
+            interpreter=None,
+            mode=InstallMode.UNKNOWN,
+            source=ArtifactSource.UNKNOWN,
+            detail="umbrella runtime provenance probe failed safely",
+        )
     return records
 
 

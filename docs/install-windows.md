@@ -123,11 +123,17 @@ agent-suite doctor --exit-code --profile B \
                                           # hash chain
 ```
 
-`--profile X` also scopes the verdict to profile X's required components, so
-plumbing the host was never asked to run does not red an otherwise-healthy
-deployment (it is still reported, under `profile_scope.excluded_failures`). See
-the [bootstrap contract](bootstrap-contract.md) §3.1-§3.2 and
+`--profile X` scopes *requirement strictness*: a required component that is
+absent reds the verdict, while a non-required component the host simply does not
+deploy does not. A component that is installed and broken still reds the verdict
+wherever it sits — configure it or uninstall it. See the
+[bootstrap contract](bootstrap-contract.md) §3.1-§3.2 and
 [release manifest](release-manifest.md).
+
+Note the difference between `ok` and `binds_release_identity` in the attestation
+output: the second is only true when the tree holds no content outside the hash
+chain (no bytecode caches, no unrecorded files, no unaccounted `.pth`). Routine
+health does not require it; `--require-artifact-binding` does.
 
 ## 6. Verify the compatibility lock
 

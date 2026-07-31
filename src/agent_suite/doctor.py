@@ -486,25 +486,65 @@ def _check_one(
 class ProfileScope:
     """How a ``--profile X`` verdict was scoped (WI-036).
 
-    ``required`` is profile X's required component set. ``in_profile_failures``
-    are required components that are not healthy — those red the verdict.
-    ``excluded_failures`` are components *outside* the profile that are
-    unhealthy: still reported per-component with their real status, but
-    deliberately not counted against ``suite_ok``, because a Profile-B host is
-    not answerable for C-tier plumbing it was never asked to run.
+    ``--profile X`` scopes **requirement strictness**, not failure tolerance:
+
+    - ``in_profile_failures`` — required components that are broken, absent,
+      unconfigured or unreported. Red. Absence counts here, which is stricter
+      than the unscoped rule (that only fails on absence for the spine): the
+      operator declared the profile, so its requirements are the contract.
+    - ``out_of_profile_absent`` — non-required components that are simply not
+      here (``absent`` / ``not_configured``). Benign and excluded. **This is
+      what the flag buys:** a Profile-B host that does not run the C tier is
+      green instead of being judged against components it was never asked to
+      deploy.
+    - ``out_of_profile_failures`` — non-required components that are
+      *installed and broken*. These still red the verdict. An earlier revision
+      excluded them; review MAJOR-4 showed that greened a host the doctor
+      itself classified as Profile C with three Profile-C components answering
+      ``ok:false``. "Not answerable for plumbing it was never asked to run"
+      describes ABSENT, not FAILED — a component that was probed and answered
+      ``ok:false`` *is* running here and *is* broken, whatever profile the
+      operator asserts. The remedy WI-036 already named applies: configure it
+      or uninstall it.
+
+    Because no failure is ever excluded, the lock check needs no profile
+    scoping either, and the report cannot contradict itself by greening a host
+    whose detected profile outranks the asserted one. ``detected_profile``
+    is carried here so that divergence is legible rather than something the
+    reader must cross-reference against ``profile_classification``.
     """
 
     profile: Profile
     required: tuple[str, ...]
     in_profile_failures: tuple[str, ...]
-    excluded_failures: tuple[str, ...]
+    out_of_profile_failures: tuple[str, ...]
+    out_of_profile_absent: tuple[str, ...]
+    detected_profile: Profile | None = None
+
+    @property
+    def detected_outranks_asserted(self) -> bool:
+        """Whether the host looks like a broader profile than the one asserted.
+
+        Informational, not a failure: with out-of-profile failures counted, a
+        host detected as broader than asserted has nothing hidden — every
+        broken component already reds the verdict.
+        """
+        if self.detected_profile is None:
+            return False
+        order = (Profile.A, Profile.B, Profile.C)
+        return order.index(self.detected_profile) > order.index(self.profile)
 
     def to_dict(self) -> dict[str, object]:
         return {
             "profile": self.profile.value,
             "required": list(self.required),
             "in_profile_failures": list(self.in_profile_failures),
-            "excluded_failures": list(self.excluded_failures),
+            "out_of_profile_failures": list(self.out_of_profile_failures),
+            "out_of_profile_absent": list(self.out_of_profile_absent),
+            "detected_profile": (
+                self.detected_profile.value if self.detected_profile is not None else None
+            ),
+            "detected_outranks_asserted": self.detected_outranks_asserted,
         }
 
 
@@ -535,16 +575,16 @@ def _compute_suite_ok(
     Unscoped (``required is None``) any installed-but-broken component fails
     the suite (contract: installed but unreachable is a failure).
 
-    When ``required`` is given (``--profile X``), the verdict is scoped to that
-    set: a required component that is broken *or absent* is red (that is what
-    "required" means), and a component outside the set never reds the verdict
-    — it is reported honestly and named as out-of-profile instead. Scoping the
-    verdict is not the same as hiding the state.
+    When ``required`` is given (``--profile X``) the scoping is *narrow*: an
+    installed-but-broken component still reds the verdict wherever it sits,
+    because it was probed and it answered ``ok:false``. What the profile changes
+    is requirement strictness — a required component that is absent or
+    unconfigured is red (that is what "required" means), while a non-required
+    component's *absence* is fine. Failure is never excluded; see
+    :class:`ProfileScope` for why (review MAJOR-4).
     """
     for r in reports:
-        if not _status_is_unhealthy(r.status):
-            continue
-        if required is None or r.component in required:
+        if _status_is_unhealthy(r.status):
             return False
 
     if required is not None:
@@ -575,27 +615,40 @@ def _compute_suite_ok(
     return True
 
 
-def _profile_scope(reports: list[ComponentReport], profile: Profile) -> ProfileScope:
+def _profile_scope(
+    reports: list[ComponentReport],
+    profile: Profile,
+    *,
+    detected_profile: Profile | None = None,
+) -> ProfileScope:
     """Describe how ``profile`` scopes the verdict over ``reports``."""
     required = PROFILE_REQUIREMENTS[profile]
-    unhealthy = {
+    absent_statuses = (ComponentStatus.ABSENT, ComponentStatus.NOT_CONFIGURED)
+    unavailable = {
         r.component
         for r in reports
-        if _status_is_unhealthy(r.status)
-        or r.status in (ComponentStatus.ABSENT, ComponentStatus.NOT_CONFIGURED)
+        if _status_is_unhealthy(r.status) or r.status in absent_statuses
     }
     reported = {r.component for r in reports}
     return ProfileScope(
         profile=profile,
         required=tuple(sorted(required)),
-        in_profile_failures=tuple(sorted((unhealthy & required) | (required - reported))),
-        excluded_failures=tuple(
+        in_profile_failures=tuple(sorted((unavailable & required) | (required - reported))),
+        out_of_profile_failures=tuple(
             sorted(
                 r.component
                 for r in reports
                 if r.component not in required and _status_is_unhealthy(r.status)
             )
         ),
+        out_of_profile_absent=tuple(
+            sorted(
+                r.component
+                for r in reports
+                if r.component not in required and r.status in absent_statuses
+            )
+        ),
+        detected_profile=detected_profile,
     )
 
 
@@ -738,11 +791,12 @@ def aggregate(
     installation against the profile matrix and attaches the result as
     ``profile_classification``. The classification reports the detected profile,
     any missing required components, and any extra optional components. It also
-    **scopes the verdict** (WI-036): ``suite_ok`` is decided over the profile's
-    required components only, and ``profile_scope.excluded_failures`` names the
-    out-of-profile components whose failure was deliberately not counted. A
-    Profile-B host with unconfigured C-tier plumbing can therefore be green;
-    an in-profile component that is broken or absent still reds the verdict.
+    **scopes requirement strictness** (WI-036): a required component that is
+    broken, absent or unconfigured reds ``suite_ok``, while a non-required
+    component's mere *absence* does not. An installed-but-broken component reds
+    the verdict wherever it sits — failure is never excluded (see
+    :class:`ProfileScope`). ``profile_scope`` names the three sets so the
+    reasoning is legible rather than implied.
 
     When ``release_manifest`` is provided (WI-036), the doctor attests the
     installed artifacts against it via
@@ -892,14 +946,20 @@ def aggregate(
     if profile is not None:
         component_statuses = {r.component: r.status.value for r in reports}
         profile_classification = classify_doctor(component_statuses, reference_profile=profile)
-        scope = _profile_scope(reports, profile)
+        scope = _profile_scope(
+            reports, profile, detected_profile=profile_classification.profile
+        )
 
     attestation: artifact_attestation.ArtifactAttestation | None = None
     if release_manifest is not None:
+        # The umbrella-aware probe: the manifest records an ``agent_suite``
+        # wheel hash, and a component-only probe would leave the one
+        # distribution the operator runs doctor FROM unattested (WI-036 review
+        # MAJOR-2).
         pprobe: ProvenanceProbe = (
             provenance_probe
             if provenance_probe is not None
-            else runtime_provenance.read_runtime_provenance
+            else runtime_provenance.read_runtime_provenance_with_umbrella
         )
         try:
             provenance = pprobe()
@@ -1013,9 +1073,18 @@ def format_text(report: SuiteReport) -> str:
         lines.append(f"verdict scoped to profile {profile_label(scope.profile)}:")
         lines.append(f"  required: {', '.join(scope.required)}")
         failing = ", ".join(scope.in_profile_failures) or "(none)"
-        lines.append(f"  in-profile failures (count against the verdict): {failing}")
-        excluded = ", ".join(scope.excluded_failures) or "(none)"
-        lines.append(f"  out-of-profile failures (reported, not counted): {excluded}")
+        lines.append(f"  in-profile failures (red the verdict): {failing}")
+        out_failing = ", ".join(scope.out_of_profile_failures) or "(none)"
+        lines.append(
+            f"  out-of-profile failures (installed and broken; also red): {out_failing}"
+        )
+        out_absent = ", ".join(scope.out_of_profile_absent) or "(none)"
+        lines.append(f"  out-of-profile absent (not required here; excluded): {out_absent}")
+        if scope.detected_outranks_asserted and scope.detected_profile is not None:
+            lines.append(
+                f"  note: this host classifies as profile {scope.detected_profile.value}, "
+                f"broader than the asserted {scope.profile.value}"
+            )
     if report.artifact_attestation is not None:
         lines.append("")
         lines.append(artifact_attestation.format_text(report.artifact_attestation))

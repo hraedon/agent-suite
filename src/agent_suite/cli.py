@@ -425,8 +425,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--installed",
         action="store_true",
         help=(
-            "attest the artifacts installed on THIS host against the manifest "
-            "instead of (or in addition to) local wheel files"
+            "attest the artifacts installed on THIS host against the manifest; "
+            "emits the attestation report (a different, richer shape than the "
+            "wheels-only result). With --wheels-dir it is a strict superset: "
+            "installed trees are chained to the wheels AND every wheel file for "
+            "a constituent absent from this host is hash-verified"
         ),
     )
     rm_verify.add_argument(
@@ -1484,12 +1487,12 @@ def main(argv: list[str] | None = None) -> int:
                             verify_installed_artifacts,
                         )
                         from agent_suite.runtime_provenance import (
-                            read_runtime_provenance,
+                            read_runtime_provenance_with_umbrella,
                         )
 
                         attestation = verify_installed_artifacts(
                             manifest,
-                            read_runtime_provenance(),
+                            read_runtime_provenance_with_umbrella(),
                             wheels_dir=installed_wheel_dir,
                             require_binding=getattr(args, "require_binding", False),
                         )

@@ -1033,22 +1033,47 @@ def _outputs_with_c_tier_failing() -> dict[str, str]:
     }
 
 
-def test_profile_b_scopes_out_failing_c_tier_components(tmp_path: Path) -> None:
-    """A Profile-B host is not answerable for C-tier plumbing it wasn't asked to run."""
+def test_installed_but_broken_out_of_profile_component_still_reds(tmp_path: Path) -> None:
+    """MAJOR-4: --profile must not green a host that IS running broken plumbing.
+
+    An earlier revision excluded out-of-profile failures, which greened a host
+    the doctor itself classified as Profile C while three Profile-C components
+    answered ``ok:false``. A component that was probed and answered ``ok:false``
+    is running here and is broken, whatever profile the operator asserts.
+    """
     report = _aggregate_with_profile(
         tmp_path, outputs=_outputs_with_c_tier_failing(), profile=Profile.B
     )
-    assert report.suite_ok is True
+    assert report.suite_ok is False
     assert report.profile_scope is not None
     assert report.profile_scope.profile is Profile.B
     assert report.profile_scope.in_profile_failures == ()
-    assert report.profile_scope.excluded_failures == (
+    assert report.profile_scope.out_of_profile_failures == (
         "agent-capability-broker",
         "agent-wake",
     )
-    # Scoping the verdict is not hiding the state: the statuses stay honest.
+    # The statuses stay honest either way.
     failing = {r.component for r in report.components if r.status is ComponentStatus.FAILED}
     assert failing == {"agent-capability-broker", "agent-wake"}
+
+
+def test_scoped_report_never_greens_a_host_it_classifies_as_broader(
+    tmp_path: Path,
+) -> None:
+    """MAJOR-4: the report must not contradict itself.
+
+    Detected profile C + asserted profile A + three broken C components must not
+    produce ``suite_ok: True``.
+    """
+    report = _aggregate_with_profile(
+        tmp_path, outputs=_outputs_with_c_tier_failing(), profile=Profile.A
+    )
+    assert report.profile_classification is not None
+    assert report.profile_classification.profile is Profile.C
+    assert report.profile_scope is not None
+    assert report.profile_scope.detected_profile is Profile.C
+    assert report.profile_scope.detected_outranks_asserted is True
+    assert report.suite_ok is False
 
 
 def test_unscoped_verdict_still_reds_on_any_failing_component(tmp_path: Path) -> None:
@@ -1059,8 +1084,8 @@ def test_unscoped_verdict_still_reds_on_any_failing_component(tmp_path: Path) ->
     assert report.profile_scope is None
 
 
-def test_profile_c_counts_the_same_failures(tmp_path: Path) -> None:
-    """The same host at Profile C is red — agent-wake is required there."""
+def test_profile_c_counts_the_same_failures_as_in_profile(tmp_path: Path) -> None:
+    """The same host at Profile C is red, and the failures are now in-profile."""
     report = _aggregate_with_profile(
         tmp_path, outputs=_outputs_with_c_tier_failing(), profile=Profile.C
     )
@@ -1070,7 +1095,27 @@ def test_profile_c_counts_the_same_failures(tmp_path: Path) -> None:
         "agent-capability-broker",
         "agent-wake",
     )
-    assert report.profile_scope.excluded_failures == ()
+    assert report.profile_scope.out_of_profile_failures == ()
+
+
+def test_profile_b_greens_a_host_that_simply_lacks_the_c_tier(tmp_path: Path) -> None:
+    """What --profile actually buys: absence outside the profile is benign."""
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    absent = {"acb", "agent-wake"}
+    report = _aggregate_with_profile(
+        tmp_path,
+        outputs=outputs,
+        profile=Profile.B,
+        installed=lambda name: name not in absent,
+    )
+    assert report.suite_ok is True
+    assert report.profile_scope is not None
+    assert report.profile_scope.out_of_profile_absent == (
+        "agent-capability-broker",
+        "agent-wake",
+    )
+    assert report.profile_scope.out_of_profile_failures == ()
+    assert report.profile_scope.detected_outranks_asserted is False
 
 
 def test_in_profile_failure_still_reds_a_scoped_verdict(tmp_path: Path) -> None:
@@ -1131,10 +1176,15 @@ def test_profile_scope_is_in_json_and_text(tmp_path: Path) -> None:
     scope = d["profile_scope"]
     assert isinstance(scope, dict)
     assert scope["profile"] == "B"
-    assert scope["excluded_failures"] == ["agent-capability-broker", "agent-wake"]
+    assert scope["out_of_profile_failures"] == ["agent-capability-broker", "agent-wake"]
+    assert scope["out_of_profile_absent"] == []
+    assert scope["detected_profile"] == "C"
+    assert scope["detected_outranks_asserted"] is True
     text = format_text(report)
     assert "verdict scoped to profile B (Team workflow)" in text
-    assert "out-of-profile failures (reported, not counted): " in text
+    assert "out-of-profile failures (installed and broken; also red)" in text
+    assert "out-of-profile absent (not required here; excluded)" in text
+    assert "broader than the asserted B" in text
 
 
 def test_profile_scope_absent_without_profile(tmp_path: Path) -> None:

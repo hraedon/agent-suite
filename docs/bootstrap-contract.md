@@ -106,42 +106,53 @@ intentional local source with `--codex-marketplace` or
 `AGENT_SUITE_CODEX_MARKETPLACE`. A same-name plugin from any other marketplace
 never satisfies the pin.
 
-### 3.1 `--profile` scopes the verdict (WI-036)
+### 3.1 `--profile` scopes requirement strictness (WI-036)
 
-Without `--profile`, **every** installed-but-broken component reds `suite_ok`.
-That is the right default for a host with no declared profile, but it means a
-Profile-B host that happens to have C-tier plumbing installed-but-unconfigured
-can never be green, no matter how healthy its Profile-B contract is.
+Without `--profile`, **every** installed-but-broken component reds `suite_ok`,
+and only the spine's *absence* reds it.
 
-With `--profile X`, `suite_ok` is decided over `PROFILE_REQUIREMENTS[X]` only:
+With `--profile X`, what changes is **requirement strictness**, not failure
+tolerance:
 
-- A **required** component that is failed, unreachable, absent, or
-  not-configured reds the verdict. Absence counts here — the operator declared
-  the profile, so its requirements are the contract (this is stricter than the
-  unscoped rule, which only fails on absence for the spine).
-- A component **outside** the profile never reds the verdict. It is still
-  probed and still reported with its true status; it is additionally named in
-  `profile_scope.excluded_failures`. Scoping the verdict is not hiding the
-  state — the JSON and text both say exactly which failures were excluded and
-  why.
+- A component in `PROFILE_REQUIREMENTS[X]` that is failed, unreachable,
+  **absent**, not-configured, or unreported reds the verdict. Absence counts
+  here — the operator declared the profile, so its requirements are the
+  contract. This is stricter than the unscoped rule.
+- A non-required component's **absence** (`absent` / `not_configured`) does not
+  red the verdict, and is named in `profile_scope.out_of_profile_absent`. This
+  is what the flag buys: a Profile-B host that does not deploy the C tier is
+  green instead of being judged against components nobody asked it to run.
+- A non-required component that is **installed and broken** *still* reds the
+  verdict, and is named in `profile_scope.out_of_profile_failures`.
+
+That last rule is deliberate and was corrected during review. An earlier
+revision excluded out-of-profile failures, which produced a report that
+simultaneously said `profile_classification.profile: "C"` and `suite_ok: true`
+while three Profile-C components answered `ok:false`. "Not answerable for
+plumbing it was never asked to run" describes **absent**, not **failed** — a
+component that was probed and answered `ok:false` is running on this box and is
+broken, whatever profile the operator asserts. WI-036 already named the remedy:
+configure the tier, or uninstall it.
+
+Because no failure is ever excluded, two things follow. The lock check needs no
+profile scoping of its own, so `doctor` and `lock --check` cannot disagree about
+whether an out-of-profile component matters. And the report cannot contradict
+itself: `profile_scope.detected_outranks_asserted` is reported for legibility
+(the host looks broader than the asserted profile) but is *informational*,
+because nothing is being hidden.
 
 ```
-profile_scope: { profile, required[], in_profile_failures[], excluded_failures[] }
+profile_scope: { profile, required[], in_profile_failures[],
+                 out_of_profile_failures[], out_of_profile_absent[],
+                 detected_profile, detected_outranks_asserted }
 ```
-
-The same host is therefore green at `--profile B` and red at `--profile C` when
-its C-tier plumbing is broken, which is the honest answer to two different
-questions. `--profile` remains additive: it also emits
-`profile_classification` (the *detected* profile), so the report shows both
-what the host is and what it was measured against.
 
 ### 3.2 `--release-manifest` attests the installed artifacts (WI-036)
 
 Wheel-installed components carry no VCS revision by construction (PEP 610
 records `archive_info`, not `vcs_info`), so lock checking degrades to a
 version-only comparison — and a version string is a claim, not evidence. Point
-the doctor at the release manifest the host was deployed from to get real
-evidence:
+the doctor at the release manifest the host was deployed from:
 
 ```sh
 agent-suite doctor --exit-code \
@@ -150,13 +161,29 @@ agent-suite doctor --exit-code \
 ```
 
 Both accept an env fallback (`AGENT_SUITE_RELEASE_MANIFEST`,
-`AGENT_SUITE_ARTIFACT_WHEELS_DIR`). Any mismatch makes `suite_ok` false. The
-report names the *strength* of the evidence it could actually reach, and
-whether that strength binds the install to the release identity — see
-`docs/release-manifest.md` § "Attesting an installed artifact" for the ladder
-and for what is not verifiable. `--require-artifact-binding` promotes "no
-cryptographic binding available" from an honestly named gap to a failure; use
-it in platform qualification, not in routine health.
+`AGENT_SUITE_ARTIFACT_WHEELS_DIR`). Any mismatch makes `suite_ok` false.
+
+The report states two separate things, and the difference matters:
+
+- **`ok`** — nothing was provably wrong. A digest disagreement, a missing
+  recorded file, a wrong version, or a console script repointed at code the
+  release never declared all make this false.
+- **`binds_release_identity`** — the running code is cryptographically tied to
+  the published release. This is *stricter* than `ok`, and it is false whenever
+  the tree contains content no digest covers: bytecode caches, installer-generated
+  console scripts, unrecorded files, or a `.pth` no distribution accounts for.
+  Every such item is enumerated under `unattested` with its reason.
+
+The strong rung proves "every file the wheel shipped" — **not** "every file the
+interpreter executes". See `docs/release-manifest.md` §"Attesting an installed
+artifact" for the full ladder, what each rung does and does not cover, and how
+to bring a host to a fully bindable state.
+
+`--require-artifact-binding` promotes "no cryptographic binding available" from
+an honestly named gap to a failure. It also fails when *nothing* attestable was
+found (all components absent, or all installed editable) — a qualification gate
+that greened an empty host would certify nothing. Use it in platform
+qualification, not routine health.
 
 ## 4. The compatibility lock (`SUITE.lock`)
 

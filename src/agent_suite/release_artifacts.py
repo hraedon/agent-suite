@@ -179,6 +179,90 @@ def pep440_release_version(release: str) -> str:
 
 
 @dataclass(frozen=True)
+class ReleaseIdentity:
+    """The suite's release identity, checked across every place it appears.
+
+    One fact in three grammars: the declared release (``1.0.0-rc.2``), the git
+    tag (``v1.0.0-rc.2``), and the umbrella wheel version (``1.0.0rc2``).
+    ``declared_release`` comes from :func:`agent_suite.lock._suite_release`, the
+    accessor WI-037 established as canonical, so this check does not become a
+    fourth hand-edited copy of the identity — ``data/release-board.json`` and
+    ``data/support-matrix.json`` are asserted to agree by
+    ``tests/test_support_matrix.py``, and the matrix and ``SUITE.lock`` by its
+    sibling test.
+    """
+
+    declared_release: str
+    expected_tag: str
+    expected_package_version: str
+    package_version: str
+    tag: str | None
+    problems: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+
+def check_release_identity(tag: str | None = None) -> ReleaseIdentity:
+    """Check that the declared release, the tag, and the wheel version agree.
+
+    ``tag`` is optional so the same code path serves both the release workflow
+    (which has a tag) and the unit suite (which does not). Problems are
+    accumulated rather than raised so a caller can report all of them at once.
+    """
+    from agent_suite import __version__
+    from agent_suite.lock import _suite_release
+
+    declared = _suite_release()
+    problems: list[str] = []
+    try:
+        expected_version = pep440_release_version(declared)
+    except ValueError as exc:
+        return ReleaseIdentity(
+            declared_release=declared,
+            expected_tag=f"v{declared}",
+            expected_package_version="",
+            package_version=__version__,
+            tag=tag,
+            problems=(str(exc),),
+        )
+    if __version__ != expected_version:
+        problems.append(
+            f"agent_suite.__version__ is {__version__!r} but release {declared!r} "
+            f"requires {expected_version!r} — edit src/agent_suite/__init__.py"
+        )
+    expected_tag = f"v{declared}"
+    if tag is not None and tag != expected_tag:
+        problems.append(
+            f"tag {tag!r} does not name the declared release {declared!r} "
+            f"(expected {expected_tag!r}) — bump data/release-board.json, "
+            "data/support-matrix.json and src/agent_suite/__init__.py in the "
+            "commit you tag; see docs/release-manifest.md 'Cutting a release'"
+        )
+    return ReleaseIdentity(
+        declared_release=declared,
+        expected_tag=expected_tag,
+        expected_package_version=expected_version,
+        package_version=__version__,
+        tag=tag,
+        problems=tuple(problems),
+    )
+
+
+def format_release_identity(identity: ReleaseIdentity) -> str:
+    """Human-readable summary of a release-identity check."""
+    if identity.ok:
+        return (
+            f"release identity: release={identity.declared_release} "
+            f"tag={identity.tag or '(not checked)'} wheel={identity.package_version}"
+        )
+    lines = ["release identity: FAILED"]
+    lines.extend(f"  {problem}" for problem in identity.problems)
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
 class BrowserTarget:
     """One browser in the supported browser matrix."""
 

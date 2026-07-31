@@ -153,33 +153,27 @@ jobs:
       # from the git tag that triggered this run), all six constituent source
       # SHAs from SUITE.lock, the regista version quad, the lock identity, and
       # the SHA-256 of each wheel built above from the pinned revisions.
-      # WI-035: the tag, the release board, and the umbrella wheel version are
-      # one identity in three grammars. Assert it here rather than assuming it:
-      # a release cut as v1.0.0-rc.3 while the board still says 1.0.0-rc.2
-      # would otherwise attach a wheel whose version names the wrong release.
-      - name: Verify release identity (tag == release board == wheel version)
+      # WI-035: the tag, the declared release and the umbrella wheel version are
+      # one identity in three grammars. Assert it here rather than assuming it —
+      # a release cut as v1.0.0-rc.3 while the board still says 1.0.0-rc.2 would
+      # otherwise attach a wheel whose version names the wrong release. The
+      # check routes through `check_release_identity`, which reads the declared
+      # release via the canonical accessor WI-037 established, so this is not a
+      # fourth hand-edited copy of the identity. The procedure for bumping it
+      # is docs/release-manifest.md "Cutting a release".
+      - name: Verify release identity (tag == declared release == wheel version)
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           python3 -c "
-          import json, os, sys
-          from agent_suite import __version__
-          from agent_suite.release_artifacts import pep440_release_version
-          tag = os.environ['RELEASE_TAG']
-          with open('data/release-board.json') as f:
-              board_release = json.load(f)['release']
-          expected_tag = f'v{board_release}'
-          if tag != expected_tag:
-              print(f'ERROR: tag {tag!r} does not match the release board '
-                    f'identity {board_release!r} (expected {expected_tag!r})', file=sys.stderr)
-              sys.exit(1)
-          expected_version = pep440_release_version(board_release)
-          if __version__ != expected_version:
-              print(f'ERROR: agent_suite.__version__={__version__!r} is not the PEP 440 '
-                    f'form of release {board_release!r} (expected {expected_version!r})',
-                    file=sys.stderr)
-              sys.exit(1)
-          print(f'release identity: tag={tag} board={board_release} wheel={__version__}')
+          import os, sys
+          from agent_suite.release_artifacts import (
+              check_release_identity,
+              format_release_identity,
+          )
+          identity = check_release_identity(os.environ['RELEASE_TAG'])
+          print(format_release_identity(identity), file=sys.stderr if not identity.ok else sys.stdout)
+          sys.exit(0 if identity.ok else 1)
           "
 
       - name: Build release manifest

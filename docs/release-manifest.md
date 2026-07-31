@@ -152,6 +152,36 @@ unpinned backend means two builds of one source can produce two different
 manifest hashes. A packaging test enforces that every
 `build-system.requires` entry uses `==`.
 
+## Cutting a release
+
+The release identity is one fact in three grammars, and CI refuses a tag that
+does not agree with all three (`release.yml` → "Verify release identity", which
+calls `release_artifacts.check_release_identity`). **In the commit you tag**,
+bump all of:
+
+1. `data/release-board.json` → `release` — the declared identity, e.g.
+   `"1.0.0-rc.3"`. This is the canonical source; `agent_suite.lock._suite_release()`
+   reads it and every other check reads that accessor.
+2. `data/support-matrix.json` → `release` — asserted to equal the board by
+   `tests/test_support_matrix.py::test_release_board_and_support_matrix_agree`
+   (WI-037), so a partial bump reds the suite on any branch.
+3. `src/agent_suite/__init__.py` → `__version__` — the PEP 440 form of the same
+   identity (`1.0.0-rc.3` → `1.0.0rc3`; use
+   `release_artifacts.pep440_release_version`). `pyproject.toml` has no version
+   of its own, so this is the only place the wheel version is written.
+4. `SUITE.lock` → `[suite].release` — bumped by `agent-suite lock` as usual, and
+   asserted to equal the support matrix by the existing matrix test.
+
+Then tag `v<release>` exactly — `v1.0.0-rc.3` for release `1.0.0-rc.3`. Because
+the gate compares the tag to the *declared* release, re-running the workflow on
+an older tag (`v1.0.0-rc.2`) after the board has moved on will fail by design:
+the artifacts it would build are the current tree's, not that tag's. Re-cut from
+the tagged commit instead.
+
+`pytest` enforces steps 1–4 locally: `tests/test_packaging.py` asserts
+`__version__` against the declared release, so the suite reds until the bump is
+complete.
+
 ## Attesting an installed artifact
 
 `release-manifest verify --wheels-dir` answers "are these wheel *files* the ones
@@ -177,37 +207,85 @@ SHA-256 **cannot be reconstructed** from the unpacked tree — a wheel is a ZIP,
 and member order, timestamps and compression do not survive unpacking. Any check
 claiming to recompute `wheel_sha256` from `site-packages` would be a lie.
 `agent_suite/artifact_attestation.py` therefore reports the strongest rung it
-could actually reach, and says whether that rung binds the install to the
-release identity:
+could actually reach:
 
-| Rung | What it proves | Binds release identity? | When available |
-|------|----------------|-------------------------|----------------|
-| `wheel_hash_chain` | manifest `wheel_sha256` → the wheel's bytes → the `RECORD` *inside* that wheel → the SHA-256 of every installed file | **yes** | the release wheel is still on the host (`--wheels-dir` / `--artifact-wheels-dir`) |
-| `recorded_archive_hash` | PEP 610 `archive_info.hashes` recorded at install time equals the manifest's `wheel_sha256` | **yes** (but says nothing about post-install edits) | the installer recorded it — pip from a hashed URL does; **uv installing from a local wheel file records `archive_info: {}` and supplies nothing here** |
-| `install_record_only` | every installed file matches the digest in the install's own `RECORD` | **no** | dist-info is locatable (almost always) |
-| `version_only` | the distribution version, and the wheel *filename* PEP 610 recorded, agree with the manifest | **no** — not cryptographic at all | always |
-| `not_applicable` | the component is absent, or installed editable/from-VCS/from-a-local-directory | — | — |
+| Rung | What it proves | When available |
+|------|----------------|----------------|
+| `wheel_hash_chain` | manifest `wheel_sha256` → the wheel's bytes → the `RECORD` *inside* that wheel → the SHA-256 of **every file the wheel shipped** | the release wheel is still on the host (`--wheels-dir` / `--artifact-wheels-dir`) |
+| `recorded_archive_hash` | PEP 610 `archive_info.hashes` recorded at install time equals the manifest's `wheel_sha256` | the installer recorded it — pip from a hashed URL does; **uv installing from a local wheel file records `archive_info: {}` and supplies nothing here** |
+| `install_record_only` | every installed file matches the digest in the install's own `RECORD` | dist-info is locatable (almost always) |
+| `version_only` | the distribution version, and the wheel *filename* PEP 610 recorded, agree with the manifest | always |
+| `no_provenance` | **nothing** — the manifest names a component whose runtime provenance could not be read. A gap, counted against `--require-binding`, never silently "not applicable" | — |
+| `not_applicable` | the component is absent, or installed editable / from-VCS / from-a-local-directory | — |
 
 `install_record_only` is a real cryptographic check and it catches an edited
-module in `site-packages`, but it is reported as **unbound** on purpose:
-`RECORD` is unsigned and lives in the same writable tree it describes, so anyone
-able to edit a module can edit its digest. `tests/test_artifact_attestation.py`
-demonstrates exactly that — a tamper that rewrites both the file and its
-`RECORD` row passes `install_record_only` and fails `wheel_hash_chain`.
+module in `site-packages`, but it never counts as a release binding: `RECORD` is
+unsigned and lives in the same writable tree it describes, so anyone able to edit
+a module can edit its digest. `tests/test_artifact_attestation.py` demonstrates
+exactly that — a tamper that rewrites both the file and its `RECORD` row passes
+`install_record_only` and fails `wheel_hash_chain`.
+
+### What the strong rung does NOT cover
+
+The chain proves "every file the wheel shipped". It is narrower than "every file
+the interpreter executes", and the difference is exploitable, so each gap is
+**enumerated** in the report under `unattested` rather than left implicit:
+
+| `unattested.kind` | Why hashing cannot bind it |
+|---|---|
+| `bytecode_cache` | `__pycache__/*.pyc` is written by pip with an **empty** `RECORD` digest, or created lazily by the interpreter when the installer did not compile (uv's default). CPython loads a cached `.pyc` in preference to its source whenever the cache header's source mtime+size match, *without reading the source* — so a forged `.pyc` executes while the `.py` digest stays pristine. |
+| `installer_generated` | Console scripts (`bin/<name>`), `INSTALLER`, `REQUESTED`, `direct_url.json` are written by the installer, not shipped by the wheel, so no manifest hash covers them. |
+| `unrecorded_file` | A file present in a package directory that appears in no `RECORD` at all. |
+| `blank_digest` | A `RECORD` row with no digest. pip writes these for bytecode; an attacker can blank any row they can already write. |
+| `site_customization` | A `*.pth` in `site-packages` that no installed distribution's `RECORD` accounts for. It executes on every interpreter start. Legitimate ones exist (`_virtualenv.pth`, `distutils-precedence.pth` — placed by the venv seeder, not by a wheel), which is why this is a named gap rather than a mismatch. |
+| `relocated_data` | A `*.data/` payload relocated at install time; the `RECORD` path does not say where it landed. |
+| `wheel_unavailable` | The release wheel is not present, so the chain could not be attempted. Reported only when no other rung supplied a binding. |
+
+Consequently the report distinguishes two verdicts:
+
+- **`ok`** — nothing was provably wrong.
+- **`binds_release_identity`** — a binding rung held **and** the tree holds no
+  unattested content. A component with a bytecode cache reports
+  `rung_binds: true` but `binds_release_identity: false`, because on that tree
+  the rung does not answer the question the operator is actually asking.
+
+Two of the gaps are additionally *checked*, not merely named:
+
+- A console script whose import target is not one of the console scripts the
+  wheel's (manifest-covered) `entry_points.txt` declares is a **hard mismatch**.
+  This catches the realistic attack — repoint `bin/<name>` at attacker code —
+  even when the install `RECORD` row has been blanked. It does not prove the
+  whole script body, so the script is still reported as `installer_generated`.
+- Files present in the distribution's own directories but absent from every
+  `RECORD` are reported, which catches a `.pyc` injected where the installer
+  wrote none.
+
+### Bringing a host to a fully bindable state
+
+`--require-artifact-binding` (doctor) / `--require-binding`
+(`release-manifest verify --installed`) makes every gap above fatal. It also
+fails when nothing attestable was found at all — a host with every component
+absent, or every component installed editable, has zero attestable artifacts,
+and greening it would certify nothing. That is the platform-qualification
+posture (Plan 020 Lane C). To reach it:
+
+1. Keep the release wheels on the host and pass `--artifact-wheels-dir`
+   (or install from a hashed URL so `archive_info.hashes` is recorded).
+2. Install without bytecode compilation (`pip install --no-compile`; uv's
+   default writes none) and clear any `__pycache__` the interpreter has since
+   created inside the component trees.
+3. Account for every `.pth` in each environment's `site-packages`, and for the
+   generated console scripts — or accept them as named residue and record that
+   decision in the qualification evidence rather than in a passing gate.
+
+Routine `doctor --release-manifest` does **not** require any of this: a
+runtime-generated `.pyc` on a correct host is not evidence of compromise, so the
+default reports the gap and keeps `ok` true. What it will never again do is
+report `binds_release_identity: true` for such a host.
 
 An **install receipt** written at deploy time was considered and rejected: it
 would live in the same writable tree as `RECORD` and be forgeable by the same
-actor, so it would add ceremony without adding strength. The two honest ways to
-get a cryptographic binding on a wheel host are (a) keep the release wheels on
-the host and point `--artifact-wheels-dir` at them, or (b) install from a hashed
-URL so the installer records `archive_info.hashes`.
-
-By default an unbound-but-consistent install is reported, not failed: a host
-that no longer has its wheels cannot produce the binding, and the doctor must
-not call a correct estate red for an unavoidable evidence gap. Pass
-`--require-artifact-binding` (doctor) / `--require-binding`
-(`release-manifest verify --installed`) to make the gap fatal — that is the
-platform-qualification posture, per Plan 020 Lane C.
+actor, so it would add ceremony without adding strength.
 
 ## See also
 
@@ -215,6 +293,9 @@ platform-qualification posture, per Plan 020 Lane C.
   `doctor` §3.1 (`--profile` scoping) / §3.2 (`--release-manifest`)
 - `src/agent_suite/release_manifest.py` — the manifest module (stdlib-only)
 - `src/agent_suite/artifact_attestation.py` — the installed-artifact attestation
-  ladder, and the module docstring explaining what is and is not verifiable
+  ladder, and the module docstring explaining what the strong rung does and does
+  not cover
+- `src/agent_suite/runtime_provenance.py` — `read_runtime_provenance_with_umbrella`,
+  the probe that makes the umbrella entry checkable on a host
 - `src/agent_suite/inventory.py` — the candidate inventory module
 - `.github/workflows/release.yml` — the CI workflow that builds both artifacts

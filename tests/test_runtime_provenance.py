@@ -7,7 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_suite.components import Component, Locality, Tier
+import pytest
+
+from agent_suite.components import COMPONENTS, Component, Locality, Tier
 from agent_suite.runtime_provenance import (
     ArtifactSource,
     InstallMode,
@@ -321,3 +323,42 @@ def test_probe_reads_pep610_archive_hashes_from_a_real_dist(tmp_path: Path) -> N
     assert payload["archive_sha256"] == digest
     assert payload["archive_url"].endswith("example_canonical-1.2.3.whl")
     assert Path(payload["dist_info"]) == dist_info.resolve()
+
+
+def test_umbrella_provenance_is_probed_alongside_components(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WI-036 review MAJOR-2: the umbrella must be probeable.
+
+    ``agent-suite`` is not one of COMPONENTS, so a component-only probe left the
+    one distribution the operator runs ``doctor`` FROM with no provenance record
+    at all — and the manifest's umbrella entry therefore unattestable on every
+    host.
+    """
+    from agent_suite.runtime_provenance import (
+        UMBRELLA_COMPONENT,
+        read_runtime_provenance_with_umbrella,
+    )
+
+    assert all(c.ident != UMBRELLA_COMPONENT.ident for c in COMPONENTS)
+    probed: list[str] = []
+
+    def _which(name: str) -> str | None:
+        probed.append(name)
+        return None
+
+    records = read_runtime_provenance_with_umbrella(
+        components=(), runner=lambda cmd: _completed(returncode=1), which=_which
+    )
+    assert set(records) == {"agent-suite"}
+    assert records["agent-suite"].mode is InstallMode.ABSENT
+    assert "agent-suite" in probed
+
+
+def test_umbrella_component_declares_its_distribution_name() -> None:
+    from agent_suite.release_manifest import UMBRELLA_IDENT
+    from agent_suite.runtime_provenance import UMBRELLA_COMPONENT
+
+    assert UMBRELLA_COMPONENT.ident == UMBRELLA_IDENT
+    assert UMBRELLA_COMPONENT.distribution_names == ("agent-suite",)
+    assert UMBRELLA_COMPONENT.doctor_cmd[0] == "agent-suite"
