@@ -112,7 +112,9 @@ def principal_binding(payload: Mapping[str, Any]) -> PrincipalBinding:
             failures,
             "regista replay did not verify principal binding "
             "(principal_binding_verified is not true), so a zero failure count "
-            "would mean 'not checked', not 'none found'",
+            "would mean 'not checked', not 'none found'. Either the pinned "
+            "regista predates the check (WI-223) — advance SUITE.lock — or the "
+            "run opted out with --no-verify-principal-binding",
         )
     return PrincipalBinding(
         BindingStatus.VERIFIED,
