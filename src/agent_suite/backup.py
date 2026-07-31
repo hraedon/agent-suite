@@ -10,6 +10,43 @@ Design (AGENTS.md): thin orchestration — ``pg_dump`` and ``pg_restore`` are
 OS-level operations, not component logic. Injectable runner + installed check
 (same pattern as ``bootstrap.py``). ``assert_never`` over every closed-set enum.
 stdlib-only core. No secrets in manifests — DSNs are masked.
+
+WI-054 — a non-zero ``pg_restore`` is never DONE
+------------------------------------------------
+
+This module used to downgrade a non-zero ``pg_restore`` to ``DONE`` when its
+stderr contained ``"already exists"`` or ``"no matching"``. That is the same
+string-scanning-instead-of-classifying defect Lane H removed from the
+provisioning path (WI-040/WI-051) — a step that did not succeed being read as
+success — except ``pg_restore`` has no JSON envelope to classify on, so the fix
+differs in kind.
+
+Three things make the old tolerance indefensible rather than merely ugly:
+
+* The restore runs ``--clean --if-exists``, so ``DROP … IF EXISTS`` precedes
+  every ``CREATE``. Neither tolerated condition is one this command should
+  produce: ``already exists`` comes from restoring *without* ``--clean``, and
+  ``no matching`` comes from ``-t``/``-n`` filters this command never passes. The
+  tolerance covered situations that, if they occurred, meant something the
+  operator needed to know about.
+* The match was on prose. ``already exists`` appears in the message for a
+  *table* that could not be dropped as readily as for a benign duplicate index,
+  and a restore that failed to load a single row can say it.
+* ``pg_restore`` is invoked without ``--exit-on-error``, so it continues past
+  failures and exits 1 having *skipped objects*. Its exit code therefore already
+  carries exactly the fact worth reporting: at least one object did not restore.
+
+**The decision:** classify on the exit code, which is the only structured signal
+``pg_restore`` emits, and let ``verify_restore`` be the authority on whether the
+restored store is usable. A non-zero exit is :attr:`BackupStatus.PARTIAL` —
+neither DONE nor FAILED — carrying the count ``pg_restore`` itself reports
+(``errors ignored on restore: N``) when it emits one. The step no longer returns
+early, so ``verify_restore`` always runs and the operator gets the state of the
+store they are now sitting on rather than only the fact that ``pg_restore``
+complained. ``PARTIAL`` makes the overall result NOT OK, so nothing fails open:
+``verify_restore`` passing cannot green a restore that skipped objects (it
+replays the chain, and a chain can verify while an unrelated table is missing),
+and it failing tells the operator the damage is real.
 """
 
 from __future__ import annotations
@@ -17,6 +54,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -49,6 +87,11 @@ class BackupStatus(Enum):
     DONE = "done"
     SKIPPED = "skipped"
     FAILED = "failed"
+    #: The step ran and did not do all of it (WI-054). Distinct from FAILED
+    #: because the pipeline continues — the following verification is what tells
+    #: the operator whether the shortfall matters — and distinct from DONE
+    #: because it is not success. It makes the overall result NOT OK.
+    PARTIAL = "partial"
 
 
 class Runner(Protocol):
@@ -68,6 +111,72 @@ def _default_installed(cli_name: str) -> bool:
 
 
 _DOCTOR_CMD: tuple[str, ...] = ("agent-suite", "doctor", "--json")
+
+#: ``pg_restore``'s own summary of what it skipped. This is the closest thing it
+#: has to structured output: a count it computed, not prose describing one
+#: condition. It is read to *quantify* a failure already established by the exit
+#: code — never to excuse one.
+_ERRORS_IGNORED_RE = re.compile(r"errors ignored on restore:\s*(\d+)", re.IGNORECASE)
+
+#: Named so the step detail, the docs and the tests cannot drift.
+RESTORE_PARTIAL_REMEDY = (
+    "pg_restore skipped at least one object; verify_restore below reports whether "
+    "the restored store is usable, and `pg_restore --exit-on-error` reproduces the "
+    "first failure in isolation"
+)
+
+
+@dataclass(frozen=True)
+class PgRestoreVerdict:
+    """What ``pg_restore``'s exit code says about the restore.
+
+    ``pg_restore`` emits no JSON, so the exit code is the whole structured
+    signal: 0 means every archive entry was applied, and non-zero means it
+    continued past at least one failure and skipped objects (it is not invoked
+    with ``--exit-on-error``). ``errors_ignored`` is the count ``pg_restore``
+    itself reports, when it reports one.
+    """
+
+    status: BackupStatus
+    errors_ignored: int | None
+    detail: str
+
+
+def classify_pg_restore(
+    *, returncode: int, stderr: str, dump_path: str
+) -> PgRestoreVerdict:
+    """Judge one ``pg_restore`` run from its exit code (WI-054).
+
+    Nothing here reads the child's prose to decide the outcome. The previous
+    implementation returned ``DONE`` whenever stderr contained ``"already
+    exists"`` or ``"no matching"``, which meant a restore that dropped objects on
+    the floor reported success as long as it phrased its complaint the right way.
+
+    A non-zero exit is :attr:`BackupStatus.PARTIAL`: something did not restore.
+    Whether that matters is ``verify_restore``'s question, not this function's,
+    and it is answered in the same report.
+    """
+    if returncode == 0:
+        return PgRestoreVerdict(
+            status=BackupStatus.DONE,
+            errors_ignored=0,
+            detail=f"restored from {dump_path}",
+        )
+    match = _ERRORS_IGNORED_RE.search(stderr)
+    errors_ignored = int(match.group(1)) if match else None
+    counted = (
+        f"{errors_ignored} object(s) skipped"
+        if errors_ignored is not None
+        else "object count not reported by pg_restore"
+    )
+    return PgRestoreVerdict(
+        status=BackupStatus.PARTIAL,
+        errors_ignored=errors_ignored,
+        detail=(
+            f"pg_restore exited {returncode} — {counted}; {RESTORE_PARTIAL_REMEDY}. "
+            f"pg_restore said: {stderr.strip()[:300] or 'no detail'}"
+        ),
+    )
 
 
 def _split_dsn_password(dsn: str) -> tuple[str, str | None]:
@@ -213,10 +322,22 @@ class RestoreResult:
 
 
 def _is_backup_terminal(status: BackupStatus) -> bool:
+    """Whether this status stops the pipeline.
+
+    ``PARTIAL`` does **not** (WI-054): the point of letting the pipeline run on
+    is that the following verification is what tells the operator whether the
+    shortfall matters. It still makes the overall result NOT OK — see
+    :func:`_compute_backup_ok`.
+    """
     match status:
         case BackupStatus.FAILED:
             return True
-        case BackupStatus.DONE | BackupStatus.SKIPPED | BackupStatus.PENDING:
+        case (
+            BackupStatus.DONE
+            | BackupStatus.SKIPPED
+            | BackupStatus.PENDING
+            | BackupStatus.PARTIAL
+        ):
             return False
         case other:
             assert_never(other)
@@ -225,7 +346,7 @@ def _is_backup_terminal(status: BackupStatus) -> bool:
 def _compute_backup_ok(steps: list[BackupStepResult]) -> bool:
     for s in steps:
         match s.status:
-            case BackupStatus.FAILED:
+            case BackupStatus.FAILED | BackupStatus.PARTIAL:
                 return False
             case BackupStatus.DONE | BackupStatus.SKIPPED | BackupStatus.PENDING:
                 continue
@@ -468,27 +589,19 @@ def run_restore(
                 ok=False, dry_run=dry_run, backup_dir=str(backup_dir), steps=steps,
                 note="pg_restore execution error",
             )
-        if result.returncode != 0:
-            stderr = result.stderr.strip()
-            if "already exists" in stderr.lower() or "no matching" in stderr.lower():
-                steps.append(RestoreStepResult(
-                    RestoreStep.PG_RESTORE, BackupStatus.DONE,
-                    f"restored (with warnings): {stderr[:200]}",
-                ))
-            else:
-                steps.append(RestoreStepResult(
-                    RestoreStep.PG_RESTORE, BackupStatus.FAILED,
-                    f"pg_restore failed: {stderr or 'no detail'}",
-                ))
-                return RestoreResult(
-                    ok=False, dry_run=dry_run, backup_dir=str(backup_dir), steps=steps,
-                    note="pg_restore failed",
-                )
-        else:
-            steps.append(RestoreStepResult(
-                RestoreStep.PG_RESTORE, BackupStatus.DONE,
-                f"restored from {dump_path}",
-            ))
+        # WI-054: the exit code decides, and a non-zero exit is PARTIAL rather
+        # than DONE or FAILED. The step deliberately does *not* return early:
+        # verify_restore is the authority on the state of the restored store, and
+        # an operator staring at a half-restored database needs its verdict more
+        # than anyone. PARTIAL still makes the overall result NOT OK.
+        verdict = classify_pg_restore(
+            returncode=result.returncode,
+            stderr=result.stderr,
+            dump_path=str(dump_path),
+        )
+        steps.append(RestoreStepResult(
+            RestoreStep.PG_RESTORE, verdict.status, verdict.detail,
+        ))
 
     if dry_run:
         steps.append(RestoreStepResult(
@@ -532,19 +645,33 @@ def run_restore(
         ))
 
     ok = True
+    partial = False
     for s in steps:
         match s.status:
             case BackupStatus.FAILED:
                 ok = False
                 break
+            case BackupStatus.PARTIAL:
+                # WI-054: not a stop, but never a pass. A restore that skipped
+                # objects is not a restore, whatever verify_restore made of the
+                # chain that survived.
+                ok = False
+                partial = True
+                continue
             case BackupStatus.DONE | BackupStatus.SKIPPED | BackupStatus.PENDING:
                 continue
             case other:
                 assert_never(other)
 
+    if ok:
+        note = "ok"
+    elif partial:
+        note = "restore incomplete — pg_restore skipped objects; see verify_restore above"
+    else:
+        note = "restore completed with errors"
     return RestoreResult(
         ok=ok, dry_run=dry_run, backup_dir=str(backup_dir), steps=steps,
-        note="ok" if ok else "restore completed with errors",
+        note=note,
     )
 
 
