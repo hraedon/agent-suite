@@ -7,7 +7,7 @@ AppRole is denied — proved 403 — and ``bootstrap`` printed:
     ...
     bootstrap: OK
 
-`docs/secrets-vault.md` §7 promised the opposite. These tests pin the three
+`docs/secrets-vault.md` §8 promised the opposite. These tests pin the three
 traps that estate hit, and pin that a doc can no longer print a ``vault:`` ref
 shape the resolver rejects.
 """

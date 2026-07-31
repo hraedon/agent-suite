@@ -31,6 +31,8 @@ import pytest
 from agent_suite.config_surface import (
     DOSSIER_VARS_NOT_IN_SUITE_ENV,
     PROFILE_B_CONFIG_SURFACE,
+    SECRETS_VAULT_SECTIONS_REGISTA_CITES,
+    VAULT_APPROLE_VARS,
     ConfigNeed,
     ConfigVar,
     need_label,
@@ -245,6 +247,15 @@ def _dossier_package_names() -> set[str] | None:
     return names
 
 
+def _skip_or_fail_without_regista() -> None:
+    if os.environ.get("INTEROP_REQUIRE_FACES") == "1":
+        pytest.fail(
+            "INTEROP_REQUIRE_FACES=1 is set but regista._secrets is not importable "
+            "— the Vault-variable cross-check cannot run"
+        )
+    pytest.skip("regista is not installed")
+
+
 def _skip_or_fail_without_dossier() -> None:
     if os.environ.get("INTEROP_REQUIRE_FACES") == "1":
         pytest.fail(
@@ -335,10 +346,11 @@ def test_deprecated_aliases_are_not_advertised() -> None:
 def test_the_approle_variables_are_documented() -> None:
     """An operator following the docs should be able to reach the AppRole posture.
 
-    The Linux qualification could not: regista's `VaultProvider` reads
-    `VAULT_TOKEN` and nothing else (regista WI-221), so the run proceeded behind
-    an undocumented shim that minted a token per invocation. regista WI-228 adds
-    the login; these are its variable names, verified against that branch.
+    The Linux qualification could not: at the time, regista's `VaultProvider` read
+    `VAULT_TOKEN` only (regista WI-221), so the run proceeded behind an
+    undocumented shim that minted a token per invocation. regista WI-228 added the
+    login (`origin/main` `e32ec9b`, PR #16); these are its variable names, verified
+    against that ref.
     """
     text = _example_text()
     for var in vars_for_component("vault-custody"):
@@ -373,13 +385,15 @@ def test_vault_token_is_marked_dev_only_and_not_set() -> None:
     assert "DEV ONLY" in text or "dev-only" in text
 
 
-def test_the_pending_status_is_stated_where_the_variables_are_printed() -> None:
-    """The honesty requirement, checked.
+def test_the_docs_describe_the_approle_posture_as_working() -> None:
+    """regista WI-228 is merged (origin/main e32ec9b, PR #16), so say so.
 
-    Printing WI-228's variables without saying they do not work yet would create
-    exactly the defect this lane exists to remove: a document asserting a state
-    nobody can reach. Both the example file and the runbook must say so, and both
-    must give the operator a way to check for themselves.
+    An earlier revision of these files carried a "not yet on regista main" caveat
+    — true when written, false within the hour — and a test that *asserted the
+    caveat was present*. That test would have fought the next person who told the
+    truth, which is worse than no test. What is worth pinning is not a status
+    string but the two things an operator needs whatever the status: the variables,
+    and how to find out which method their host is on.
     """
     for text, where in (
         (_example_text(), "suite.env.example"),
@@ -388,25 +402,151 @@ def test_the_pending_status_is_stated_where_the_variables_are_printed() -> None:
             "docs/secrets-vault.md",
         ),
     ):
-        assert "WI-228" in text, f"{where} prints the AppRole vars without naming WI-228"
         assert "custody:vault_auth" in text, (
             f"{where} gives the operator no way to check which method authenticated"
         )
-        assert "VAULT_TOKEN and nothing else" in text or "NOTHING ELSE" in text, (
-            f"{where} does not state what regista actually supports today"
+        # The dev-only method must be named as such wherever it appears, so it is
+        # never the path of least resistance.
+        assert "dev-only" in text or "DEV ONLY" in text, (
+            f"{where} does not mark VAULT_TOKEN as the dev method"
         )
+        # And nothing may still claim the posture is unreachable.
+        for stale in ("not yet on regista main", "NOTHING ELSE", "has no AppRole login"):
+            assert stale not in text, (
+                f"{where} still carries the pre-WI-228 caveat {stale!r}"
+            )
 
 
-def test_the_runbook_does_not_rely_on_the_unmerged_strategy_doc() -> None:
-    """`docs/secrets-instantiation.md` is not on any main — it is an unmerged PR.
+def test_the_doctor_row_states_are_documented() -> None:
+    """The row is graded, not merely reported — so the grades must be legible.
 
-    A runbook that builds on a document nobody has is worse than one that admits a
-    gap, so the merged runbook says which one it is.
+    `ok` / `warn` / `fail` / `skip` each mean something an operator acts on
+    differently, and `warn` on a token host is the one that would otherwise read
+    as "fine". Verified against regista origin/main `_doctor.py::_check_vault_auth`.
     """
-    docs = REPO_ROOT / "docs"
-    assert not (docs / "secrets-instantiation.md").exists(), (
-        "secrets-instantiation.md now exists — update this test and the note in "
-        "secrets-vault.md §8.1 that calls it unmerged"
+    runbook = (REPO_ROOT / "docs" / "secrets-vault.md").read_text(encoding="utf-8")
+    for status in ("`ok`", "`warn`", "`fail`", "`skip`"):
+        assert status in runbook, f"the runbook does not say what {status} means"
+    assert "No VAULT_TOKEN required" in runbook
+    # Per component, not once per host: each resolves in its own venv.
+    assert "per component" in runbook.lower()
+
+
+def test_the_shared_plane_file_interop_is_documented() -> None:
+    """`VAULT_ENV_FILE` exists so one credential file serves regista and acb.
+
+    Documenting it as merely another spelling of `VAULT_ROLE_ID_FILE` would lose
+    the reason it exists, and an operator would keep two files in sync by hand.
+    """
+    for text, where in (
+        (_example_text(), "suite.env.example"),
+        (
+            (REPO_ROOT / "docs" / "secrets-vault.md").read_text(encoding="utf-8"),
+            "docs/secrets-vault.md",
+        ),
+    ):
+        assert _covers(text, "VAULT_ENV_FILE") or "VAULT_ENV_FILE" in text, (
+            f"{where} does not mention VAULT_ENV_FILE"
+        )
+        assert "acb" in text, f"{where} does not say who writes the plane file"
+        # The three properties that bite: precedence, missing-file, and mode.
+        assert "0600" in text, f"{where} does not state the required mode"
+    runbook = (REPO_ROOT / "docs" / "secrets-vault.md").read_text(encoding="utf-8")
+    assert "environment wins over the file" in runbook
+    assert "missing file is an error" in runbook
+
+
+def test_the_sections_regista_cites_by_number_still_hold_their_content() -> None:
+    """A cross-repo contract, not a presentational choice.
+
+    regista's merged error messages and doctor detail send operators to
+    `agent-suite docs/secrets-vault.md` §5 and §6 by number (8 references across
+    `_secrets.py`, `_doctor.py` and its live tests). Renumbering this runbook would
+    make regista point at the wrong section — this lane's own defect class, aimed
+    the other way across the boundary. This is the reason the AppRole material sits
+    at §6 rather than wherever it happened to be appended.
+    """
+    runbook = (REPO_ROOT / "docs" / "secrets-vault.md").read_text(encoding="utf-8")
+    headings = {
+        line.split(".", 1)[0].removeprefix("## ").strip(): line
+        for line in runbook.splitlines()
+        if line.startswith("## ")
+    }
+    for number, expected in SECRETS_VAULT_SECTIONS_REGISTA_CITES.items():
+        assert number in headings, (
+            f"regista cites secrets-vault.md §{number} ({expected}) and this "
+            f"runbook has no §{number}"
+        )
+    # §6 specifically must be the authentication section, because that is what
+    # regista's `warn` detail tells a token host to go and read.
+    assert "authenticat" in headings["6"].lower(), (
+        f"regista sends token hosts to §6 for the AppRole posture, but §6 is "
+        f"{headings['6']!r}"
     )
-    runbook = (docs / "secrets-vault.md").read_text(encoding="utf-8")
-    assert "not on any main" in runbook
+    # §5 must still be the resolution/delivery material.
+    assert "resolution" in headings["5"].lower(), (
+        f"regista cites §5 for the delivery flow, but §5 is {headings['5']!r}"
+    )
+
+
+def _regista_vault_names() -> set[str] | None:
+    """AppRole ``VAULT_*`` names the installed regista's resolver reads.
+
+    ``None`` when regista is absent. An empty set means the installed regista
+    predates WI-228 — a real and expected state on any host still on the RC
+    artifacts, so the callers skip rather than fail on version skew.
+
+    Module-private constants (``_VAULT_REAUTH_MARGIN_SECONDS``,
+    ``_VAULT_APPROLE_DEFAULT_MOUNT``) are excluded by matching the quoted-literal
+    form only, and ``AZURE_KEY_VAULT_NAME`` by anchoring on ``VAULT_``.
+    """
+    try:
+        import regista._secrets as regista_secrets
+    except ImportError:
+        return None
+    import inspect
+
+    source = inspect.getsource(regista_secrets)
+    names = set(re.findall(r'"(VAULT_[A-Z0-9_]+)"', source))
+    # VAULT_ADDR and VAULT_TOKEN predate AppRole; their presence says nothing
+    # about whether this regista supports it.
+    return names - {"VAULT_ADDR", "VAULT_TOKEN"}
+
+
+def test_every_approle_variable_regista_reads_is_documented() -> None:
+    """Cross-component, in the same shape as the dossier check.
+
+    This is the test that would have caught `VAULT_ENV_FILE`: it was added by
+    regista PR #16 after an earlier revision of this declaration was written from
+    the pre-merge branch, where it genuinely did not exist. A conclusion drawn from
+    an unmerged branch is a conclusion with a short shelf life, and this is the
+    machine that notices.
+    """
+    names = _regista_vault_names()
+    if names is None:
+        _skip_or_fail_without_regista()
+        return
+    if not names:
+        pytest.skip(
+            "the installed regista predates WI-228 (no AppRole variables) — "
+            "nothing to cross-check"
+        )
+    undocumented = sorted(names - VAULT_APPROLE_VARS)
+    assert undocumented == [], (
+        "regista reads these Vault variables and config_surface.py does not "
+        f"declare them: {undocumented}"
+    )
+
+
+def test_the_declaration_does_not_invent_vault_variables() -> None:
+    """The other direction, tolerant of a regista older than the declaration."""
+    names = _regista_vault_names()
+    if names is None:
+        _skip_or_fail_without_regista()
+        return
+    if not names:
+        pytest.skip("the installed regista predates WI-228 — nothing to cross-check")
+    invented = sorted(VAULT_APPROLE_VARS - names)
+    assert invented == [], (
+        f"config_surface.py declares Vault variables regista does not read: {invented}"
+    )

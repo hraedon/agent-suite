@@ -50,7 +50,8 @@ from typing import assert_never
 __all__ = [
     "DOSSIER_VARS_NOT_IN_SUITE_ENV",
     "PROFILE_B_CONFIG_SURFACE",
-    "VAULT_APPROLE_VARS_PENDING_REGISTA_WI228",
+    "SECRETS_VAULT_SECTIONS_REGISTA_CITES",
+    "VAULT_APPROLE_VARS",
     "ConfigNeed",
     "ConfigVar",
     "need_label",
@@ -350,6 +351,17 @@ PROFILE_B_CONFIG_SURFACE: tuple[ConfigVar, ...] = (
         "the Vault endpoint; with it unset no vault: ref resolves anywhere",
     ),
     ConfigVar(
+        "VAULT_ENV_FILE",
+        "vault-custody",
+        ConfigNeed.OPTIONAL,
+        "a mode-0600 env-style plane file holding VAULT_ADDR/VAULT_ROLE_ID/"
+        "VAULT_SECRET_ID. acb writes one when it provisions an AppRole, and regista "
+        "reads the same names, so one credential file serves both — that interop is "
+        "the point of the variable. The process environment wins over the file, and "
+        "a named-but-missing file is an error, never a fall-through to ambient "
+        "credentials (regista WI-228, acb PR #20)",
+    ),
+    ConfigVar(
         "VAULT_ROLE_ID_FILE",
         "vault-custody",
         ConfigNeed.POSTURE,
@@ -393,23 +405,27 @@ PROFILE_B_CONFIG_SURFACE: tuple[ConfigVar, ...] = (
         "VAULT_TOKEN",
         "vault-custody",
         ConfigNeed.OPTIONAL,
-        "DEV ONLY — a static token. It is also the *only* method regista's "
-        "released VaultProvider supports (regista WI-221), so a Vault-backed host "
-        "carries one today; a production host should not once WI-228 lands",
+        "DEV ONLY — a static token, kept so `vault server -dev` works. A "
+        "production host operates AppRole-only with none in its environment. "
+        "Setting any AppRole variable means AppRole and this is never consulted "
+        "thereafter: there is no fallback, because falling back would turn a "
+        "broken production posture into a working dev one silently (regista "
+        "WI-228; WI-221 was the pre-AppRole state the qualification hit)",
     ),
 )
 
-#: The AppRole variables above come from regista WI-228, which was **not merged
-#: to regista's main** when this declaration was written. They are documented so
-#: an operator can reach the AppRole-only posture the moment it lands — the
-#: qualification found that posture impossible (regista WI-221) and had to run
-#: behind an undocumented token-minting shim.
+#: The AppRole variables above are regista WI-228's convention, verified against
+#: regista ``origin/main`` ``e32ec9b`` (PR #16) — ``src/regista/_secrets.py``. They
+#: are **merged and working**: an earlier revision of this file carried a "not yet
+#: on regista main" caveat, which was true when written and false within the hour.
 #:
-#: Kept as a named set so the honesty is checkable: `suite.env.example` and
-#: `docs/secrets-vault.md` §8 must both say the posture is not yet reachable,
-#: rather than printing the variables as though they worked.
-VAULT_APPROLE_VARS_PENDING_REGISTA_WI228: frozenset[str] = frozenset(
+#: Kept as a named set because the cross-repo coupling is real: regista's own error
+#: messages and doctor detail cite ``agent-suite docs/secrets-vault.md`` §5 and §6
+#: by number, so those section numbers are part of the contract rather than a
+#: presentational choice. ``tests/test_config_surface.py`` pins both directions.
+VAULT_APPROLE_VARS: frozenset[str] = frozenset(
     {
+        "VAULT_ENV_FILE",
         "VAULT_ROLE_ID",
         "VAULT_ROLE_ID_FILE",
         "VAULT_SECRET_ID",
@@ -418,6 +434,15 @@ VAULT_APPROLE_VARS_PENDING_REGISTA_WI228: frozenset[str] = frozenset(
         "VAULT_APPROLE_MOUNT_POINT",
     }
 )
+
+#: The section numbers regista's merged code cites in operator-facing text. If
+#: `secrets-vault.md` renumbers, regista starts pointing operators at the wrong
+#: section — the same defect class this lane exists to remove, aimed the other way
+#: across the repo boundary.
+SECRETS_VAULT_SECTIONS_REGISTA_CITES: dict[str, str] = {
+    "5": "SecretID delivery / how resolution works",
+    "6": "how each component authenticates — the AppRole posture",
+}
 
 
 #: ``DOSSIER_*`` variables deliberately absent from `suite.env.example`, with the

@@ -1,7 +1,7 @@
 """Which secret references this host is actually configured with, and whether
 they resolve.
 
-WI-041. `docs/secrets-vault.md` §7 promises that bootstrap step 0 "probes the
+WI-041. `docs/secrets-vault.md` §8 promises that bootstrap step 0 "probes the
 resolver. If a ``vault:`` ref cannot be resolved, the bootstrap aborts with a
 clear message naming the failing ref — it does not proceed to provision against
 an unresolvable secret." It did proceed: the step ran ``regista secrets
