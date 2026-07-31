@@ -20,13 +20,15 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Protocol, assert_never
 
-from agent_suite import identity
+from agent_suite import identity, secret_refs
 from agent_suite._redact import redact_url
+from agent_suite.component_result import evaluate_component_result
 from agent_suite.components import COMPONENTS, Component, Tier
 from agent_suite.harness import (
     HarnessTarget,
@@ -37,6 +39,11 @@ from agent_suite.harness_install import (
     evaluate_install_harness_result,
     install_harness_argv,
     requires_structured_install_result,
+)
+from agent_suite.provisioning import (
+    ProvisionOutcome,
+    default_principal,
+    provision_projects,
 )
 
 # ---------------------------------------------------------------------------
@@ -75,6 +82,7 @@ class StepKind(Enum):
     PROBE_SECRETS = "probe_secrets"
     PROBE_DB = "probe_db"
     PROVISION = "provision"
+    PROJECTIONS = "projections"
     FACES = "faces"
     MEMORY_PROVIDER = "memory_provider"
     PROVENANCE = "provenance"
@@ -114,6 +122,7 @@ _INSTALL_ORDER: tuple[StepKind, ...] = (
     StepKind.PROBE_SECRETS,
     StepKind.PROBE_DB,
     StepKind.PROVISION,
+    StepKind.PROJECTIONS,
     StepKind.FACES,
     StepKind.MEMORY_PROVIDER,
     StepKind.PROVENANCE,
@@ -173,35 +182,121 @@ def _step_probe_secrets(
     runner: Runner,
     installed: Installed,
     dry_run: bool,
+    env: Mapping[str, str],
+    load_key_file: secret_refs.KeyFileLoader | None = None,
 ) -> StepResult:
+    """Resolve every configured secret ref — do not merely list providers.
+
+    WI-041. ``regista secrets --list-providers`` proves a provider *class is
+    registered*, which is why this step reported "secret backend reachable" on a
+    host whose only ``vault:`` ref was provably 403. What
+    ``docs/secrets-vault.md`` §7 promises is resolution, so that is what this
+    does: enumerate the refs this host's resolved config actually names, then
+    resolve each one, naming the failing ref.
+
+    The step never reads the child's stdout on the resolve path — ``regista
+    secrets --ref`` prints the resolved secret there.
+    """
     if not installed("regista"):
         return StepResult(
             StepKind.PROBE_SECRETS,
             StepStatus.FAILED,
             "regista CLI not installed — install regista before bootstrapping",
         )
+    refs = (
+        secret_refs.discover_refs(env)
+        if load_key_file is None
+        else secret_refs.discover_refs(env, load_key_file=load_key_file)
+    )
+    problems = secret_refs.config_problems(env)
     if dry_run:
-        return StepResult(
-            StepKind.PROBE_SECRETS,
-            StepStatus.PENDING,
-            "would probe secret backend via regista secrets --list-providers",
+        planned = (
+            f"would resolve {len(refs)} configured secret ref(s) "
+            f"({', '.join(r.source for r in refs)})"
+            if refs
+            else "would probe the resolver; no backend secret refs are configured"
         )
-    try:
-        result = runner(("regista", "secrets", "--list-providers"))
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        return StepResult(
-            StepKind.PROBE_SECRETS,
-            StepStatus.FAILED,
-            f"secret-backend probe failed: {exc}",
-        )
-    if result.returncode != 0:
+        return StepResult(StepKind.PROBE_SECRETS, StepStatus.PENDING, planned)
+
+    if problems:
         return StepResult(
             StepKind.PROBE_SECRETS,
             StepStatus.FAILED,
-            f"secret backend unreachable: {result.stderr.strip() or 'no detail'}",
+            "secret configuration cannot resolve: " + "; ".join(problems),
         )
+
+    if not refs:
+        # No refs to resolve, so the honest claim is only that the resolver
+        # runs — say that, not "reachable".
+        try:
+            listing = runner(("regista", "secrets", "--list-providers"))
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            return StepResult(
+                StepKind.PROBE_SECRETS,
+                StepStatus.FAILED,
+                f"secret-resolver probe failed: {exc}",
+            )
+        if listing.returncode != 0:
+            return StepResult(
+                StepKind.PROBE_SECRETS,
+                StepStatus.FAILED,
+                f"secret resolver unavailable: "
+                f"{listing.stderr.strip() or 'no detail'}",
+            )
+        return StepResult(
+            StepKind.PROBE_SECRETS,
+            StepStatus.DONE,
+            "no backend secret refs are configured; resolver available but "
+            "nothing to resolve (key material is local)",
+        )
+
+    for ref in refs:
+        static = secret_refs.ref_static_problem(ref.ref)
+        if static is not None:
+            return StepResult(
+                StepKind.PROBE_SECRETS,
+                StepStatus.FAILED,
+                f"{ref.source} cannot resolve: {static}",
+            )
+        argv = secret_refs.probe_ref_argv(ref.ref)
+        try:
+            probe = runner(argv)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            return StepResult(
+                StepKind.PROBE_SECRETS,
+                StepStatus.FAILED,
+                f"could not resolve {ref.source} ({ref.ref}): {exc}",
+            )
+        if probe.returncode != 0:
+            # Only the failure path may look at stdout: on success it is the
+            # resolved secret. On failure it is the CLI-contract envelope.
+            verdict = evaluate_component_result(
+                command=f"regista secrets --ref {ref.ref}",
+                returncode=probe.returncode,
+                stdout=probe.stdout,
+                stderr=probe.stderr,
+            )
+            return StepResult(
+                StepKind.PROBE_SECRETS,
+                StepStatus.FAILED,
+                f"{ref.source} does not resolve: {verdict.detail}",
+            )
+
+    foreign = sorted({r.owner_cli for r in refs if r.owner_cli != "regista"})
+    caveat = (
+        ""
+        if not foreign
+        else (
+            f"; resolution proven in regista's environment only — "
+            f"{', '.join(foreign)} must also be able to import the backend "
+            f"client in its own venv, which its own doctor is the check for"
+        )
+    )
     return StepResult(
-        StepKind.PROBE_SECRETS, StepStatus.DONE, "secret backend reachable"
+        StepKind.PROBE_SECRETS,
+        StepStatus.DONE,
+        f"resolved {len(refs)} configured secret ref(s): "
+        f"{', '.join(r.source for r in refs)}{caveat}",
     )
 
 
@@ -269,119 +364,179 @@ def _step_probe_db(
     return StepResult(StepKind.PROBE_DB, StepStatus.DONE, "Postgres reachable")
 
 
+def _provision_status_for(outcome: ProvisionOutcome) -> StepStatus:
+    match outcome:
+        case ProvisionOutcome.DONE:
+            return StepStatus.DONE
+        case ProvisionOutcome.ALREADY_DONE:
+            return StepStatus.ALREADY_DONE
+        case ProvisionOutcome.REFUSED:
+            return StepStatus.REFUSED
+        case ProvisionOutcome.FAILED:
+            return StepStatus.FAILED
+        case other:
+            assert_never(other)
+
+
 def _step_provision(
     *,
     runner: Runner,
     installed: Installed,
     dry_run: bool,
-    project: str | None,
+    projects: Sequence[str],
     principal: str | None = None,
 ) -> StepResult:
+    """Provision every project slug the config names (WI-040, WI-042, WI-051).
+
+    The verdict comes from :mod:`agent_suite.provisioning`, which reads the
+    child's structured envelope: a ``regista provision --json`` that exits 0
+    with an ``error`` body fails this step instead of greening it, and a
+    ``provision-principal`` refusal is recognised by its error code rather than
+    by the words in its message.
+    """
     if not installed("regista"):
         return StepResult(
             StepKind.PROVISION,
             StepStatus.FAILED,
             "regista CLI not installed — cannot provision",
         )
+    princ_id = default_principal(principal)
     if dry_run:
+        listed = ", ".join(projects) if projects else "(no project configured)"
         return StepResult(
             StepKind.PROVISION,
             StepStatus.PENDING,
-            "would provision project schema + service role + principal keys"
-            + (f" for {project}" if project else ""),
+            f"would provision schema + service role + principal keys for "
+            f"{listed} (principal: {princ_id})",
         )
-    if not project:
-        return StepResult(
-            StepKind.PROVISION,
-            StepStatus.FAILED,
-            "no project configured — set REGISTA_PROJECT in suite.env",
-        )
-    prov_cmd: tuple[str, ...] = (
-        "regista",
-        "provision",
-        "--project",
-        project,
-        "--json",
+    report = provision_projects(runner=runner, projects=projects, principal=princ_id)
+    return StepResult(
+        StepKind.PROVISION, _provision_status_for(report.outcome), report.detail
     )
+
+
+def _step_projections(
+    *,
+    runner: Runner,
+    installed: Installed,
+    dry_run: bool,
+) -> StepResult:
+    """Migrate agent-notes' projection database (WI-043).
+
+    ``agent-notes install-harness`` wires skills and env; it does not touch
+    agent-notes' own projection schema. After a bootstrap that printed
+    ``bootstrap: OK``, its doctor reported 11 missing tables/views and the
+    remedy appeared only in a troubleshooting table. So the migration is an
+    explicit, ordered, idempotent step here.
+
+    It is idempotent *by verifying first*: the check is agent-notes' own
+    ``schema_up_to_date`` doctor check, so a converged host reports
+    ``already_done`` without running any DDL, and a host that needed migrating
+    is only reported ``done`` once that same check passes. A skipped or absent
+    check is not a pass.
+    """
+    if not installed("agent-notes"):
+        return StepResult(
+            StepKind.PROJECTIONS,
+            StepStatus.FAILED,
+            "agent-notes not installed — required for tier face",
+        )
+    if dry_run:
+        return StepResult(
+            StepKind.PROJECTIONS,
+            StepStatus.PENDING,
+            "would verify agent-notes' projection schema and run "
+            "agent-notes-migrate --all if it is not up to date",
+        )
+
+    before = _schema_check(runner)
+    if before is True:
+        return StepResult(
+            StepKind.PROJECTIONS,
+            StepStatus.ALREADY_DONE,
+            "agent-notes projection schema already up to date",
+        )
+    if not installed("agent-notes-migrate"):
+        return StepResult(
+            StepKind.PROJECTIONS,
+            StepStatus.FAILED,
+            "agent-notes projection schema is not up to date and "
+            "agent-notes-migrate is not installed — the migration cannot be "
+            "run on this host (agent-notes WI-047: the wheel must ship "
+            "schema/*.sql for an artifact-only install)",
+        )
     try:
-        result = runner(prov_cmd)
+        migrate = runner(("agent-notes-migrate", "--all"))
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         return StepResult(
-            StepKind.PROVISION,
+            StepKind.PROJECTIONS,
             StepStatus.FAILED,
-            f"provision failed: {exc}",
+            f"agent-notes-migrate --all could not run: {exc}",
         )
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        if "already exists" in stderr.lower():
-            return StepResult(
-                StepKind.PROVISION,
-                StepStatus.ALREADY_DONE,
-                f"project {project} already provisioned",
-            )
-        if "clobber" in stderr.lower() or "refuse" in stderr.lower():
-            return StepResult(
-                StepKind.PROVISION,
-                StepStatus.REFUSED,
-                f"provision refused (would clobber existing key/schema): {stderr}",
-            )
+    if migrate.returncode != 0:
         return StepResult(
-            StepKind.PROVISION,
+            StepKind.PROJECTIONS,
             StepStatus.FAILED,
-            f"provision failed: {stderr or 'no detail'}",
+            f"agent-notes-migrate --all exited {migrate.returncode}: "
+            f"{migrate.stderr.strip() or migrate.stdout.strip() or 'no detail'}",
         )
+    after = _agent_notes_schema_check(runner)
+    if after is None or after.get("status") != "ok":
+        detail = (
+            "agent-notes doctor did not report a schema_up_to_date check"
+            if after is None
+            else f"{after.get('status')}: {after.get('detail', 'no detail')}"
+        )
+        return StepResult(
+            StepKind.PROJECTIONS,
+            StepStatus.FAILED,
+            f"agent-notes-migrate --all exited 0 but agent-notes' "
+            f"schema_up_to_date check still does not pass ({detail})",
+        )
+    return StepResult(
+        StepKind.PROJECTIONS,
+        StepStatus.DONE,
+        "agent-notes projection schema migrated (schema_up_to_date verified)",
+    )
+
+
+#: The agent-notes doctor check that answers "is the projection schema present".
+_SCHEMA_CHECK_NAME = "schema_up_to_date"
+
+
+def _agent_notes_schema_check(runner: Runner) -> dict[str, object] | None:
+    """The ``schema_up_to_date`` check from ``agent-notes doctor --json``.
+
+    Returns ``None`` when the check cannot be read at all — which callers must
+    treat as "not verified", never as a pass.
+    """
     import json
 
-    already_provisioned = False
+    try:
+        result = runner(("agent-notes", "doctor", "--json"))
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
-        data = None
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict) and item.get("schema_created") is False:
-                already_provisioned = True
+        return None
+    if not isinstance(data, dict):
+        return None
+    checks = data.get("checks")
+    if not isinstance(checks, list):
+        return None
+    for check in checks:
+        if isinstance(check, dict) and check.get("name") == _SCHEMA_CHECK_NAME:
+            return check
+    return None
 
-    princ_id = principal or "suite-service"
-    princ_cmd: tuple[str, ...] = (
-        "regista",
-        "provision-principal",
-        "--project",
-        project,
-        "--principal",
-        princ_id,
-        "--json",
-    )
-    try:
-        princ_result = runner(princ_cmd)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        return StepResult(
-            StepKind.PROVISION,
-            StepStatus.FAILED,
-            f"provision-principal failed: {exc}",
-        )
-    if princ_result.returncode != 0:
-        p_stderr = princ_result.stderr.strip()
-        if "clobber" in p_stderr.lower() or "refuse" in p_stderr.lower():
-            return StepResult(
-                StepKind.PROVISION,
-                StepStatus.REFUSED,
-                f"provision-principal refused (would clobber "
-                f"existing key for {princ_id}): {p_stderr}",
-            )
-        if "already" in p_stderr.lower() or "exists" in p_stderr.lower():
-            already_provisioned = True
-        else:
-            return StepResult(
-                StepKind.PROVISION,
-                StepStatus.FAILED,
-                f"provision-principal failed: {p_stderr or 'no detail'}",
-            )
 
-    status = StepStatus.ALREADY_DONE if already_provisioned else StepStatus.DONE
-    return StepResult(
-        StepKind.PROVISION, status, f"project {project} provisioned (principal: {princ_id})"
-    )
+def _schema_check(runner: Runner) -> bool | None:
+    """``True`` only when agent-notes affirmatively reports the schema is fine."""
+    check = _agent_notes_schema_check(runner)
+    if check is None:
+        return None
+    return check.get("status") == "ok"
 
 
 def _step_install_harness(
@@ -546,6 +701,8 @@ def _step_user_onboarding(
     dry_run: bool,
     user: str | None,
     config_path: str | None,
+    env: Mapping[str, str],
+    dossier_user: str | None = None,
 ) -> StepResult:
     if not user:
         return StepResult(
@@ -559,6 +716,8 @@ def _step_user_onboarding(
         dry_run=dry_run,
         runner=runner,
         installed=installed,
+        env=env,
+        dossier_user=dossier_user,
     )
     detail = "; ".join(f"{s.name}: {s.detail}" for s in result.steps)
     return StepResult(
@@ -604,24 +763,37 @@ def _run_step(
     installed: Installed,
     dry_run: bool,
     tier: BootstrapTier,
-    project: str | None,
+    projects: Sequence[str],
     dsn: str | None,
     user: str | None,
     config_path: str | None,
     harness: HarnessTarget,
+    env: Mapping[str, str],
     memory_engine: str = "native",
     hindsight_url: str | None = None,
+    load_key_file: secret_refs.KeyFileLoader | None = None,
+    dossier_user: str | None = None,
 ) -> StepResult:
     match step:
         case StepKind.PROBE_SECRETS:
-            return _step_probe_secrets(runner=runner, installed=installed, dry_run=dry_run)
+            return _step_probe_secrets(
+                runner=runner,
+                installed=installed,
+                dry_run=dry_run,
+                env=env,
+                load_key_file=load_key_file,
+            )
         case StepKind.PROBE_DB:
             return _step_probe_db(
                 runner=runner, installed=installed, dry_run=dry_run, dsn=dsn
             )
         case StepKind.PROVISION:
             return _step_provision(
-                runner=runner, installed=installed, dry_run=dry_run, project=project
+                runner=runner, installed=installed, dry_run=dry_run, projects=projects
+            )
+        case StepKind.PROJECTIONS:
+            return _step_projections(
+                runner=runner, installed=installed, dry_run=dry_run
             )
         case StepKind.FACES:
             comp = next(c for c in COMPONENTS if c.ident == "agent-notes")
@@ -658,6 +830,8 @@ def _run_step(
                 dry_run=dry_run,
                 user=user,
                 config_path=config_path,
+                env=env,
+                dossier_user=dossier_user,
             )
         case other:
             assert_never(other)
@@ -706,12 +880,23 @@ def _compute_ok(steps: list[StepResult]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _merge_projects(project: str | None, projects: Sequence[str]) -> tuple[str, ...]:
+    """Ordered, deduplicated project slugs — the primary one first."""
+    ordered: list[str] = []
+    for slug in ((project,) if project else ()) + tuple(projects):
+        cleaned = slug.strip()
+        if cleaned and cleaned not in ordered:
+            ordered.append(cleaned)
+    return tuple(ordered)
+
+
 def run_bootstrap(
     *,
     dry_run: bool = False,
     tier: str = "0-1",
     user: str | None = None,
     project: str | None = None,
+    projects: Sequence[str] = (),
     dsn: str | None = None,
     harness: HarnessTarget = HarnessTarget.ALL,
     runner: Runner = _default_runner,
@@ -719,6 +904,9 @@ def run_bootstrap(
     config_path: str | None = None,
     memory_engine: str = "native",
     hindsight_url: str | None = None,
+    env: Mapping[str, str] | None = None,
+    load_key_file: secret_refs.KeyFileLoader | None = None,
+    dossier_user: str | None = None,
 ) -> BootstrapResult:
     """Run the documented install order idempotently.
 
@@ -727,10 +915,21 @@ def run_bootstrap(
     Missing external dependencies fail with a named, actionable message.
     ``memory_engine`` and ``hindsight_url`` control the MEMORY_PROVIDER step
     (Plan 012 WI-1.2): native is a no-op; hindsight verifies reachability.
+
+    ``project`` is the primary (``REGISTA_PROJECT``) slug; ``projects`` is every
+    slug the resolved config names, which is what actually gets provisioned —
+    ``CAIRN_PROJECT`` is usually a *different* slug and used to be left
+    unprovisioned (WI-042). ``env`` is the resolved suite environment, read by
+    the secret-ref probe and the dossier identity binding; it defaults to
+    ``os.environ``.
     """
+    import os
+
     harness = normalize_harness_target(harness)
     tier_enum = BootstrapTier(tier)
     steps_to_run = _steps_for_tier(tier_enum)
+    resolved_env: Mapping[str, str] = os.environ if env is None else env
+    all_projects = _merge_projects(project, projects)
 
     if user and StepKind.USER_ONBOARDING not in steps_to_run:
         steps_to_run.append(StepKind.USER_ONBOARDING)
@@ -743,13 +942,16 @@ def run_bootstrap(
             installed=installed,
             dry_run=dry_run,
             tier=tier_enum,
-            project=project,
+            projects=all_projects,
             dsn=dsn,
             user=user,
             config_path=config_path,
             harness=harness,
+            env=resolved_env,
             memory_engine=memory_engine,
             hindsight_url=hindsight_url,
+            load_key_file=load_key_file,
+            dossier_user=dossier_user,
         )
         results.append(result)
         if _is_terminal(result.status):

@@ -41,6 +41,24 @@ session, fetches their signing key from the secret backend, signs the event,
 and clears the key (transient custody — see the
 [threat model](key-custody-threat-model.md) §1.2).
 
+**Where that `principal_id` comes from.** dossier reads it from an explicit
+binding on the identity record and **never derives it** — not from the username,
+not from the `stable_id` — because a derived binding would claim a signing
+identity the suite may not have provisioned (dossier WI-035):
+
+| Identity backend | Where the binding lives |
+|---|---|
+| `local` (`DOSSIER_AUTH_BACKEND=local`) | a `"principal_id"` field on that user's entry in `DOSSIER_USERS_PATH` (`users.json`) |
+| `ldap` | the directory attribute named by `DOSSIER_LDAP_PRINCIPAL_ID_ATTR`, populated per human |
+
+Without the binding a human's acceptance is **refused** under
+`DOSSIER_HUMAN_SIGNING=require` (the prod default) or **downgraded to the shared
+store HMAC key** with a loud warning under `warn` — a signature anyone holding
+that key could forge. A bound human's `actor_id` *becomes* their `principal_id`;
+plan for the one-time discontinuity that implies (dossier `docs/deploy.md` §5)
+and have them re-authenticate, because the actor is resolved at login and
+carried in the session cookie.
+
 ## 2. System admin: one-time bootstrap
 
 The system admin runs the initial bootstrap (see an
@@ -64,7 +82,7 @@ For each new human, the system admin runs:
 agent-suite bootstrap --user <principal_id>
 ```
 
-This performs two things (bootstrap step 7):
+This performs three things (bootstrap step 7):
 
 1. **Writes a per-user `suite.env` overlay** at
    `~/.config/agent-suite/suite.env` (Linux) or
@@ -72,9 +90,25 @@ This performs two things (bootstrap step 7):
    `principal_id`, default project, and personal harness wiring.
 2. **Provisions the principal's signing key** via `regista provision-principal`,
    which enrolls the principal and writes their Ed25519 key to the secret
-   backend at `secret/agent-suite/principals/<principal_id>` (or the
-   `akv:` / `wincred:` equivalent — see the relevant
+   backend at `kv/agent-suite/principals/<principal_id>` (or the
+   `azure:` / `windows:` equivalent — see the relevant
    [secrets runbook](secrets-vault.md)).
+3. **Records the dossier identity binding** (WI-052) — the step that used to be
+   missing, and without which steps 1 and 2 leave the human unattributable:
+   - **local backend:** writes `"principal_id": "<principal_id>"` onto the
+     matching `users.json` entry, matched on `username`. Pass
+     `--dossier-user <username>` when the dossier username differs from the
+     principal id. Idempotent; an entry already bound to a *different* principal
+     is **refused** rather than rewritten, because rebinding changes the id that
+     human signs under.
+   - **ldap backend:** reports a named `manual_action_required` step — the suite
+     cannot write to a directory. Set `DOSSIER_LDAP_PRINCIPAL_ID_ATTR` and
+     populate that attribute for the human.
+   - **neither configured:** if dossier is installed but no identity source is
+     configured, this is `manual_action_required`, not a silent pass. The
+     qualification run's `qual-human` had a matching username *and* a
+     provisioned principal and still could not sign, because nothing joined
+     those two facts.
 
 The overlay does **not** touch the shared system `suite.env` — it layers on
 top of it. The resolution precedence (from the
@@ -120,9 +154,15 @@ human; the delegation chain is recorded (see the
 
 `agent-suite bootstrap --user <principal_id>` is idempotent: re-running it on
 an already-onboarded user updates the overlay (e.g., to change their default
-project) but does **not** clobber an existing signing key. If the principal
-already has a key, the provision step refuses and reports rather than
-overwriting — see the [bootstrap contract](bootstrap-contract.md) §1 step 2.
+project), does **not** clobber an existing signing key, and leaves an existing
+dossier binding alone. If the principal already has a key, the provision step
+reports it as already done (on regista's own `already_existed` report, not on
+silence) — see the [bootstrap contract](bootstrap-contract.md) §1 step 2.
+
+A principal that must act in **more than one project** keeps one key: regista
+refuses to mint a second keypair into the shared key file, and the suite
+re-runs with `--reuse-existing-key` so the existing public key is registered in
+the additional project. One principal, one key, registered everywhere it acts.
 
 ## 6. Leaver process
 
@@ -190,6 +230,19 @@ After onboarding a user, confirm their wiring is correct:
 ```bash
 agent-suite doctor
 ```
+
+Then confirm the human can actually sign as themselves — the property the
+provisioning exists for:
+
+```bash
+dossier doctor      # the human_signing check
+```
+
+`dossier doctor`'s `human_signing` check names every local identity with **no**
+`principal_id`, and every recorded `principal_id` with **no** active per-actor
+key. Both are the gap this runbook's step 3.3 closes; a green `agent-suite
+doctor` does not imply it, because the umbrella folds each component's verdict
+and dossier is the only component that knows about the binding.
 
 The user can also verify their own principal is active:
 

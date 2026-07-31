@@ -20,6 +20,7 @@ The per-user file is at ``~/.config/agent-suite/suite.env`` (Linux) or
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -80,6 +81,37 @@ def memory_provider_config() -> dict[str, object]:
         "hindsight_tenant": hindsight_tenant,
         "endpoint": endpoint,
     }
+
+
+#: Every env var that names a regista project slug, in provisioning order.
+#: ``DOSSIER_PROJECTS`` is a comma-separated list; the rest are single slugs.
+#: `suite.env.example` ships ``CAIRN_PROJECT=agent_provenance`` — a *different*
+#: slug from ``REGISTA_PROJECT`` — and bootstrap provisioned only the latter, so
+#: cairn was red after a by-the-book install (WI-042).
+PROJECT_SLUG_ENV_VARS: tuple[str, ...] = (
+    "REGISTA_PROJECT",
+    "CAIRN_PROJECT",
+    "AGENT_NOTES_PROJECT",
+    "DOSSIER_PROJECTS",
+)
+
+
+def configured_project_slugs(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """Every project slug the resolved config names, ordered and deduplicated.
+
+    These are the schemas the host will actually write to, and therefore the
+    ones ``bootstrap`` must provision. Reading them from config rather than
+    accepting one slug is the difference between "the project I was told about
+    works" and "this host works".
+    """
+    source: Mapping[str, str] = os.environ if env is None else env
+    slugs: list[str] = []
+    for var in PROJECT_SLUG_ENV_VARS:
+        for candidate in source.get(var, "").split(","):
+            slug = candidate.strip()
+            if slug and slug not in slugs:
+                slugs.append(slug)
+    return tuple(slugs)
 
 
 def user_suite_env_path() -> Path:

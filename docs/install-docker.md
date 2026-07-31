@@ -61,18 +61,27 @@ volumes:
 Replace `suite-db.example` with the actual database hostname in `suite.env`.
 The `REGISTA_DB_PASSWORD` is the Postgres bootstrap password — it is **not**
 the suite's secret backend; the suite's DSN password is resolved via
-`vault:` / `akv:` refs inside the container (see §3).
+`vault:` / `azure:` refs inside the container (see §3).
 
 ## 3. Configure suite.env
 
 Create `suite.env` alongside the Compose file:
 
 ```env
-REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT@suite-db:5432/regista
-REGISTA_DSN_PASSWORD=vault:secret/agent-suite/regista#dsn_password
-REGISTA_KEY_PATH=vault:secret/agent-suite/regista#signing_key
+REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT:PASSWORD@suite-db:5432/regista
+REGISTA_KEY_PATH=/etc/agent-suite/keys.json
 REGISTA_REQUIRE_SSL=false
+CAIRN_CONTENT_KEY_REF=vault:kv/agent-suite/hosts/HOSTNAME/cairn/content_key
 ```
+
+`REGISTA_KEY_PATH` is a path to a `keys.json` **file**, not a ref — a custodied
+signing key is a `secret_ref` entry *inside* that file
+([secrets-vault.md](secrets-vault.md) §4.1). There is no
+`REGISTA_DSN_PASSWORD` variable in regista's config vocabulary; the DSN password
+is part of `REGISTA_DSN`. A `vault:` ref is
+`vault:<mount>/<path…>/<field>` — the field is the **last path segment**, never
+a `#field` suffix. `agent-suite bootstrap` step 0 resolves every ref this file
+names and aborts on the ones that do not.
 
 Note `suite-db` (the Compose service name) replaces `suite-db.example` — the
 container resolves it via Docker networking. Set `REGISTA_REQUIRE_SSL=false`

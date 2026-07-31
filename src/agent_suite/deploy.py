@@ -27,6 +27,7 @@ from typing import Protocol, assert_never
 
 from agent_suite.bootstrap import run_bootstrap
 from agent_suite.components import COMPONENTS
+from agent_suite.config import configured_project_slugs
 from agent_suite.doctor import aggregate
 from agent_suite.harness import HarnessTarget, normalize_harness_target
 from agent_suite.lock import (
@@ -187,6 +188,10 @@ def _step_bootstrap(
         tier=tier,
         user=user,
         project=project,
+        # Every slug the resolved config names, not just the primary one: a
+        # deployment that leaves CAIRN_PROJECT unprovisioned is not deployed
+        # (WI-042).
+        projects=configured_project_slugs(),
         dsn=dsn,
         harness=harness,
         memory_engine=memory_engine,

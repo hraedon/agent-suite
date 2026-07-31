@@ -32,7 +32,6 @@ ungated.  stdlib-only core.
 from __future__ import annotations
 
 import hashlib
-import json
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -40,6 +39,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol, assert_never
 
+from agent_suite.component_result import evaluate_component_result
 from agent_suite.harness import (
     HarnessTarget,
     expand_harness_target,
@@ -49,6 +49,11 @@ from agent_suite.harness_install import (
     evaluate_install_harness_result,
     install_harness_argv,
     requires_structured_install_result,
+)
+from agent_suite.provisioning import (
+    ProvisionOutcome,
+    default_principal,
+    provision_projects,
 )
 
 # ---------------------------------------------------------------------------
@@ -217,6 +222,20 @@ def _compute_spec_md_hash(spec_path: Path) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _provision_status_for(outcome: ProvisionOutcome) -> OnboardStatus:
+    match outcome:
+        case ProvisionOutcome.DONE:
+            return OnboardStatus.DONE
+        case ProvisionOutcome.ALREADY_DONE:
+            return OnboardStatus.ALREADY_DONE
+        case ProvisionOutcome.REFUSED:
+            return OnboardStatus.REFUSED
+        case ProvisionOutcome.FAILED:
+            return OnboardStatus.FAILED
+        case other:
+            assert_never(other)
+
+
 def _step_provision(
     *,
     runner: Runner,
@@ -225,92 +244,34 @@ def _step_provision(
     project: str,
     principal: str | None = None,
 ) -> OnboardStepResult:
+    """Provision the project and its principal (WI-040, WI-051).
+
+    Both verdicts come from :mod:`agent_suite.provisioning`, which reads the
+    child's structured result and classifies a refusal by its error code. The
+    string-matching this used to do ("already"/"exists" in stderr means
+    success) reported a hard integrity stop as a green step.
+    """
     if not installed("regista"):
         return OnboardStepResult(
             OnboardStep.PROVISION,
             OnboardStatus.FAILED,
             "regista CLI not installed — install regista before onboarding",
         )
+    princ_id = default_principal(principal)
     if dry_run:
         return OnboardStepResult(
             OnboardStep.PROVISION,
             OnboardStatus.PENDING,
-            f"would provision project {project} (schema + service role + principal keys)",
+            f"would provision project {project} (schema + service role + "
+            f"principal keys for {princ_id})",
         )
-
-    prov_cmd: tuple[str, ...] = (
-        "regista", "provision", "--project", project, "--json",
+    report = provision_projects(
+        runner=runner, projects=(project,), principal=princ_id
     )
-    try:
-        result = runner(prov_cmd)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        return OnboardStepResult(
-            OnboardStep.PROVISION,
-            OnboardStatus.FAILED,
-            f"provision failed: {exc}",
-        )
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        if "clobber" in stderr.lower() or "refuse" in stderr.lower():
-            return OnboardStepResult(
-                OnboardStep.PROVISION,
-                OnboardStatus.REFUSED,
-                f"provision refused (would clobber existing key/schema): {stderr}",
-            )
-        if "already" not in stderr.lower() and "exists" not in stderr.lower():
-            return OnboardStepResult(
-                OnboardStep.PROVISION,
-                OnboardStatus.FAILED,
-                f"provision failed: {stderr or 'no detail'}",
-            )
-
-    already_provisioned = False
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        data = None
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict) and item.get("schema_created") is False:
-                already_provisioned = True
-    elif isinstance(data, dict) and data.get("schema_created") is False:
-        already_provisioned = True
-
-    princ_id = principal or "suite-service"
-    princ_cmd: tuple[str, ...] = (
-        "regista", "provision-principal", "--project", project,
-        "--principal", princ_id, "--json",
-    )
-    try:
-        princ_result = runner(princ_cmd)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        return OnboardStepResult(
-            OnboardStep.PROVISION,
-            OnboardStatus.FAILED,
-            f"provision-principal failed: {exc}",
-        )
-    if princ_result.returncode != 0:
-        p_stderr = princ_result.stderr.strip()
-        if "clobber" in p_stderr.lower() or "refuse" in p_stderr.lower():
-            return OnboardStepResult(
-                OnboardStep.PROVISION,
-                OnboardStatus.REFUSED,
-                f"provision-principal refused (would clobber "
-                f"existing key for {princ_id}): {p_stderr}",
-            )
-        if "already" in p_stderr.lower() or "exists" in p_stderr.lower():
-            already_provisioned = True
-        else:
-            return OnboardStepResult(
-                OnboardStep.PROVISION,
-                OnboardStatus.FAILED,
-                f"provision-principal failed: {p_stderr or 'no detail'}",
-            )
-
-    status = OnboardStatus.ALREADY_DONE if already_provisioned else OnboardStatus.DONE
     return OnboardStepResult(
-        OnboardStep.PROVISION, status,
-        f"project {project} provisioned (principal: {princ_id})",
+        OnboardStep.PROVISION,
+        _provision_status_for(report.outcome),
+        report.detail,
     )
 
 
@@ -355,18 +316,24 @@ def _step_sign_spec(
             OnboardStatus.FAILED,
             f"spec sign failed: {exc}",
         )
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        if "already" in stderr.lower() or "exists" in stderr.lower():
-            return OnboardStepResult(
-                OnboardStep.SIGN_SPEC,
-                OnboardStatus.ALREADY_DONE,
-                f"spec already signed as event-zero for project {project}",
-            )
+    verdict = evaluate_component_result(
+        command=f"regista spec sign --project {project}",
+        returncode=result.returncode,
+        stdout=result.stdout,
+        stderr=result.stderr,
+    )
+    if not verdict.ok:
+        # Deliberately no "already signed" branch. regista's `spec sign` has no
+        # idempotent already-signed signal — no result flag and no error code
+        # meaning "this exact spec is already event-zero" — so the old
+        # "already"/"exists" substring match was reporting *any* failure whose
+        # message happened to contain those words (an idempotency collision with
+        # a *different* payload says exactly that) as a completed step. Until
+        # regista offers a code to branch on, an error here is an error.
         return OnboardStepResult(
             OnboardStep.SIGN_SPEC,
             OnboardStatus.FAILED,
-            f"spec sign failed: {stderr or 'no detail'}",
+            f"spec sign failed: {verdict.detail}",
         )
     return OnboardStepResult(
         OnboardStep.SIGN_SPEC,

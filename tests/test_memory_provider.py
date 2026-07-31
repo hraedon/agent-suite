@@ -319,16 +319,45 @@ _INSTALL_OK = (
 )
 
 
+#: Realistic component result bodies — the suite now judges the *body*, so a
+#: stub that under-reports is a stub of a child that cannot be judged (WI-040).
+_PROVISION_OK = json.dumps([
+    {
+        "project": "test-proj",
+        "schema_created": True,
+        "migrations_applied": [1],
+        "service_role_created": True,
+        "error": None,
+    }
+])
+_PRINCIPAL_OK = json.dumps(
+    {
+        "principal_id": "suite-service",
+        "project": "test-proj",
+        "key_id": "pk_1",
+        "already_existed": False,
+        "public_key_registered": True,
+        "private_key_stored": True,
+        "error": None,
+    }
+)
+_NOTES_DOCTOR_OK = json.dumps(
+    {
+        "ok": True,
+        "checks": [
+            {"name": "schema_up_to_date", "status": "ok", "detail": "schema current"}
+        ],
+    }
+)
+
+
 def test_bootstrap_native_engine_done() -> None:
     runner = StubRunner({
         ("regista", "doctor"): _completed(stdout='{"reachable": true, "ok": true}'),
-        ("regista", "provision"): _completed(
-            stdout='[{"project": "test", "schema_created": true}]'
-        ),
-        ("regista", "provision-principal"): _completed(
-            stdout='{"principal_id": "suite-service"}'
-        ),
-        ("regista", "secrets"): _completed(stdout="ok"),
+        ("regista", "provision"): _completed(stdout=_PROVISION_OK),
+        ("regista", "provision-principal"): _completed(stdout=_PRINCIPAL_OK),
+        ("regista", "secrets"): _completed(stdout="providers"),
+        ("agent-notes", "doctor"): _completed(stdout=_NOTES_DOCTOR_OK),
         ("agent-notes", "install-harness"): _completed(stdout=_INSTALL_OK),
         ("cairn",): _completed(stdout=_INSTALL_OK),
     })
@@ -338,7 +367,8 @@ def test_bootstrap_native_engine_done() -> None:
         project="test-proj",
         dsn="postgresql://test:test@localhost/test",
         runner=runner,
-        installed=_installed_all,
+        env={},
+            installed=_installed_all,
         memory_engine="native",
     )
     assert result.ok is True
@@ -350,13 +380,10 @@ def test_bootstrap_native_engine_done() -> None:
 def test_bootstrap_hindsight_unreachable_failed() -> None:
     runner = StubRunner({
         ("regista", "doctor"): _completed(stdout='{"reachable": true, "ok": true}'),
-        ("regista", "provision"): _completed(
-            stdout='[{"project": "test", "schema_created": true}]'
-        ),
-        ("regista", "provision-principal"): _completed(
-            stdout='{"principal_id": "suite-service"}'
-        ),
-        ("regista", "secrets"): _completed(stdout="ok"),
+        ("regista", "provision"): _completed(stdout=_PROVISION_OK),
+        ("regista", "provision-principal"): _completed(stdout=_PRINCIPAL_OK),
+        ("regista", "secrets"): _completed(stdout="providers"),
+        ("agent-notes", "doctor"): _completed(stdout=_NOTES_DOCTOR_OK),
         ("agent-notes", "install-harness"): _completed(stdout=_INSTALL_OK),
         ("agent-notes", "memory-provider"): _completed(
             returncode=1, stderr="connection refused"
@@ -369,7 +396,8 @@ def test_bootstrap_hindsight_unreachable_failed() -> None:
         project="test-proj",
         dsn="postgresql://test:test@localhost/test",
         runner=runner,
-        installed=_installed_all,
+        env={},
+            installed=_installed_all,
         memory_engine="hindsight",
         hindsight_url="https://hindsight-api.example.com",
     )
@@ -382,13 +410,10 @@ def test_bootstrap_hindsight_unreachable_failed() -> None:
 def test_bootstrap_hindsight_no_url_failed() -> None:
     runner = StubRunner({
         ("regista", "doctor"): _completed(stdout='{"reachable": true, "ok": true}'),
-        ("regista", "provision"): _completed(
-            stdout='[{"project": "test", "schema_created": true}]'
-        ),
-        ("regista", "provision-principal"): _completed(
-            stdout='{"principal_id": "suite-service"}'
-        ),
-        ("regista", "secrets"): _completed(stdout="ok"),
+        ("regista", "provision"): _completed(stdout=_PROVISION_OK),
+        ("regista", "provision-principal"): _completed(stdout=_PRINCIPAL_OK),
+        ("regista", "secrets"): _completed(stdout="providers"),
+        ("agent-notes", "doctor"): _completed(stdout=_NOTES_DOCTOR_OK),
         ("agent-notes", "install-harness"): _completed(stdout=_INSTALL_OK),
         ("cairn",): _completed(stdout=_INSTALL_OK),
     })
@@ -398,7 +423,8 @@ def test_bootstrap_hindsight_no_url_failed() -> None:
         project="test-proj",
         dsn="postgresql://test:test@localhost/test",
         runner=runner,
-        installed=_installed_all,
+        env={},
+            installed=_installed_all,
         memory_engine="hindsight",
         hindsight_url=None,
     )
@@ -411,13 +437,10 @@ def test_bootstrap_hindsight_no_url_failed() -> None:
 def test_bootstrap_hindsight_reachable_done() -> None:
     runner = StubRunner({
         ("regista", "doctor"): _completed(stdout='{"reachable": true, "ok": true}'),
-        ("regista", "provision"): _completed(
-            stdout='[{"project": "test", "schema_created": true}]'
-        ),
-        ("regista", "provision-principal"): _completed(
-            stdout='{"principal_id": "suite-service"}'
-        ),
-        ("regista", "secrets"): _completed(stdout="ok"),
+        ("regista", "provision"): _completed(stdout=_PROVISION_OK),
+        ("regista", "provision-principal"): _completed(stdout=_PRINCIPAL_OK),
+        ("regista", "secrets"): _completed(stdout="providers"),
+        ("agent-notes", "doctor"): _completed(stdout=_NOTES_DOCTOR_OK),
         ("agent-notes", "install-harness"): _completed(stdout=_INSTALL_OK),
         ("agent-notes", "memory-provider"): _completed(stdout=_mp_describe_ok()),
         ("cairn",): _completed(stdout=_INSTALL_OK),
@@ -428,7 +451,8 @@ def test_bootstrap_hindsight_reachable_done() -> None:
         project="test-proj",
         dsn="postgresql://test:test@localhost/test",
         runner=runner,
-        installed=_installed_all,
+        env={},
+            installed=_installed_all,
         memory_engine="hindsight",
         hindsight_url="https://hindsight-api.example.com",
     )
@@ -446,7 +470,8 @@ def test_bootstrap_memory_provider_dry_run() -> None:
         project="test-proj",
         dsn="postgresql://test:test@localhost/test",
         runner=runner,
-        installed=_installed_all,
+        env={},
+            installed=_installed_all,
         memory_engine="hindsight",
         hindsight_url="https://hindsight-api.example.com",
     )

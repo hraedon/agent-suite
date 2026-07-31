@@ -24,13 +24,19 @@ reports ``MANUAL`` with the exact refs, never folding it into success.
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
+import stat
 import subprocess
+import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol, assert_never
 
+from agent_suite.component_result import ChildOutcome, evaluate_component_result
 from agent_suite.config import _parse_env_file, user_suite_env_path
 
 # ---------------------------------------------------------------------------
@@ -291,13 +297,21 @@ def _enroll_principal(
     principal: str,
     secret_backend: str | None,
     dry_run: bool,
+    key_path: str | None = None,
 ) -> IdentityStep:
     # `--json` is a *global* regista flag and must precede the subcommand:
     # the `principal` subcommands do not define their own (unlike `provision`),
     # so a trailing --json is rejected as an unrecognised argument.
-    cmd: tuple[str, ...] = (
-        "regista", "--json", "principal", "enroll", "--principal", principal,
-    )
+    #
+    # `--hmac-key-path` is passed explicitly for the same reason it is global:
+    # `principal enroll` resolves the key file through regista's own config and,
+    # on a host where `REGISTA_KEY_PATH` is set only in `suite.env`, fails with
+    # `[UNKNOWN_KEY_ID] hmac_key_path is required`. Measured on the qualification
+    # host: identical command plus this flag returns `already_existed: true`.
+    cmd: tuple[str, ...] = ("regista", "--json")
+    if key_path:
+        cmd += ("--hmac-key-path", key_path)
+    cmd += ("principal", "enroll", "--principal", principal)
     if secret_backend:
         cmd += ("--secret-backend", secret_backend)
     if dry_run:
@@ -311,31 +325,34 @@ def _enroll_principal(
         return IdentityStep(
             "principal_key", IdentityOutcome.FAILED, f"enroll failed: {run_error}"
         )
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        # regista refuses rather than overwriting an existing key — surface
-        # that as REFUSED, not FAILED: nothing is wrong, nothing was clobbered.
-        if "clobber" in stderr.lower() or "refuse" in stderr.lower():
+    # regista refuses rather than overwriting an existing key. That refusal is
+    # recognised by its error *code* — the previous substring match on
+    # "clobber"/"refuse" made regista's prose part of this contract (WI-051).
+    verdict = evaluate_component_result(
+        command=f"regista principal enroll --principal {principal}",
+        returncode=result.returncode,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        require_fields=("key_id", "already_existed", "secret_backend"),
+    )
+    match verdict.outcome:
+        case ChildOutcome.REFUSED:
             return IdentityStep(
                 "principal_key",
                 IdentityOutcome.REFUSED,
-                f"enroll refused (would clobber an existing key): {stderr}",
+                f"enroll refused (nothing was clobbered): {verdict.detail}",
             )
-        return IdentityStep(
-            "principal_key",
-            IdentityOutcome.FAILED,
-            f"enroll failed: {stderr or 'no detail'}",
-        )
-    data = _parse_json(result.stdout)
-    if not isinstance(data, dict):
-        return IdentityStep(
-            "principal_key",
-            IdentityOutcome.FAILED,
-            "enroll --json emitted no JSON object on stdout",
-        )
-    key_id = data.get("key_id", "unknown")
-    backend = data.get("secret_backend", "unknown")
-    if data.get("already_existed") is True:
+        case ChildOutcome.FAILED:
+            return IdentityStep(
+                "principal_key", IdentityOutcome.FAILED, f"enroll failed: {verdict.detail}"
+            )
+        case ChildOutcome.SUCCESS:
+            pass
+        case other:
+            assert_never(other)
+    key_id = verdict.field("key_id")
+    backend = verdict.field("secret_backend")
+    if verdict.field("already_existed") is True:
         return IdentityStep(
             "principal_key",
             IdentityOutcome.ALREADY_DONE,
@@ -515,6 +532,317 @@ def _secret_backend_step(
 
 
 # ---------------------------------------------------------------------------
+# The dossier identity binding (WI-052)
+#
+# dossier WI-035 made a human's transitions sign under a **per-actor** Ed25519
+# key, and it keys that on an explicit ``principal_id`` recorded on the dossier
+# identity. It never derives one — not from the username, not from the
+# stable_id — because a derived binding would claim a signing identity the
+# suite may not have provisioned.
+#
+# `bootstrap --user <principal_id>` provisioned the key and wrote the overlay
+# and stopped there, so a by-the-book onboarding still left the human
+# unattributable: their acceptance was either refused (the prod default) or
+# downgraded to the shared store HMAC key. That is exactly how the
+# qualification run failed — users.json had username "qual-human" and the
+# provisioned principal was "qual-human", and nothing joined those two facts.
+# ---------------------------------------------------------------------------
+
+#: Where dossier's local backend reads identities from.
+DOSSIER_USERS_PATH_ENV = "DOSSIER_USERS_PATH"
+#: Which identity source dossier is configured with (``local`` | ``ldap``).
+DOSSIER_BACKEND_ENV = "DOSSIER_AUTH_BACKEND"
+#: The directory attribute carrying the principal id on the LDAP backend.
+DOSSIER_LDAP_ATTR_ENV = "DOSSIER_LDAP_PRINCIPAL_ID_ATTR"
+
+#: The field dossier reads the binding from, on the user's users.json entry.
+DOSSIER_BINDING_FIELD = "principal_id"
+
+BINDING_STEP = "dossier_binding"
+
+# Mirrors dossier's ``keys._validate_principal_id``: an invalid principal_id
+# fails at *load* for the local backend, so writing one would take dossier's
+# whole identity source down rather than fail this step.
+_PRINCIPAL_ID_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+_PRINCIPAL_ID_MAX_LEN = 256
+
+
+def principal_id_problem(principal: str) -> str | None:
+    """Why ``principal`` is not a usable regista/dossier principal id."""
+    if not principal:
+        return "principal_id is required"
+    if len(principal) > _PRINCIPAL_ID_MAX_LEN:
+        return f"principal_id must be at most {_PRINCIPAL_ID_MAX_LEN} characters"
+    if not _PRINCIPAL_ID_RE.match(principal):
+        return (
+            "principal_id must be alphanumeric, dot, hyphen, or underscore only"
+        )
+    return None
+
+
+def _ldap_binding_step(env: Mapping[str, str], principal: str) -> IdentityStep:
+    """The LDAP backend's binding is a directory write the suite cannot do."""
+    attr = env.get(DOSSIER_LDAP_ATTR_ENV, "").strip()
+    if attr:
+        detail = (
+            f"dossier reads the binding from the directory attribute {attr!r} "
+            f"({DOSSIER_LDAP_ATTR_ENV}); populate it with {principal!r} for this "
+            f"human in the directory. The suite cannot write to the directory, "
+            f"and `dossier doctor`'s human_signing check is what confirms it"
+        )
+    else:
+        detail = (
+            f"{DOSSIER_LDAP_ATTR_ENV} is not set, so every LDAP identity is "
+            f"unbound and no human can sign per-actor. Set it to the attribute "
+            f"carrying the suite principal id (often sAMAccountName) and "
+            f"populate that attribute with {principal!r} for this human"
+        )
+    return IdentityStep(BINDING_STEP, IdentityOutcome.MANUAL, detail)
+
+
+def _load_users(path: Path) -> tuple[list[dict[str, Any]] | None, str]:
+    """Read dossier's users file. Returns ``(users, error-detail)``."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, f"could not read {path}: {exc}"
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, f"{path} is not valid JSON: {exc}"
+    if not isinstance(data, list) or not all(isinstance(e, dict) for e in data):
+        return None, f"{path} must be a JSON array of user objects"
+    return [dict(entry) for entry in data], ""
+
+
+def _write_users(path: Path, users: list[dict[str, Any]]) -> str:
+    """Rewrite dossier's users file atomically. Returns an error detail or ""."""
+    try:
+        mode: int | None = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        mode = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=".users_", suffix=".tmp"
+        )
+    except OSError as exc:
+        return f"could not create a temporary file beside {path}: {exc}"
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(users, handle, indent=2)
+            handle.write("\n")
+        # The file carries password hashes: keep whatever mode the operator set
+        # rather than widening or narrowing it as a side effect.
+        if mode is not None:
+            os.chmod(tmp_name, mode)
+        os.replace(tmp_name, path)
+    except OSError as exc:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        return f"could not write {path}: {exc}"
+    return ""
+
+
+def bind_dossier_identity(
+    *,
+    principal: str,
+    env: Mapping[str, str],
+    dossier_user: str | None = None,
+    installed: Installed,
+    dry_run: bool = False,
+) -> IdentityStep:
+    """Record ``principal`` as the regista principal of a dossier identity.
+
+    Idempotent, like the key step: an identity already bound to this principal
+    reports ``ALREADY_DONE``. An identity bound to a *different* principal is
+    ``REFUSED`` rather than rewritten — rebinding changes the actor_id a human
+    signs under, which splits their history at the changeover (dossier
+    `docs/deploy.md` §5) and is not something onboarding should do silently.
+    """
+    problem = principal_id_problem(principal)
+    if problem is not None:
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.FAILED,
+            f"cannot bind {principal!r}: {problem}",
+        )
+
+    backend = env.get(DOSSIER_BACKEND_ENV, "").strip().lower() or "local"
+    users_path_raw = env.get(DOSSIER_USERS_PATH_ENV, "").strip()
+
+    if not installed("dossier") and not users_path_raw:
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.ALREADY_DONE,
+            "dossier is not installed and no identity source is configured on "
+            "this host; there is no dossier identity to bind",
+        )
+
+    if backend == "ldap":
+        return _ldap_binding_step(env, principal)
+    if backend != "local":
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.FAILED,
+            f"{DOSSIER_BACKEND_ENV}={backend!r} is not a dossier identity "
+            f"backend (expected 'local' or 'ldap')",
+        )
+
+    if not users_path_raw:
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.MANUAL,
+            f"{DOSSIER_USERS_PATH_ENV} is not set, so the suite cannot record "
+            f"the {DOSSIER_BINDING_FIELD} dossier needs to find this human's "
+            f"per-actor signing key; set it and re-run, or add "
+            f'"{DOSSIER_BINDING_FIELD}": "{principal}" to their users.json entry',
+        )
+
+    users_path = Path(users_path_raw).expanduser()
+    username = (dossier_user or principal).strip()
+    if dry_run:
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.PENDING,
+            f"would record {DOSSIER_BINDING_FIELD}={principal} on the "
+            f"{username!r} entry in {users_path}",
+        )
+
+    users, load_error = _load_users(users_path)
+    if users is None:
+        return IdentityStep(BINDING_STEP, IdentityOutcome.FAILED, load_error)
+
+    matches = [
+        entry
+        for entry in users
+        if str(entry.get("username", "")).strip().lower() == username.lower()
+    ]
+    if not matches:
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.MANUAL,
+            f"no dossier identity with username {username!r} in {users_path}, "
+            f"so nothing records that {principal!r} is their signing principal. "
+            f"Create their dossier user and re-run, pass the username "
+            f"explicitly if it differs from the principal id, or ignore this "
+            f"for a non-human principal that never acts through dossier",
+        )
+    if len(matches) > 1:
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.FAILED,
+            f"{users_path} has {len(matches)} entries with username "
+            f"{username!r}; cannot tell which identity to bind",
+        )
+
+    entry = matches[0]
+    existing = entry.get(DOSSIER_BINDING_FIELD)
+    if isinstance(existing, str) and existing.strip() == principal:
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.ALREADY_DONE,
+            f"{username!r} in {users_path} is already bound to principal "
+            f"{principal!r}",
+        )
+    if isinstance(existing, str) and existing.strip():
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.REFUSED,
+            f"{username!r} in {users_path} is already bound to principal "
+            f"{existing.strip()!r}, not {principal!r}. Rebinding changes the "
+            f"actor_id this human signs under and splits their history at the "
+            f"changeover, so it is an explicit operator decision — edit the "
+            f"entry deliberately if that is what you intend",
+        )
+
+    entry[DOSSIER_BINDING_FIELD] = principal
+    write_error = _write_users(users_path, users)
+    if write_error:
+        return IdentityStep(BINDING_STEP, IdentityOutcome.FAILED, write_error)
+    return IdentityStep(
+        BINDING_STEP,
+        IdentityOutcome.DONE,
+        f"bound dossier identity {username!r} to principal {principal!r} in "
+        f"{users_path}; the human must re-authenticate before their session "
+        f"carries the new actor_id",
+    )
+
+
+def unbind_dossier_identity(
+    *,
+    principal: str,
+    env: Mapping[str, str],
+    dossier_user: str | None = None,
+    installed: Installed,
+    dry_run: bool = False,
+) -> IdentityStep:
+    """Remove a leaver's binding, so it does not point at a revoked principal.
+
+    Not a security hole either way — the key is revoked and deleted, and dossier
+    refuses to fall back to the store key — but a binding pointing at nothing
+    reads as a provisioning failure rather than a leaver (WI-052 ask 3).
+    """
+    backend = env.get(DOSSIER_BACKEND_ENV, "").strip().lower() or "local"
+    users_path_raw = env.get(DOSSIER_USERS_PATH_ENV, "").strip()
+    if backend == "ldap":
+        attr = env.get(DOSSIER_LDAP_ATTR_ENV, "").strip() or DOSSIER_LDAP_ATTR_ENV
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.MANUAL,
+            f"clear the {attr} attribute for this leaver in the directory; the "
+            f"suite cannot write to it",
+        )
+    if not users_path_raw:
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.ALREADY_DONE,
+            f"{DOSSIER_USERS_PATH_ENV} is not set; no local dossier binding to remove",
+        )
+    users_path = Path(users_path_raw).expanduser()
+    username = (dossier_user or principal).strip()
+    users, load_error = _load_users(users_path)
+    if users is None:
+        return IdentityStep(BINDING_STEP, IdentityOutcome.FAILED, load_error)
+    bound = [
+        entry
+        for entry in users
+        if str(entry.get(DOSSIER_BINDING_FIELD, "")).strip() == principal
+        or str(entry.get("username", "")).strip().lower() == username.lower()
+    ]
+    stale = [
+        entry
+        for entry in bound
+        if str(entry.get(DOSSIER_BINDING_FIELD, "")).strip() == principal
+    ]
+    if not stale:
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.ALREADY_DONE,
+            f"no dossier identity in {users_path} is bound to {principal!r}",
+        )
+    if dry_run:
+        return IdentityStep(
+            BINDING_STEP,
+            IdentityOutcome.PENDING,
+            f"would remove the {DOSSIER_BINDING_FIELD}={principal} binding from "
+            f"{len(stale)} identity/identities in {users_path}",
+        )
+    for entry in stale:
+        entry.pop(DOSSIER_BINDING_FIELD, None)
+    write_error = _write_users(users_path, users)
+    if write_error:
+        return IdentityStep(BINDING_STEP, IdentityOutcome.FAILED, write_error)
+    return IdentityStep(
+        BINDING_STEP,
+        IdentityOutcome.DONE,
+        f"removed the {principal!r} binding from {len(stale)} dossier "
+        f"identity/identities in {users_path}",
+    )
+
+
+# ---------------------------------------------------------------------------
 # The two lifecycle entry points
 # ---------------------------------------------------------------------------
 
@@ -529,15 +857,22 @@ def run_user_onboarding(
     dry_run: bool = False,
     runner: Runner | None = None,
     installed: Installed | None = None,
+    env: Mapping[str, str] | None = None,
+    dossier_user: str | None = None,
 ) -> IdentityResult:
     """Onboard one human or agent principal (onboarding doc §3).
 
-    Writes the per-user overlay, then enrolls the principal's signing key.
-    Both steps are idempotent; the key step never overwrites an existing key.
+    Three steps, all idempotent: the per-user overlay, the principal's signing
+    key (never overwritten), and the **dossier identity binding** that makes the
+    key usable for a human's transitions. Without the third, a human whose
+    onboarding followed every documented step still had no ``principal_id`` on
+    their dossier identity, so dossier could not find their key and either
+    refused their acceptance or downgraded it to the shared store key (WI-052).
     """
     run = runner or _default_runner
     is_installed = installed or _default_installed
     path = overlay_path or user_suite_env_path()
+    resolved_env: Mapping[str, str] = os.environ if env is None else env
 
     steps: list[IdentityStep] = [
         write_overlay(
@@ -562,8 +897,19 @@ def run_user_onboarding(
                 principal=principal,
                 secret_backend=secret_backend,
                 dry_run=dry_run,
+                key_path=resolved_env.get("REGISTA_KEY_PATH") or None,
             )
         )
+
+    steps.append(
+        bind_dossier_identity(
+            principal=principal,
+            env=resolved_env,
+            dossier_user=dossier_user,
+            installed=is_installed,
+            dry_run=dry_run,
+        )
+    )
 
     frozen = tuple(steps)
     return IdentityResult(
@@ -583,15 +929,20 @@ def run_user_offboarding(
     dry_run: bool = False,
     runner: Runner | None = None,
     installed: Installed | None = None,
+    env: Mapping[str, str] | None = None,
+    dossier_user: str | None = None,
 ) -> IdentityResult:
     """Offboard one principal — the leaver process (onboarding doc §6).
 
     Revokes every active key, reports the secret-backend refs still to be
-    removed, and (unless ``keep_overlay``) removes the per-user overlay.
+    removed, removes the dossier identity binding so it does not point at a
+    revoked principal, and (unless ``keep_overlay``) removes the per-user
+    overlay.
     """
     run = runner or _default_runner
     is_installed = installed or _default_installed
     path = overlay_path or user_suite_env_path()
+    resolved_env: Mapping[str, str] = os.environ if env is None else env
 
     steps: list[IdentityStep] = []
     if not is_installed("regista"):
@@ -611,6 +962,16 @@ def run_user_offboarding(
             steps.append(
                 _secret_backend_step(revoked, runner=run, dry_run=dry_run)
             )
+
+    steps.append(
+        unbind_dossier_identity(
+            principal=principal,
+            env=resolved_env,
+            dossier_user=dossier_user,
+            installed=is_installed,
+            dry_run=dry_run,
+        )
+    )
 
     if keep_overlay:
         steps.append(
