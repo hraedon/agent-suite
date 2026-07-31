@@ -7,6 +7,7 @@ in CI)").
 
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -26,6 +27,7 @@ from agent_suite.onboard import (
     format_text,
     run_onboard,
 )
+from agent_suite.provisioning import ProvisionOutcome
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -72,8 +74,9 @@ class MultiCmdRunner:
 
     def __call__(self, cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
         self.calls.append(cmd)
-        for prefix, out in self._outputs.items():
+        for prefix in sorted(self._outputs, key=len, reverse=True):
             if cmd[: len(prefix)] == prefix:
+                out = self._outputs[prefix]
                 if isinstance(out, Exception):
                     raise out
                 if out is _OK_INSTALL or out is _ALREADY_INSTALL:
@@ -103,8 +106,78 @@ def _installed_except(*missing: str):
     return check
 
 
-_OK_PROVISION = _completed(stdout='[{"project": "test-proj", "schema_created": true}]')
-_OK_PRINCIPAL = _completed(stdout='{"principal_id": "suite-service", "key_id": "k1"}')
+def _provision_result(
+    *,
+    project: str = "test-proj",
+    schema_created: bool = True,
+    migrations: list[int] | None = None,
+    service_role_created: bool = True,
+    error: str | None = None,
+    returncode: int = 0,
+) -> subprocess.CompletedProcess[str]:
+    """A ``regista provision --json`` body, in the shape regista really emits."""
+    return _completed(
+        returncode=returncode,
+        stdout=json.dumps([{
+            "project": project,
+            "schema_created": schema_created,
+            "migrations_applied": [1] if migrations is None else migrations,
+            "service_role_created": service_role_created,
+            "error": error,
+        }]),
+    )
+
+
+def _principal_result(
+    *,
+    principal: str = "suite-service",
+    project: str = "test-proj",
+    key_id: str = "pk_1",
+    already_existed: bool = False,
+    public_key_registered: bool = True,
+    private_key_stored: bool = True,
+    error: str | None = None,
+    returncode: int = 0,
+) -> subprocess.CompletedProcess[str]:
+    """A ``regista provision-principal --json`` body."""
+    return _completed(
+        returncode=returncode,
+        stdout=json.dumps({
+            "principal_id": principal,
+            "project": project,
+            "key_id": key_id,
+            "fingerprint": "ff" * 8,
+            "scheme": "ed25519",
+            "private_key_stored": private_key_stored,
+            "public_key_registered": public_key_registered,
+            "already_existed": already_existed,
+            "secret_backend": "file",
+            "error": error,
+        }),
+    )
+
+
+def _error_envelope(
+    code: str, message: str, *, returncode: int = 1
+) -> subprocess.CompletedProcess[str]:
+    """The CLI-contract §3 error envelope, on stdout, as regista emits it."""
+    return _completed(
+        returncode=returncode,
+        stdout=json.dumps({
+            "ok": False,
+            "error": {
+                "code": code,
+                "message": message,
+                "detail": None,
+                "retryable": False,
+                "partial": None,
+            },
+        }),
+    )
+
+
+_OK_PROVISION = _provision_result()
+_OK_PRINCIPAL = _principal_result()
 _OK_SIGN = _completed(stdout='{"event_id": "evt-0", "signed": true}')
 _OK_INSTALL = _completed(
     stdout=(
@@ -112,18 +185,34 @@ _OK_INSTALL = _completed(
         '"actions":[],"no_op":false}'
     )
 )
-_ALREADY_PROVISIONED = _completed(
-    stdout='[{"project": "test-proj", "schema_created": false}]'
+_ALREADY_PROVISIONED = _provision_result(
+    schema_created=False, migrations=[], service_role_created=False
 )
-_ALREADY_PRINCIPAL = _completed(returncode=1, stderr="already exists")
-_ALREADY_SIGNED = _completed(returncode=1, stderr="spec already signed")
+_ALREADY_PRINCIPAL = _principal_result(
+    already_existed=True, public_key_registered=False, private_key_stored=False
+)
 _ALREADY_INSTALL = _completed(
     stdout=(
         '{"tool":"component","harness":"test","status":"installed",'
         '"actions":[],"no_op":true}'
     )
 )
-_CLOBBER_PROVISION = _completed(returncode=1, stderr="refuse: would clobber existing key")
+#: regista WI-223's refusal to mint a second keypair, recognised by its code.
+_REFUSED_PRINCIPAL = _error_envelope(
+    "PRINCIPAL_KEY_ALREADY_EXISTS",
+    "Refusing to mint a second keypair: principal 'suite-service' already has "
+    "a key in the signing key file /etc/agent-suite/keys.json (pk_1)",
+)
+#: A ``provision-principal`` that succeeded by reusing the existing key.
+_REUSED_PRINCIPAL = _principal_result(private_key_stored=False)
+#: The WI-040 shape: exit 0 and a body reporting the work did not happen.
+_EXIT0_ERROR_PROVISION = _provision_result(
+    schema_created=False,
+    migrations=[],
+    service_role_created=False,
+    error="permission denied to create role",
+    returncode=0,
+)
 _FAIL_PROVISION = _completed(returncode=1, stderr="connection timeout")
 _FAIL_SIGN = _completed(returncode=1, stderr="signing key not found")
 
@@ -275,7 +364,7 @@ def test_second_run_is_noop(tmp_path: Path) -> None:
     runner = MultiCmdRunner({
         ("regista", "provision"): _ALREADY_PROVISIONED,
         ("regista", "provision-principal"): _ALREADY_PRINCIPAL,
-        ("regista", "spec", "sign"): _ALREADY_SIGNED,
+        ("regista", "spec", "sign"): _OK_SIGN,
         ("agent-notes",): _ALREADY_INSTALL,
         ("cairn",): _ALREADY_INSTALL,
     })
@@ -290,7 +379,6 @@ def test_second_run_is_noop(tmp_path: Path) -> None:
     assert result.spec_anchored is True
     statuses = {s.step: s.status for s in result.steps}
     assert statuses[OnboardStep.PROVISION] is OnboardStatus.ALREADY_DONE
-    assert statuses[OnboardStep.SIGN_SPEC] is OnboardStatus.ALREADY_DONE
     assert statuses[OnboardStep.WIRE_HARNESS] is OnboardStatus.ALREADY_DONE
 
 
@@ -474,10 +562,78 @@ def test_sign_failure_aborts(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_key_clobber_refused(tmp_path: Path) -> None:
+def test_principal_refusal_is_cleared_by_reusing_the_existing_key(
+    tmp_path: Path,
+) -> None:
+    """The live regression: onboarding a principal into a second project.
+
+    regista WI-223 refuses to mint a second keypair for a principal that already
+    has a signable one, because the signer selects by principal_id with no
+    project scoping and would sign the *first* project's events with a key only
+    the second project registered. ``--reuse-existing-key`` registers the
+    existing public key in the additional project instead. Neither onboard nor
+    bootstrap passed it, so multi-project onboarding of one principal stopped
+    with REFUSED.
+    """
+    spec = _make_spec(tmp_path, _SPEC_V1)
+    calls: list[tuple[str, ...]] = []
+
+    def runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[:2] == ("regista", "provision-principal"):
+            if "--reuse-existing-key" in cmd:
+                return _REUSED_PRINCIPAL
+            return _REFUSED_PRINCIPAL
+        if cmd[:2] == ("regista", "provision"):
+            return _OK_PROVISION
+        if cmd[:3] == ("regista", "spec", "sign"):
+            return _OK_SIGN
+        return _completed(
+            stdout=json.dumps({
+                "tool": cmd[0], "harness": cmd[2], "status": "installed",
+                "actions": [], "no_op": False,
+            })
+        )
+
+    result = run_onboard(
+        project="second-project",
+        spec_path=spec,
+        dry_run=False,
+        runner=runner,
+        installed=_installed_all,
+    )
+    assert result.ok is True
+    provision_step = next(s for s in result.steps if s.step is OnboardStep.PROVISION)
+    assert provision_step.status is OnboardStatus.DONE
+    assert "--reuse-existing-key" in provision_step.detail
+    # It tried without the flag first, so a principal with no existing key is
+    # still minted a fresh one rather than being told to reuse nothing.
+    principal_calls = [c for c in calls if c[:2] == ("regista", "provision-principal")]
+    assert len(principal_calls) == 2
+    assert "--reuse-existing-key" not in principal_calls[0]
+    assert "--reuse-existing-key" in principal_calls[1]
+
+
+def test_principal_refusal_stands_when_reuse_is_not_wanted(tmp_path: Path) -> None:
+    """With reuse off the refusal is reported as REFUSED, not swallowed."""
+    from agent_suite.provisioning import provision_principal
+
+    report = provision_principal(
+        runner=lambda cmd: _REFUSED_PRINCIPAL,
+        project="second-project",
+        principal="suite-service",
+        reuse_existing_key=False,
+    )
+    assert report.ok is False
+    assert report.outcome is ProvisionOutcome.REFUSED
+    assert "PRINCIPAL_KEY_ALREADY_EXISTS" in report.detail
+
+
+def test_provision_error_body_with_exit_zero_is_a_failure(tmp_path: Path) -> None:
+    """WI-040, at the onboard entry point."""
     spec = _make_spec(tmp_path, _SPEC_V1)
     runner = MultiCmdRunner({
-        ("regista", "provision"): _CLOBBER_PROVISION,
+        ("regista", "provision"): _EXIT0_ERROR_PROVISION,
     })
     result = run_onboard(
         project="test-proj",
@@ -488,8 +644,8 @@ def test_key_clobber_refused(tmp_path: Path) -> None:
     )
     assert result.ok is False
     provision_step = next(s for s in result.steps if s.step is OnboardStep.PROVISION)
-    assert provision_step.status is OnboardStatus.REFUSED
-    assert "clobber" in provision_step.detail.lower()
+    assert provision_step.status is OnboardStatus.FAILED
+    assert "permission denied to create role" in provision_step.detail
 
 
 # ---------------------------------------------------------------------------

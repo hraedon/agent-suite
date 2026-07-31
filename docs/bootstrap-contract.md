@@ -23,14 +23,55 @@ signing key, a populated schema) **refuses and reports**, never overwrites.
 
 | # | Step | Calls | Idempotency rule | Gate |
 |---|------|-------|------------------|------|
-| 0 | Secret backend reachable + `suite.env` present | `regista.secrets` probe | read-only check | aborts if unreachable |
+| 0 | **Every configured secret ref resolves** + `suite.env` present | `regista secrets --ref` per discovered ref | read-only check | aborts naming the failing ref |
 | 1 | Postgres reachable | DSN probe | read-only check | aborts if unreachable |
-| 2 | Provision schemas + service roles + principal keys | `regista provision`, `regista provision-principal` | skips existing schema/role; refuses to clobber an existing key | gates all faces |
-| 3 | Faces up | `dossier` (container/Windows Service), `agent-notes install-harness <target>` | re-run reinstalls to the same state | needs step 2 |
+| 2 | Provision **every configured project's** schema + service role + principal keys | `regista provision`, `regista provision-principal` | skips existing schema/role (on the child's own affirmative report, not on silence); refuses to clobber an existing key | gates all faces |
+| 3a | agent-notes' projection schema | `agent-notes-migrate --all`, verified by `agent-notes doctor`'s `schema_up_to_date` | verifies first; migrates only if the check does not pass | needs step 2 |
+| 3b | Faces up | `dossier` (container/Windows Service), `agent-notes install-harness <target>` | re-run reinstalls to the same state | needs step 2 |
 | 4 | Provenance on | `cairn install-harness <target>` | re-run is a no-op | needs step 2 |
 | 5 | Capabilities | `acb install-harness <target>` | re-run is a no-op | optional (Tier 2) |
 | 6 | Signaling | `agent-wake` adapter/daemon install | re-run is a no-op | optional (Tier 2) |
 | 7 | Per-user onboarding | writes a per-user `suite.env` overlay, runs `install-harness` for that user | re-run updates the overlay | per additional human |
+
+### What "the step succeeded" means (WI-040, WI-041, WI-042, WI-043)
+
+A step reports success only from a fact the child asserted, never from the
+absence of a complaint. Concretely:
+
+- **The exit code cannot green a step on its own, and cannot green one at all
+  against the body.** `regista provision --json` exits **0** while its JSON body
+  carries `{"error": "permission denied to create role", "service_role_created":
+  false}`; that is a failed step. Any `{"ok": false, "error": {...}}` envelope
+  (`cli-contract.md` §3) or non-empty `error` on a result record fails the step
+  whatever the exit code says, and the report names the contract violation so the
+  bug is filed against the child.
+- **A field the child did not emit is not evidence.** The suite declares which
+  result fields it must read to judge each step; a result missing one of them is
+  a failure, not a pass.
+- **Classification is by stable error code, never by message text.** A
+  `provision-principal` refusal is `PRINCIPAL_KEY_ALREADY_EXISTS`. The previous
+  implementation substring-matched the child's prose and treated
+  "already"/"exists" as *success*, which made regista's wording part of this
+  contract and failed toward green.
+- **`already_done` requires affirmative evidence** that the work was already
+  present (`schema_created: false` with no error, `already_existed: true`), never
+  "nothing bad was said". The qualification host reported `already_done` on its
+  **first** bootstrap.
+- **Step 0 resolves; it does not enumerate providers.** `--list-providers` proves
+  a provider class is registered in regista's process — a host whose only
+  `vault:` ref was 403 passed that check. Step 0 discovers the refs the resolved
+  config actually names (suite env vars carrying a backend scheme, plus per-key
+  `secret_ref` entries inside `REGISTA_KEY_PATH`'s `keys.json`) and resolves each
+  one. It states in its own output what it did *not* verify: a ref belonging to
+  another component is resolved through regista's environment, and that
+  component's own venv must also carry the backend client.
+- **A principal is one key, registered in every project it acts in.** regista
+  refuses to mint a second keypair for a principal that already holds a signable
+  one (WI-223), because one shared `keys.json` plus per-project `principal_keys`
+  meant the second mint left the first project's chain signed by a key it never
+  registered. Step 2 passes `--reuse-existing-key` on that refusal, so
+  `suite-service` — which acts in every project on the host — ends up with one
+  key registered in each.
 
 **Order rationale:** secrets and the store must exist before anything that signs
 or writes; the faces before provenance (provenance attests *their* actions); Tier 2
@@ -272,6 +313,23 @@ drives **one work-item across both faces to `done`**: an agent (agent-notes) fil
 and works it; a human (dossier) reads and accepts it; `cairn`/`regista verify`
 confirm the mixed human+agent chain verifies with **per-actor signatures** (regista
 Plan 026). A lock that can't do this is not a release.
+
+**The per-actor requirement is asserted, not described (WI-052).** The offline
+bundle must report `signatures_unverifiable == 0`, with `signature_check` =
+`enforced` and every event verified — not merely `verified: true`. The Lane C
+qualification passed this lock while producing *"5 event(s), 4 signature(s)
+verified, 1 unverifiable (symmetric scheme)"*: the human leg was signed with the
+**shared store HMAC key**, which every actor and the server hold, so it is
+attributable to nobody. A prose requirement that a green lock can violate is not
+a gate, so the assertion lives in code —
+`agent_suite.signature_assurance.bundle_verdict`, exercised by
+`tests/test_signature_assurance.py` against those exact numbers and asserted by
+the face-level interop test.
+
+The replay leg is subject to the same rule: a zero `principal_binding_failures`
+counts only when `principal_binding_verified` is true. regista omits the count
+when the check did not run, precisely so a consumer cannot read "not checked" as
+"none found" (WI-051).
 
 ## 6. Honest boundaries
 

@@ -122,6 +122,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="which harness to wire (default: all — stable suite targets)",
     )
     bootstrap.add_argument("--user", help="onboard a per-user overlay for this principal ID")
+    bootstrap.add_argument(
+        "--dossier-user",
+        help=(
+            "dossier username to bind to --user's principal ID, when the two "
+            "differ (default: the principal ID). dossier finds a human's "
+            "per-actor signing key through this binding"
+        ),
+    )
     bootstrap.add_argument("--json", action="store_true", help="emit the result as JSON")
     onboard = sub.add_parser(
         Command.ONBOARD.value,
@@ -155,6 +163,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--keep-overlay",
         action="store_true",
         help="revoke the keys but leave the per-user overlay in place",
+    )
+    offboard.add_argument(
+        "--dossier-user",
+        help=(
+            "dossier username whose principal_id binding to remove, when it "
+            "differs from the principal ID"
+        ),
     )
     offboard.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
     offboard.add_argument("--json", action="store_true", help="emit the result as JSON")
@@ -664,14 +679,16 @@ def main(argv: list[str] | None = None) -> int:
         case Command.BOOTSTRAP:
             from agent_suite.bootstrap import format_text as _fmt_bs
             from agent_suite.bootstrap import run_bootstrap
-            from agent_suite.config import memory_provider_config
+            from agent_suite.config import configured_project_slugs, memory_provider_config
 
             mp_config = memory_provider_config()
             bs_result = run_bootstrap(
                 dry_run=args.dry_run,
                 tier=args.tier,
                 user=args.user,
+                dossier_user=getattr(args, "dossier_user", None),
                 project=os.environ.get("REGISTA_PROJECT"),
+                projects=configured_project_slugs(),
                 dsn=os.environ.get("REGISTA_DSN"),
                 harness=HarnessTarget(args.harness),
                 memory_engine=str(mp_config["engine"]),
@@ -1151,6 +1168,7 @@ def main(argv: list[str] | None = None) -> int:
                 overlay_path=Path(args.config) if args.config else None,
                 keep_overlay=args.keep_overlay,
                 dry_run=args.dry_run,
+                dossier_user=getattr(args, "dossier_user", None),
             )
             if getattr(args, "json", False):
                 import json as _json
