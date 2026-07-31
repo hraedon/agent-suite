@@ -118,6 +118,11 @@ SCHEDULES: tuple[ScheduleSpec, ...] = (
         on_calendar="hourly",
         command="agent-suite alert-check",
         windows_trigger="DAILY",
+        # Same pin as CHAIN_INTEGRITY: this unit's doctor subprocess is the
+        # automated READER of the verdict — without the pin, an install whose
+        # suite.env predates the variable has the writer and the hourly
+        # reader split-brained and the escalation loop reads never_run.
+        environment=("CAIRN_INTEGRITY_DIR=/var/lib/agent-suite/cairn",),
     ),
     # Weekly cadence under a 192h staleness window (set in suite.env — the
     # window must exceed the cadence with margin, or Persistent=true catch-up

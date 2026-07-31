@@ -6,6 +6,7 @@ After=network-online.target postgresql.service
 [Service]
 Type=oneshot
 ExecStart=agent-suite alert-check
+Environment=CAIRN_INTEGRITY_DIR=/var/lib/agent-suite/cairn
 EnvironmentFile=-/etc/agent-suite/suite.env
 User=root
 

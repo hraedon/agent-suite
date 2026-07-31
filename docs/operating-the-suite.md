@@ -157,9 +157,12 @@ enables them. The schedules are:
 | `agent-suite-doctor-alert` | Hourly | `agent-suite alert-check` | Periodic doctor + alert routing |
 | `agent-suite-chain-integrity` | Weekly | `cairn integrity` | Full chain replay; records the verdict doctor reports (cairn WI-030) |
 
-Run `cairn integrity` once at install time: the alerting loop (failed replay
-→ doctor escalation → `alert-check`) closes only once a first verdict or
-attempt marker exists, and the scheduled runs keep it fresh from then on.
+Run `sudo -E cairn integrity` once at install time (as root, with
+`CAIRN_INTEGRITY_DIR` in scope from `/etc/agent-suite/suite.env` — a
+non-root run records into the wrong per-user location): the alerting loop
+(failed replay → doctor escalation → `alert-check`) closes only once a
+first verdict or attempt marker exists, and the scheduled runs keep it
+fresh from then on.
 Keep `CAIRN_INTEGRITY_DIR` set in `suite.env` (see `suite.env.example`) so
 the root-run timer and human-run doctors agree on the verdict location.
 
