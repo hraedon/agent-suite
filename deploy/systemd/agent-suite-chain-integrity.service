@@ -5,7 +5,7 @@ After=network-online.target postgresql.service
 
 [Service]
 Type=oneshot
-ExecStart=cairn integrity
+ExecStart=/usr/local/bin/cairn integrity
 Environment=CAIRN_INTEGRITY_DIR=/var/lib/agent-suite/cairn
 EnvironmentFile=-/etc/agent-suite/suite.env
 User=root

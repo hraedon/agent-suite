@@ -151,19 +151,73 @@ This compares installed component versions against `SUITE.lock` and reports
 drift. A suite release is a green lock — see the
 [bootstrap contract](bootstrap-contract.md) §4.
 
-## 7. Optional: systemd services for the faces
+## 7. Install the OS services and the scheduled operations
 
-dossier and agent-notes run as OS services. The bootstrap installs them; to
-manage them directly:
+Two commands, both root, both idempotent, both re-runnable after an upgrade:
 
 ```bash
-sudo systemctl enable --now dossier
-sudo systemctl enable --now agent-notes
+sudo agent-suite install-services      # the long-running faces (dossier)
+sudo agent-suite schedule install      # the timers (backup, doctor-alert, chain-integrity)
 ```
 
-The service units are installed by each component's own `install-harness`
-(see the [install-harness contract](install-harness-contract.md)); agent-suite
-calls them in order but does not define the unit files itself.
+Add `--dry-run` to either to see the plan and act on nothing. Both are real
+preflights under `--dry-run`: they resolve the executables the units would run
+and fail if one is missing, rather than printing a plan that cannot work.
+
+`install-services` invokes each component's own `install-service` — the
+components that run as OS services are declared once, in agent-suite's component
+table, so you do not have to know which. Today that is **dossier**;
+**agent-notes is a CLI, not a daemon**, and has no Tier 0–1 service (its
+`agent-notes-bridge` / `-requeue` / `-trigger-loop` units are optional
+harness-side helpers, installed from that repo's `deploy/` if you want them).
+
+Verify:
+
+```bash
+systemctl status dossier
+systemctl list-timers 'agent-suite-*'
+```
+
+### These units are generated, not shipped
+
+The unit files are produced at install time from the location your component
+CLIs are actually installed at, and both commands **verify** rather than report
+success for having written a file:
+
+- the resolved `ExecStart` is an absolute, existing, executable path;
+- systemd's own parse of `ExecStart` names that executable;
+- the unit is `active` (the service for `install-services`, the timer for
+  `schedule install`).
+
+Any of those failing is a non-zero exit and a named reason.
+
+The reason units are generated rather than shipped inside the wheels is that
+systemd resolves an unqualified `ExecStart` only against its own **fixed** search
+path — `/usr/local/sbin`, `/usr/local/bin`, `/usr/sbin`, `/usr/bin`, … — and
+never the invoking user's `PATH`. A single static file cannot be correct on both
+a system-scoped install (§2) and a per-user one under `~/.local/bin`. Shipping
+the text is what produced WI-045, where all three timers failed `203/EXEC` and
+the weekly chain-integrity timer never fired on any host that installed it.
+
+So: **install the component CLIs on a system PATH**, as §2 prescribes. If they
+live somewhere non-standard, say so once:
+
+```bash
+sudo agent-suite install-services --bin-dir /opt/agent-suite/bin
+sudo agent-suite schedule install  --bin-dir /opt/agent-suite/bin
+```
+
+If a CLI cannot be resolved to an absolute path, installation **refuses and
+names it** rather than writing a unit that would fail at first start. Note that
+`sudo` replaces `PATH` with `secure_path`, so a CLI installed only under a
+user's `~/.local/bin` is invisible to the install — and would be invisible to
+systemd too. That refusal is the correct outcome, not an obstacle to work around:
+running a root unit out of a user-writable directory is a privilege-escalation
+shape.
+
+Reference renderings of every unit, against the `/usr/local/bin` prefix, are in
+agent-suite's `deploy/systemd/` and dossier's `deploy/systemd/` for review or
+manual install.
 
 ## 8. Next steps
 

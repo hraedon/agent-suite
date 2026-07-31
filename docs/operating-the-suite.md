@@ -145,11 +145,19 @@ daemon.
 ### 3.1 Install the schedules
 
 ```bash
-agent-suite schedule install
+sudo agent-suite schedule install
 ```
 
-This writes systemd timer/unit files (or Windows PowerShell scripts) and
-enables them. The schedules are:
+This writes systemd timer/unit files (or Windows PowerShell scripts), enables
+them, and then **verifies** each one: that the resolved `ExecStart` is an
+absolute existing executable, that systemd's own parse of `ExecStart` names it,
+and that the timer is `active`. A unit it cannot verify is reported `failed`
+with the reason, and the command exits non-zero — writing a file is not the
+success condition. `ExecStart` is resolved to an absolute path at install time;
+see [install-linux.md §7](install-linux.md) for why, and for `--bin-dir` when the
+CLIs are not on a system PATH.
+
+The schedules are:
 
 | Schedule | Cadence | Command | Purpose |
 |----------|---------|---------|---------|
@@ -184,13 +192,20 @@ agent-suite schedule remove
 agent-suite schedule install --dry-run
 ```
 
-Prints the files that would be written without acting.
+Prints the files that would be written without acting. It still resolves the
+executables and fails if one is missing, so a dry run is a genuine preflight
+rather than a preview.
 
 ### 3.5 Reference unit files
 
-Shipped reference copies are in `deploy/systemd/` and `deploy/windows/`.
-The `schedule install` command generates identical files at the target
-paths; the reference copies are for manual installation or review.
+Shipped reference copies are in `deploy/systemd/` and `deploy/windows/`, rendered
+against the documented `/usr/local/bin` install prefix — one of the directories
+on systemd's own fixed `ExecStart` search path, so a copy installed verbatim on a
+system-scoped host works. `schedule install` generates the same files with the
+prefix it actually resolved on this host substituted in, which is the only form
+that can be correct under both a system-scoped and a per-user layout. The
+reference copies are for manual installation or review; a test keeps them
+byte-identical to the generator.
 
 ### 3.6 Backup retention
 

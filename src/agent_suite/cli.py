@@ -25,6 +25,7 @@ class Command(Enum):
     VERIFY_RESTORE = "verify-restore"
     UPGRADE = "upgrade"
     SCHEDULE = "schedule"
+    INSTALL_SERVICES = "install-services"
     ALERT_CHECK = "alert-check"
     PREFLIGHT = "preflight"
     SETUP_INSTALL = "setup-install"
@@ -217,6 +218,43 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     schedule.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
     schedule.add_argument("--json", action="store_true", help="emit the result as JSON")
+    schedule.add_argument(
+        "--bin-dir",
+        metavar="PATH",
+        default=None,
+        help=(
+            "directory holding the component CLIs, used to build an absolute ExecStart. "
+            "Default: this process's own bin/ then PATH. Never the invoking user's ~/.local/bin "
+            "when running under sudo — install refuses instead (WI-045/WI-038)"
+        ),
+    )
+
+    install_services = sub.add_parser(
+        Command.INSTALL_SERVICES.value,
+        help=(
+            "install the long-running OS services the suite's faces need, by invoking "
+            "each component's own install-service (Linux/systemd; requires root)"
+        ),
+    )
+    install_services.add_argument(
+        "--dry-run", action="store_true", help="report the plan; act on nothing"
+    )
+    install_services.add_argument(
+        "--uninstall", action="store_true", help="remove the component service units"
+    )
+    install_services.add_argument(
+        "--tier",
+        choices=["0-1", "0-2"],
+        default="0-1",
+        help="0-1: the irreducible core (default). 0-2: also Tier 2 plumbing",
+    )
+    install_services.add_argument(
+        "--bin-dir",
+        metavar="PATH",
+        default=None,
+        help="passed to each component installer so ExecStart resolves absolutely (WI-045)",
+    )
+    install_services.add_argument("--json", action="store_true", help="emit the result as JSON")
 
     alert_check = sub.add_parser(
         Command.ALERT_CHECK.value,
@@ -799,8 +837,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(format_upgrade_text(up_result))
             return 0 if up_result.ok else 1
         case Command.SCHEDULE:
+            from pathlib import Path
+
             from agent_suite.schedule import (
                 SCHEDULES,
+                default_search_dirs,
                 format_schedule_report,
                 install_schedules,
                 remove_schedules,
@@ -828,7 +869,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.action == "install":
-                sched_report = install_schedules(dry_run=args.dry_run)
+                raw_bin_dir = getattr(args, "bin_dir", None)
+                sched_report = install_schedules(
+                    dry_run=args.dry_run,
+                    search_dirs=(
+                        (Path(raw_bin_dir), *default_search_dirs()) if raw_bin_dir else None
+                    ),
+                )
             else:
                 sched_report = remove_schedules(dry_run=args.dry_run)
 
@@ -843,6 +890,29 @@ def main(argv: list[str] | None = None) -> int:
                 for r in sched_report.results
             )
             return 0 if all_ok else 1
+        case Command.INSTALL_SERVICES:
+            import json as _json
+            from pathlib import Path
+
+            from agent_suite.components import Tier
+            from agent_suite.services import (
+                format_services_report,
+                install_component_services,
+            )
+
+            raw_bin_dir = getattr(args, "bin_dir", None)
+            svc_report = install_component_services(
+                max_tier=Tier.FACE if args.tier == "0-1" else None,
+                uninstall=args.uninstall,
+                dry_run=args.dry_run,
+                bin_dir=Path(raw_bin_dir) if raw_bin_dir else None,
+            )
+            services_action = "uninstall-services" if args.uninstall else "install-services"
+            if getattr(args, "json", False):
+                print(_json.dumps(svc_report.to_dict(), indent=2, default=str))
+            else:
+                print(format_services_report(svc_report, services_action))
+            return 0 if svc_report.ok else 1
         case Command.ALERT_CHECK:
             from pathlib import Path
 

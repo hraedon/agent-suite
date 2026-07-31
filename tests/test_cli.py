@@ -12,6 +12,7 @@ from agent_suite import doctor as doctor_mod
 from agent_suite import lock as lock_mod
 from agent_suite import onboard as onboard_mod
 from agent_suite import schedule as schedule_mod
+from agent_suite import services as services_mod
 from agent_suite import upgrade as upgrade_mod
 from agent_suite import verify_restore as verify_restore_mod
 from agent_suite.alerting import AlertResult, EmissionStatus
@@ -102,6 +103,15 @@ def _stub_upgrade(monkeypatch: pytest.MonkeyPatch) -> None:
             target_ref="",
         ),
     )
+
+
+def _stub_install_services(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make component-CLI discovery deterministic and shell out to nothing.
+
+    Without this the dispatch test would invoke a real `dossier install-service`
+    on any host where dossier happens to be on PATH.
+    """
+    monkeypatch.setattr(services_mod, "_default_which", lambda executable: None)
 
 
 def _stub_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -246,6 +256,7 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_verify_restore(monkeypatch)
     _stub_upgrade(monkeypatch)
     _stub_schedule(monkeypatch)
+    _stub_install_services(monkeypatch)
     _stub_alert_check(monkeypatch)
     _stub_evidence_export(monkeypatch)
     _stub_backup_restore(monkeypatch)
@@ -259,6 +270,10 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
             # regista is absent under test, so the leaver path fails honestly
             # rather than reporting a principal it never revoked.
             assert main([command.value, "--user", "someone", "--dry-run"]) == 1
+        elif command is Command.INSTALL_SERVICES:
+            # No component CLI is installed under test, so the install refuses
+            # honestly rather than reporting a service it never brought up.
+            assert main([command.value, "--dry-run"]) == 1
         elif command is Command.PREFLIGHT:
             assert main([command.value]) == 1
         elif command is Command.SETUP_INSTALL:
