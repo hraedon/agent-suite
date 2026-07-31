@@ -928,3 +928,16 @@ def test_the_secret_provider_row_is_named_for_what_it_checks() -> None:
     names = {check.name for check in run_preflight(observation, request).checks}
     assert "secret_provider_present" in names
     assert "secret_provider" not in names
+
+
+def test_the_shipped_windows_installer_calls_the_canonical_verb() -> None:
+    """`scripts/install-windows.ps1` is the documented Windows install path.
+
+    Leaving it on the deprecated alias would make every documented install print a
+    deprecation warning it cannot act on.
+    """
+    script = (
+        Path(__file__).resolve().parents[1] / "scripts" / "install-windows.ps1"
+    ).read_text(encoding="utf-8")
+    assert f"agent-suite {Command.PREFLIGHT_WINDOWS.value}" in script
+    assert "agent-suite preflight --" not in script

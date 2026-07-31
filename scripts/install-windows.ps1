@@ -112,7 +112,9 @@ if ($DryRun) {
 
 Write-Step "Running preflight (profile $SuiteProfile)..."
 
-$preflightOutput = & agent-suite preflight --profile $SuiteProfile --json 2>$null
+# WI-050: `preflight-windows` is the canonical verb; `preflight` still works as
+# a deprecated alias but warns on stderr.
+$preflightOutput = & agent-suite preflight-windows --profile $SuiteProfile --json 2>$null
 $preflightExit = $LASTEXITCODE
 
 if ($preflightExit -ne 0) {
