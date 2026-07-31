@@ -10,7 +10,10 @@ import subprocess
 from collections.abc import Mapping
 from datetime import UTC
 
+import pytest
+
 from agent_suite.key_watch import (
+    KEY_WATCH_REMEDY,
     KeyAgeStatus,
     KeyInfo,
     KeyRotationResult,
@@ -21,6 +24,8 @@ from agent_suite.key_watch import (
     check_store_growth,
     format_key_rotation_text,
     format_store_growth_text,
+    principal_list_argv,
+    subcommand_absent,
 )
 
 # ---------------------------------------------------------------------------
@@ -130,13 +135,102 @@ def test_key_rotation_unreachable_when_regista_not_installed() -> None:
     assert result.ok is True  # unreachable is not a failure
 
 
-def test_key_rotation_unsupported_when_command_unknown() -> None:
+def test_key_rotation_unsupported_only_when_the_parser_rejects_the_verb() -> None:
+    """The real signal: argparse names the subcommand as an invalid choice.
+
+    The previous version of this test fed ``"unknown command: principal"`` — a
+    string regista never emits — so it proved nothing about the CLI it was
+    guarding (WI-049).
+    """
     runner = StubRunner({
-        "regista": _completed(returncode=1, stderr="unknown command: principal"),
+        "regista": _completed(
+            returncode=2,
+            stderr=(
+                "regista: error: argument command: invalid choice: 'principal' "
+                "(choose from workflow, work-item, events)"
+            ),
+        ),
     })
     result = check_key_rotation(runner=runner, installed=lambda _: True)
     assert result.status is KeyAgeStatus.UNSUPPORTED
     assert result.ok is True
+    assert result.checked is False
+
+
+def test_key_rotation_option_usage_error_is_not_a_component_limitation() -> None:
+    """WI-049's headline defect, reproduced verbatim.
+
+    ``regista principal list --json`` puts a *global* option after the
+    subcommand, so argparse exits 2 with ``unrecognized arguments: --json``. The
+    old prose scan matched ``"unrecognized"`` and told every operator on the
+    qualification host that regista "does not support 'principal list'" — a
+    claim about the component, made from the suite's own bad argv.
+    """
+    runner = StubRunner({
+        "regista": _completed(
+            returncode=2, stderr="regista: error: unrecognized arguments: --json"
+        ),
+    })
+    result = check_key_rotation(runner=runner, installed=lambda _: True)
+    assert result.status is KeyAgeStatus.UNREACHABLE
+    assert "does not support" not in result.detail
+    assert result.checked is False
+
+
+def test_key_rotation_missing_key_path_is_not_a_component_limitation() -> None:
+    """The other half: ``[UNKNOWN_KEY_ID]`` matched the old scan's ``"unknown"``."""
+    runner = StubRunner({
+        "regista": _completed(
+            returncode=1, stderr="[UNKNOWN_KEY_ID] hmac_key_path is required"
+        ),
+    })
+    result = check_key_rotation(runner=runner, installed=lambda _: True)
+    assert result.status is KeyAgeStatus.UNREACHABLE
+    assert "hmac_key_path is required" in result.detail
+    assert KEY_WATCH_REMEDY in result.detail
+
+
+def test_probe_puts_regista_global_options_before_the_subcommand() -> None:
+    """regista declares --json/--project/--hmac-key-path on the TOP-LEVEL parser.
+
+    Anything after the subcommand is an ``unrecognized arguments`` usage error,
+    so this ordering is the difference between a check that runs and one that
+    cannot.
+    """
+    argv = principal_list_argv(project="qual_linux", key_path="/etc/agent-suite/keys.json")
+    assert argv[0] == "regista"
+    verb = argv.index("principal")
+    assert "--json" in argv[:verb]
+    assert "--project" in argv[:verb]
+    assert "--hmac-key-path" in argv[:verb]
+    assert argv[verb:] == ("principal", "list")
+
+
+def test_probe_passes_the_resolved_project_and_key_path() -> None:
+    seen: list[tuple[str, ...]] = []
+
+    def runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return _completed(stdout="[]")
+
+    check_key_rotation(
+        project="qual_linux",
+        key_path="/etc/agent-suite/keys.json",
+        runner=runner,
+        installed=lambda _: True,
+    )
+    assert seen == [
+        (
+            "regista",
+            "--json",
+            "--project",
+            "qual_linux",
+            "--hmac-key-path",
+            "/etc/agent-suite/keys.json",
+            "principal",
+            "list",
+        )
+    ]
 
 
 def test_key_rotation_error_on_bad_json() -> None:
@@ -179,13 +273,94 @@ def test_key_rotation_handles_dict_with_principals_key() -> None:
     assert len(result.keys) == 1
 
 
-def test_key_rotation_no_principals() -> None:
+def test_key_rotation_reads_registas_actual_flat_shape() -> None:
+    """``principal list --json`` emits one object per *key*, not per principal.
+
+    The module read a nested ``{"principal_id": …, "keys": [...]}`` shape regista
+    has never emitted, so a probe that succeeded still found zero keys and
+    reported an empty registry (WI-049). This is the shape
+    ``PrincipalKeyEntry.to_dict`` actually produces.
+    """
+    from datetime import datetime, timedelta
+
+    recent = (datetime.now(UTC) - timedelta(days=5)).isoformat()
+    runner = StubRunner({
+        "regista": _completed(stdout=json.dumps([
+            {
+                "principal_id": "qual-agent",
+                "key_id": "pk_1a9a62650acd4457",
+                "scheme": "ed25519",
+                "status": "active",
+                "valid_from": recent,
+                "valid_to": None,
+                "fingerprint": "ed25519:sha256:e",
+            },
+            {
+                "principal_id": "suite-service",
+                "key_id": "pk_35c46039b8594fcf",
+                "scheme": "ed25519",
+                "status": "active",
+                "valid_from": recent,
+                "valid_to": None,
+                "fingerprint": "ed25519:sha256:7",
+            },
+        ])),
+    })
+    result = check_key_rotation(runner=runner, installed=lambda _: True)
+    assert result.status is KeyAgeStatus.OK
+    assert result.checked is True
+    assert [k.principal_id for k in result.keys] == ["qual-agent", "suite-service"]
+    assert [k.key_id for k in result.keys] == [
+        "pk_1a9a62650acd4457",
+        "pk_35c46039b8594fcf",
+    ]
+
+
+def test_key_rotation_skips_revoked_keys_in_the_flat_shape() -> None:
+    from datetime import datetime, timedelta
+
+    stale = (datetime.now(UTC) - timedelta(days=400)).isoformat()
+    runner = StubRunner({
+        "regista": _completed(stdout=json.dumps([
+            {"principal_id": "a", "key_id": "old", "status": "revoked", "valid_from": stale},
+        ])),
+    })
+    result = check_key_rotation(runner=runner, installed=lambda _: True)
+    # A revoked key past cadence must not red the check: nobody signs with it.
+    assert result.status is KeyAgeStatus.OK
+    assert result.keys == []
+    assert result.checked is True
+
+
+def test_key_rotation_no_principals_says_the_registry_was_read() -> None:
     runner = StubRunner({
         "regista": _completed(stdout="[]"),
     })
     result = check_key_rotation(runner=runner, installed=lambda _: True)
     assert result.status is KeyAgeStatus.OK
-    assert "no principals" in result.detail
+    assert result.checked is True
+    assert "registry read" in result.detail
+
+
+def test_an_empty_result_distinguishes_verified_from_not_looked_at() -> None:
+    """``ok=True`` with zero keys must not read the same both ways.
+
+    This is regista's ``principal_binding_failures=0`` defect in miniature: a
+    count of zero is only meaningful next to the fact that something counted.
+    """
+    read = check_key_rotation(
+        runner=StubRunner({"regista": _completed(stdout="[]")}), installed=lambda _: True
+    )
+    skipped = check_key_rotation(runner=StubRunner({}), installed=lambda _: False)
+
+    assert read.ok is skipped.ok is True
+    assert read.keys == skipped.keys == []
+    assert read.checked is True
+    assert skipped.checked is False
+    assert read.to_dict()["checked"] is True
+    assert skipped.to_dict()["checked"] is False
+    assert "not checked" in format_key_rotation_text(skipped)
+    assert "not checked" not in format_key_rotation_text(read)
 
 
 # ---------------------------------------------------------------------------
@@ -213,12 +388,47 @@ def test_store_growth_unreachable_when_regista_not_installed() -> None:
     assert result.ok is True
 
 
-def test_store_growth_unsupported_when_command_unknown() -> None:
+def test_store_growth_unsupported_only_when_the_parser_rejects_the_verb() -> None:
+    """``regista stats`` really is absent — but for the *evidenced* reason now.
+
+    Verified against regista main: ``regista --json stats`` exits 2 with
+    ``invalid choice: 'stats'``. So this ``UNSUPPORTED`` is a true negative; it
+    just used to be reached by a scan that would have said the same of a
+    ``stats`` that existed and failed.
+    """
     runner = StubRunner({
-        "regista": _completed(returncode=1, stderr="unknown command: stats"),
+        "regista": _completed(
+            returncode=2,
+            stderr=(
+                "regista: error: argument command: invalid choice: 'stats' "
+                "(choose from workflow, work-item, events, principal)"
+            ),
+        ),
     })
     result = check_store_growth(runner=runner, installed=lambda _: True)
     assert result.status is StoreGrowthStatus.UNSUPPORTED
+    assert result.checked is False
+
+
+def test_store_growth_command_failure_is_not_a_component_limitation() -> None:
+    runner = StubRunner({
+        "regista": _completed(returncode=1, stderr="connection refused"),
+    })
+    result = check_store_growth(runner=runner, installed=lambda _: True)
+    assert result.status is StoreGrowthStatus.UNREACHABLE
+    assert "does not support" not in result.detail
+    assert result.checked is False
+
+
+def test_store_growth_probe_puts_json_before_the_subcommand() -> None:
+    seen: list[tuple[str, ...]] = []
+
+    def runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return _completed(stdout="[]")
+
+    check_store_growth(runner=runner, installed=lambda _: True)
+    assert seen == [("regista", "--json", "stats")]
 
 
 def test_store_growth_error_on_bad_json() -> None:
@@ -275,3 +485,42 @@ def test_format_store_growth_text_with_projects() -> None:
     text = format_store_growth_text(result)
     assert "proj-a" in text
     assert "1000" in text
+
+
+# ---------------------------------------------------------------------------
+# Capability detection (WI-049)
+# ---------------------------------------------------------------------------
+
+
+def test_subcommand_absent_recognises_argparses_invalid_choice() -> None:
+    stderr = (
+        "regista: error: argument command: invalid choice: 'stats' "
+        "(choose from workflow, work-item, events, principal)"
+    )
+    assert subcommand_absent(stderr, path=("stats",)) is True
+    assert subcommand_absent(stderr, path=("principal", "list")) is False
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        # The literal argv defect: a global option placed after the subcommand.
+        "regista: error: unrecognized arguments: --json",
+        # regista's own error envelope, which matched the old "unknown" scan.
+        "[UNKNOWN_KEY_ID] hmac_key_path is required",
+        # A verb that exists and could not reach its store.
+        "Missing required config: --dsn or REGISTA_DSN, --project or REGISTA_PROJECT",
+        "connection to server at 10.0.0.1 failed: no such host",
+        "psycopg.OperationalError: connection refused",
+        # An unrelated verb named as an invalid choice must not implicate ours.
+        "regista: error: argument command: invalid choice: 'stats'",
+    ],
+)
+def test_a_command_that_failed_is_never_read_as_absent(stderr: str) -> None:
+    """Each of these matched at least one word of the old prose scan.
+
+    ``"unknown"``, ``"not found"``, ``"no such"``, ``"unrecognized"`` and a bare
+    ``"invalid choice"`` all appear in messages from commands that exist. Calling
+    any of them a component limitation tells the operator there is nothing to fix.
+    """
+    assert subcommand_absent(stderr, path=("principal", "list")) is False
