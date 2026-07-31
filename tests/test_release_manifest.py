@@ -225,11 +225,11 @@ def test_build_manifest_records_umbrella_tag_sha() -> None:
     assert manifest.umbrella_repo == "hraedon/agent-suite"
 
 
-def test_build_manifest_schema_version_is_v1() -> None:
-    """The schema_version field is 'v1' (the initial shape)."""
+def test_build_manifest_schema_version_is_current() -> None:
+    """The schema_version field is the current shape (v2 since WI-035)."""
     manifest = _build_manifest()
     assert manifest.schema_version == SCHEMA_VERSION
-    assert manifest.schema_version == "v1"
+    assert manifest.schema_version == "v2"
 
 
 def test_build_manifest_raises_on_missing_regista_quad() -> None:
@@ -581,7 +581,7 @@ def test_dry_run_fixture_with_real_suite_lock() -> None:
         umbrella_tag_sha="",
         generated_at=_FIXED_TIMESTAMP,
     )
-    assert manifest.schema_version == "v1"
+    assert manifest.schema_version == SCHEMA_VERSION
     assert manifest.suite_release == lock_obj.release
     assert manifest.lock_identity.component_count == len(lock_obj.components)
     assert len(manifest.constituents) == len(lock_obj.components)
@@ -760,7 +760,7 @@ def test_cli_release_manifest_build_json(
     captured = capsys.readouterr()
     assert rc == 0
     data = json.loads(captured.out)
-    assert data["schema_version"] == "v1"
+    assert data["schema_version"] == SCHEMA_VERSION
     assert data["release_tag"] == "v0.0.0-test"
     assert data["umbrella_repo"] == "hraedon/agent-suite"
     assert isinstance(data["constituents"], list)
@@ -970,3 +970,169 @@ def test_inventory_manifest_binding_to_dict() -> None:
     assert d["fully_bound"] is True
     assert isinstance(d["bindings"], list)
     assert len(d["bindings"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Umbrella artifact + schema v2 (WI-035)
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_without_umbrella_omits_the_key_entirely() -> None:
+    """v1-shaped output: absent means absent, not null."""
+    manifest = _build_manifest()
+    assert manifest.umbrella_artifact is None
+    assert "umbrella_artifact" not in manifest.to_dict()
+
+
+def test_v1_manifest_still_deserializes_and_its_self_sha_holds() -> None:
+    """Bumping to v2 must not orphan already-published v1 manifests."""
+    manifest = _build_manifest()
+    raw = json.loads(serialize_manifest(manifest))
+    raw["schema_version"] = "v1"
+    # Recompute the self-SHA the way a real v1 build would have.
+    bare = dict(raw)
+    bare["manifest_self_sha256"] = ""
+    raw["manifest_self_sha256"] = _sha256_text(
+        json.dumps(bare, sort_keys=True, separators=(",", ":"))
+    )
+    parsed = deserialize_manifest(json.dumps(raw))
+    assert parsed.schema_version == "v1"
+    assert parsed.umbrella_artifact is None
+
+
+def _build_umbrella_manifest(
+    *,
+    version: str = "1.0.0rc9",
+    wheel: tuple[str, str] | None = ("agent_suite-1.0.0rc9-py3-none-any.whl", "9" * 64),
+    umbrella_tag_sha: str = _SHA_A,
+) -> ReleaseManifest:
+    lock = _build_lock()
+    return build_manifest(
+        lock=lock,
+        lock_text=serialize_lock(lock),
+        release_tag="v1.0.0-rc9",
+        umbrella_tag_sha=umbrella_tag_sha,
+        umbrella_package_version=version,
+        umbrella_wheel=wheel,
+        generated_at=_FIXED_TIMESTAMP,
+    )
+
+
+def test_umbrella_artifact_is_recorded_with_its_own_hash() -> None:
+    manifest = _build_umbrella_manifest()
+    umbrella = manifest.umbrella_artifact
+    assert umbrella is not None
+    assert umbrella.ident == "agent-suite"
+    assert umbrella.repo == "hraedon/agent-suite"
+    assert umbrella.pinned_revision == _SHA_A
+    assert umbrella.package_version == "1.0.0rc9"
+    assert umbrella.wheel_sha256 == "9" * 64
+    # It is NOT a lock constituent — the umbrella is the orchestration layer.
+    assert [c.ident for c in manifest.constituents] == sorted(_CONSTITUENT_DATA)
+
+
+def test_umbrella_artifact_round_trips() -> None:
+    manifest = _build_umbrella_manifest()
+    assert deserialize_manifest(serialize_manifest(manifest)) == manifest
+
+
+def test_umbrella_artifact_without_a_wheel_records_not_provided() -> None:
+    manifest = _build_umbrella_manifest(wheel=None)
+    assert manifest.umbrella_artifact is not None
+    assert manifest.umbrella_artifact.wheel_filename == ""
+    assert manifest.umbrella_artifact.wheel_sha256 == ""
+
+
+def test_umbrella_artifact_accepts_an_unresolved_tag_sha() -> None:
+    """An unresolvable tag SHA is honestly empty, not a validation failure."""
+    manifest = _build_umbrella_manifest(umbrella_tag_sha="")
+    assert manifest.umbrella_artifact is not None
+    assert manifest.umbrella_artifact.pinned_revision == ""
+    assert deserialize_manifest(serialize_manifest(manifest)) == manifest
+
+
+def test_umbrella_artifact_rejects_a_bogus_non_empty_revision() -> None:
+    manifest = _build_umbrella_manifest()
+    raw = json.loads(serialize_manifest(manifest))
+    assert isinstance(raw["umbrella_artifact"], dict)
+    raw["umbrella_artifact"]["pinned_revision"] = "v1.0.0-rc9"
+    with pytest.raises(ValueError, match=r"umbrella_artifact\.pinned_revision"):
+        deserialize_manifest(json.dumps(raw))
+
+
+def test_umbrella_artifact_must_be_an_object() -> None:
+    manifest = _build_umbrella_manifest()
+    raw = json.loads(serialize_manifest(manifest))
+    raw["umbrella_artifact"] = "agent-suite"
+    with pytest.raises(ValueError, match="umbrella_artifact must be an object"):
+        deserialize_manifest(json.dumps(raw))
+
+
+def test_umbrella_wheel_is_verified_against_disk(tmp_path: Path) -> None:
+    """The umbrella wheel is checked on the same terms as any constituent."""
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    umbrella = wheels / "agent_suite-1.0.0rc9-py3-none-any.whl"
+    umbrella.write_bytes(b"umbrella wheel bytes")
+    digest = hashlib.sha256(b"umbrella wheel bytes").hexdigest()
+
+    good = _build_umbrella_manifest(wheel=(umbrella.name, digest))
+    assert verify_manifest_against_wheels(good, wheels).ok
+
+    bad = _build_umbrella_manifest(wheel=(umbrella.name, "0" * 64))
+    result = verify_manifest_against_wheels(bad, wheels)
+    assert not result.ok
+    assert any("agent-suite" in m for m in result.mismatches)
+
+
+def test_umbrella_appears_in_build_text() -> None:
+    text = format_build_text(_build_umbrella_manifest())
+    assert "umbrella artifact:" in text
+    assert "agent-suite" in text
+
+
+def test_collect_umbrella_artifact_finds_the_wheel(tmp_path: Path) -> None:
+    from agent_suite.release_manifest import collect_umbrella_artifact
+
+    assert collect_umbrella_artifact(tmp_path, "1.0.0rc9") is None
+    wheel = tmp_path / "agent_suite-1.0.0rc9-py3-none-any.whl"
+    wheel.write_bytes(b"payload")
+    found = collect_umbrella_artifact(tmp_path, "1.0.0rc9")
+    assert found is not None
+    assert found[0] == wheel.name
+    assert found[1] == hashlib.sha256(b"payload").hexdigest()
+    # A different version does not match.
+    assert collect_umbrella_artifact(tmp_path, "1.0.0rc8") is None
+
+
+def test_cli_build_records_the_umbrella_artifact(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`release-manifest build --wheels-dir` hashes the umbrella wheel too."""
+    from agent_suite import __version__ as agent_suite_version
+    from agent_suite.cli import main
+
+    repo_root = Path(__file__).resolve().parents[1]
+    import agent_suite.lock as lock_mod
+
+    monkeypatch.setattr(lock_mod, "DEFAULT_LOCK_PATH", repo_root / "SUITE.lock")
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    umbrella = wheels / f"agent_suite-{agent_suite_version}-py3-none-any.whl"
+    umbrella.write_bytes(b"umbrella")
+
+    rc = main(
+        [
+            "release-manifest", "build", "--tag", "v0.0.0-test",
+            "--wheels-dir", str(wheels), "--json",
+        ]
+    )
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["umbrella_artifact"]["ident"] == "agent-suite"
+    assert data["umbrella_artifact"]["package_version"] == agent_suite_version
+    assert data["umbrella_artifact"]["wheel_filename"] == umbrella.name
+    assert (
+        data["umbrella_artifact"]["wheel_sha256"]
+        == hashlib.sha256(b"umbrella").hexdigest()
+    )

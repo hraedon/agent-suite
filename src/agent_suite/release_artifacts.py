@@ -13,6 +13,7 @@ stdlib-only; ``assert_never`` over every closed-set enum.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -110,6 +111,71 @@ def wi_status_label(status: WIStatus) -> str:
             return "blocked"
         case other:
             assert_never(other)
+
+
+# ---------------------------------------------------------------------------
+# Release identity <-> package version (WI-035)
+# ---------------------------------------------------------------------------
+
+# The suite's release identity grammar, as used in data/release-board.json,
+# data/support-matrix.json and SUITE.lock's [suite].release:
+#   1.0.0            a final release
+#   1.0.0-dev        ongoing development toward 1.0.0
+#   1.0.0-rc.2       the second release candidate for 1.0.0
+#   1.0.0-alpha.1 / 1.0.0-beta.1 / 1.0.0-dev.3   numbered pre-releases
+#
+# ``dev`` may be unnumbered (``1.0.0-dev`` is the suite's idiom for "in
+# development toward 1.0.0"); alpha/beta/rc must carry a number, because a
+# bare ``1.0.0-rc`` names no particular candidate and guessing ``rc0`` would
+# invent an identity nobody declared.
+_RELEASE_IDENTITY_RE = re.compile(
+    r"^(?P<base>\d+\.\d+\.\d+)"
+    r"(?:-(?:(?P<dev>dev)(?:\.(?P<dev_number>\d+))?"
+    r"|(?P<stage>alpha|beta|rc)\.(?P<number>\d+)))?$"
+)
+
+_PEP440_STAGE_SUFFIX: dict[str, str] = {
+    "dev": ".dev",
+    "alpha": "a",
+    "beta": "b",
+    "rc": "rc",
+}
+
+
+def pep440_release_version(release: str) -> str:
+    """Translate a suite release identity into its PEP 440 package version.
+
+    The release identity (``1.0.0-rc.2``) and the wheel version
+    (``1.0.0rc2``) are the same fact in two grammars. WI-035: the umbrella
+    wheel used a static ``0.0.1`` while releases were cut as ``1.0.0-rc.N``,
+    so every release attached an identically named wheel with different
+    contents. This function is the one translation, and a packaging test
+    asserts ``agent_suite.__version__`` equals it for the canonical release
+    board — so bumping the release forces bumping the wheel version.
+
+        1.0.0        -> 1.0.0
+        1.0.0-dev    -> 1.0.0.dev0
+        1.0.0-dev.3  -> 1.0.0.dev3
+        1.0.0-rc.2   -> 1.0.0rc2
+        1.0.0-beta.1 -> 1.0.0b1
+
+    Raises ``ValueError`` for an identity outside the grammar rather than
+    guessing — an unrecognized release identity must stop a release, not
+    silently produce a version nobody chose.
+    """
+    match = _RELEASE_IDENTITY_RE.match(release.strip())
+    if match is None:
+        raise ValueError(
+            f"release identity {release!r} is not in the suite's grammar "
+            "(X.Y.Z, X.Y.Z-dev, X.Y.Z-rc.N, X.Y.Z-alpha.N, X.Y.Z-beta.N)"
+        )
+    base = match.group("base")
+    if match.group("dev") is not None:
+        return f"{base}.dev{int(match.group('dev_number') or 0)}"
+    stage = match.group("stage")
+    if stage is None:
+        return base
+    return f"{base}{_PEP440_STAGE_SUFFIX[stage]}{int(match.group('number'))}"
 
 
 @dataclass(frozen=True)

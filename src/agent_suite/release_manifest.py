@@ -33,9 +33,17 @@ from agent_suite.lock import SuiteLock
 # ---------------------------------------------------------------------------
 # Schema version — bumped when the manifest shape changes in a way that
 # consumers must gate on. v1 is the initial Sol Gate 0 Workstream 2 shape.
+# v2 (WI-035) adds the optional ``umbrella_artifact`` entry so the umbrella
+# wheel that every release attaches is hashed like any other constituent.
+#
+# v1 manifests remain readable: ``umbrella_artifact`` is omitted from the
+# serialized form when absent, so an existing v1 manifest's ``generated_at``
+# and ``manifest_self_sha256`` still validate byte-for-byte.
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = "v1"
+SCHEMA_VERSION = "v2"
+SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = ("v1", "v2")
+UMBRELLA_IDENT = "agent-suite"
 _UMBRELLA_REPO = "hraedon/agent-suite"
 
 
@@ -161,9 +169,10 @@ class ReleaseManifest:
     constituents: tuple[ConstituentArtifact, ...]
     generated_at: str
     manifest_self_sha256: str
+    umbrella_artifact: ConstituentArtifact | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        d: dict[str, object] = {
             "schema_version": self.schema_version,
             "release_tag": self.release_tag,
             "umbrella_repo": self.umbrella_repo,
@@ -178,6 +187,11 @@ class ReleaseManifest:
             "generated_at": self.generated_at,
             "manifest_self_sha256": self.manifest_self_sha256,
         }
+        # Omitted entirely when absent so a v1 manifest serializes to the exact
+        # bytes it was built with and its self-SHA still verifies.
+        if self.umbrella_artifact is not None:
+            d["umbrella_artifact"] = self.umbrella_artifact.to_dict()
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +208,8 @@ def build_manifest(
     umbrella_repo: str = _UMBRELLA_REPO,
     wheel_hashes: dict[str, tuple[str, str]] | None = None,
     source_archive_hashes: dict[str, str] | None = None,
+    umbrella_package_version: str | None = None,
+    umbrella_wheel: tuple[str, str] | None = None,
     generated_at: str | None = None,
 ) -> ReleaseManifest:
     """Build a :class:`ReleaseManifest` from a lock and release inputs.
@@ -213,6 +229,16 @@ def build_manifest(
     When a component's wheel is not built, it is omitted from the dict
     and the manifest records empty strings for both fields. Same for
     ``source_archive_hashes`` (ident → sha256).
+
+    ``umbrella_package_version`` and ``umbrella_wheel`` describe the umbrella
+    ``agent_suite`` wheel (WI-035). The umbrella is not a lock constituent —
+    it is the orchestration layer, not a pinned component — but it *is*
+    attached to every release, so it gets its own manifest entry with its own
+    hash rather than shipping unattested. Pass ``umbrella_package_version``
+    (normally :data:`agent_suite.__version__`, which is identity-checked
+    against the release board) and ``umbrella_wheel`` as
+    ``(filename, sha256)``; omit both to emit a v1-shaped manifest with no
+    umbrella entry.
 
     ``generated_at`` defaults to the current UTC ISO timestamp. Pass
     an explicit value for deterministic test fixtures.
@@ -260,6 +286,22 @@ def build_manifest(
         component_count=len(lock.components),
     )
 
+    umbrella_artifact: ConstituentArtifact | None = None
+    if umbrella_package_version is not None:
+        umbrella_filename, umbrella_sha = umbrella_wheel or ("", "")
+        umbrella_artifact = ConstituentArtifact(
+            ident=UMBRELLA_IDENT,
+            repo=umbrella_repo,
+            # The umbrella's "pinned revision" is the tagged commit itself;
+            # unlike a constituent it may legitimately be "" when the tag SHA
+            # could not be resolved at build time.
+            pinned_revision=umbrella_tag_sha,
+            package_version=umbrella_package_version,
+            wheel_filename=umbrella_filename,
+            wheel_sha256=umbrella_sha,
+            source_archive_sha256="",
+        )
+
     manifest = ReleaseManifest(
         schema_version=SCHEMA_VERSION,
         release_tag=release_tag,
@@ -274,6 +316,7 @@ def build_manifest(
         constituents=tuple(constituents),
         generated_at=gen_at,
         manifest_self_sha256="",
+        umbrella_artifact=umbrella_artifact,
     )
 
     self_sha = compute_manifest_self_sha256(manifest)
@@ -343,10 +386,10 @@ def deserialize_manifest(text: str) -> ReleaseManifest:
         raise ValueError("release manifest: expected a JSON object")
 
     schema_version = _require_str(raw, "schema_version", "manifest")
-    if schema_version != SCHEMA_VERSION:
+    if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
         raise ValueError(
             f"release manifest: unsupported schema_version {schema_version!r} "
-            f"(expected {SCHEMA_VERSION!r})"
+            f"(supported: {', '.join(SUPPORTED_SCHEMA_VERSIONS)})"
         )
 
     release_tag = _require_str(raw, "release_tag", "manifest")
@@ -409,6 +452,32 @@ def deserialize_manifest(text: str) -> ReleaseManifest:
             )
         )
 
+    # ``umbrella_artifact`` is optional (absent in v1). Its ``pinned_revision``
+    # is the umbrella tag SHA, which may legitimately be "" — validated only
+    # when non-empty, matching the top-level ``umbrella_tag_sha`` treatment.
+    umbrella_raw = raw.get("umbrella_artifact")
+    umbrella_artifact: ConstituentArtifact | None = None
+    if umbrella_raw is not None:
+        if not isinstance(umbrella_raw, dict):
+            raise ValueError("release manifest: umbrella_artifact must be an object")
+        umbrella_revision = _require_str(umbrella_raw, "pinned_revision", "umbrella_artifact")
+        if umbrella_revision and not lock_mod._is_valid_sha(umbrella_revision):
+            raise ValueError(
+                "release manifest: umbrella_artifact.pinned_revision must be a "
+                "40- or 64-char hex SHA when non-empty"
+            )
+        umbrella_artifact = ConstituentArtifact(
+            ident=_require_str(umbrella_raw, "ident", "umbrella_artifact"),
+            repo=_require_str(umbrella_raw, "repo", "umbrella_artifact"),
+            pinned_revision=umbrella_revision,
+            package_version=_require_str(umbrella_raw, "package_version", "umbrella_artifact"),
+            wheel_filename=_require_str(umbrella_raw, "wheel_filename", "umbrella_artifact"),
+            wheel_sha256=_require_str(umbrella_raw, "wheel_sha256", "umbrella_artifact"),
+            source_archive_sha256=_require_str(
+                umbrella_raw, "source_archive_sha256", "umbrella_artifact"
+            ),
+        )
+
     manifest = ReleaseManifest(
         schema_version=schema_version,
         release_tag=release_tag,
@@ -423,6 +492,7 @@ def deserialize_manifest(text: str) -> ReleaseManifest:
         constituents=tuple(constituents),
         generated_at=generated_at,
         manifest_self_sha256=manifest_self_sha256,
+        umbrella_artifact=umbrella_artifact,
     )
 
     # Tamper-evidence: verify the self-SHA matches the content.
@@ -478,6 +548,29 @@ def collect_wheel_artifacts(
                     break
             result[ident] = (wheel.name, _sha256_file(wheel))
     return result
+
+
+def collect_umbrella_artifact(
+    wheels_dir: Path,
+    version: str,
+    *,
+    distribution: str = "agent_suite",
+) -> tuple[str, str] | None:
+    """Find the umbrella wheel in ``wheels_dir``; return ``(filename, sha256)``.
+
+    Returns ``None`` when no matching wheel is present, so the caller records
+    an honest "not provided" rather than a guess (WI-035).
+    """
+    prefix = f"{distribution.replace('-', '_')}-{version}-"
+    candidates = sorted(p for p in wheels_dir.glob(f"{prefix}*.whl") if p.is_file())
+    if not candidates:
+        return None
+    wheel = candidates[0]
+    for candidate in candidates:
+        if "py3-none-any" in candidate.name:
+            wheel = candidate
+            break
+    return (wheel.name, _sha256_file(wheel))
 
 
 def _distribution_names_for(ident: str) -> tuple[str, ...]:
@@ -560,12 +653,16 @@ def verify_manifest_against_wheels(
     the hash from the wheel file in ``wheels_dir`` and assert it matches.
     Constituents with empty ``wheel_sha256`` (not provided at build time)
     are skipped — the manifest honestly recorded "not provided," and
-    there's nothing to verify against.
+    there's nothing to verify against. The umbrella artifact (v2 manifests,
+    WI-035) is verified on the same terms.
 
     Returns a :class:`ManifestVerifyResult` with named mismatches.
     """
     mismatches: list[str] = []
-    for c in manifest.constituents:
+    targets = list(manifest.constituents)
+    if manifest.umbrella_artifact is not None:
+        targets.append(manifest.umbrella_artifact)
+    for c in targets:
         if not c.wheel_sha256:
             continue
         wheel_path = wheels_dir / c.wheel_filename
@@ -626,5 +723,15 @@ def format_build_text(manifest: ReleaseManifest) -> str:
             f"  {c.ident:<24} {c.repo:<32} "
             f"rev={c.pinned_revision[:12]} v{c.package_version} "
             f"wheel={wheel_tag} source={source_tag}"
+        )
+    if manifest.umbrella_artifact is not None:
+        u = manifest.umbrella_artifact
+        wheel_tag = u.wheel_sha256[:12] if u.wheel_sha256 else "(not provided)"
+        lines.append("")
+        lines.append("umbrella artifact:")
+        lines.append(
+            f"  {u.ident:<24} {u.repo:<32} "
+            f"rev={(u.pinned_revision or '(unresolved)')[:12]} v{u.package_version} "
+            f"wheel={wheel_tag}"
         )
     return "\n".join(lines)

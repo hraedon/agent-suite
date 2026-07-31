@@ -129,9 +129,11 @@ jobs:
       # SUITE.lock-pinned checkouts already validated above, so the manifest
       # records real wheel hashes and the release ships installable artifacts
       # — the candidate is no longer source-only. `build` comes from the
-      # [dev] extras installed above; PEP 517 backend versions are not pinned
-      # (tracked follow-up, with umbrella-wheel attestation — the umbrella
-      # wheel is attached for convenience but is not a manifest constituent).
+      # [dev] extras installed above. WI-035: agent-suite's own PEP 517
+      # backend is now pinned exactly in its pyproject, and the umbrella wheel
+      # it produces is a hashed manifest entry (`umbrella_artifact`) with a
+      # version derived from the release board — it is no longer attached
+      # unattested under a statically reused version.
       - name: Build component wheels from pinned checkouts
         run: |
           mkdir -p out/wheels
@@ -151,6 +153,35 @@ jobs:
       # from the git tag that triggered this run), all six constituent source
       # SHAs from SUITE.lock, the regista version quad, the lock identity, and
       # the SHA-256 of each wheel built above from the pinned revisions.
+      # WI-035: the tag, the release board, and the umbrella wheel version are
+      # one identity in three grammars. Assert it here rather than assuming it:
+      # a release cut as v1.0.0-rc.3 while the board still says 1.0.0-rc.2
+      # would otherwise attach a wheel whose version names the wrong release.
+      - name: Verify release identity (tag == release board == wheel version)
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 -c "
+          import json, os, sys
+          from agent_suite import __version__
+          from agent_suite.release_artifacts import pep440_release_version
+          tag = os.environ['RELEASE_TAG']
+          with open('data/release-board.json') as f:
+              board_release = json.load(f)['release']
+          expected_tag = f'v{board_release}'
+          if tag != expected_tag:
+              print(f'ERROR: tag {tag!r} does not match the release board '
+                    f'identity {board_release!r} (expected {expected_tag!r})', file=sys.stderr)
+              sys.exit(1)
+          expected_version = pep440_release_version(board_release)
+          if __version__ != expected_version:
+              print(f'ERROR: agent_suite.__version__={__version__!r} is not the PEP 440 '
+                    f'form of release {board_release!r} (expected {expected_version!r})',
+                    file=sys.stderr)
+              sys.exit(1)
+          print(f'release identity: tag={tag} board={board_release} wheel={__version__}')
+          "
+
       - name: Build release manifest
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -158,7 +189,7 @@ jobs:
           agent-suite release-manifest build --tag "$RELEASE_TAG" --wheels-dir out/wheels --json > out/release-manifest.json
           cat out/release-manifest.json
 
-      - name: Verify manifest records every component wheel
+      - name: Verify manifest records every component wheel and the umbrella
         run: |
           python3 -c "
           import json, sys
@@ -168,8 +199,20 @@ jobs:
           if missing:
               print(f'ERROR: no wheel hash recorded for: {missing}', file=sys.stderr)
               sys.exit(1)
-          print('all component wheels hashed in manifest')
+          # WI-035: the umbrella wheel is attached to the release, so it must be
+          # attested like anything else the release ships.
+          umbrella = m.get('umbrella_artifact')
+          if not umbrella or not umbrella.get('wheel_sha256'):
+              print('ERROR: no umbrella wheel hash recorded in the manifest', file=sys.stderr)
+              sys.exit(1)
+          print('all component wheels + the umbrella wheel hashed in manifest')
+          print(f\"  umbrella {umbrella['wheel_filename']} sha256={umbrella['wheel_sha256'][:12]}...\")
           "
+
+      # The manifest is the release's attestation of its own artifacts, so
+      # re-verify it against the wheels on disk before either is attached.
+      - name: Verify manifest hashes against the built wheels
+        run: agent-suite release-manifest verify out/release-manifest.json --wheels-dir out/wheels
 
       - name: Attach artifacts to release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # softprops/action-gh-release@v2
