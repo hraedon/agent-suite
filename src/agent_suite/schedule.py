@@ -57,6 +57,7 @@ class ScheduleKind(Enum):
 
     BACKUP_VERIFY = "backup-verify"  # WI-2.1: nightly pg_dump + weekly verify-restore
     DOCTOR_ALERT = "doctor-alert"  # WI-3.1: periodic doctor + red-routing
+    CHAIN_INTEGRITY = "chain-integrity"  # cairn WI-030: scheduled full replay
 
 
 class OSTarget(Enum):
@@ -114,6 +115,18 @@ SCHEDULES: tuple[ScheduleSpec, ...] = (
         on_calendar="hourly",
         command="agent-suite alert-check",
         windows_trigger="DAILY",
+    ),
+    # Weekly matches cairn's default verdict staleness window (168h), so a
+    # healthy estate never sees the stale-verdict warning. Failures close the
+    # loop through DOCTOR_ALERT: a failed replay annotates the verdict marker,
+    # doctor escalates (warn, then fail once stale), and alert-check routes it.
+    ScheduleSpec(
+        kind=ScheduleKind.CHAIN_INTEGRITY,
+        name="agent-suite-chain-integrity",
+        description="Weekly full cairn chain replay; records the verdict doctor reports",
+        on_calendar="weekly",
+        command="cairn integrity",
+        windows_trigger="WEEKLY",
     ),
 )
 

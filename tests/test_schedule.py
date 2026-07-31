@@ -249,3 +249,14 @@ def test_format_schedule_report() -> None:
     assert "systemd" in text
     assert "backup-verify" in text
     assert "installed" in text
+
+
+def test_chain_integrity_schedule_is_declared():
+    """cairn WI-030: the full chain replay is a scheduled operation, weekly to
+    match cairn's default verdict staleness window (168h), and its failure
+    path closes through the hourly DOCTOR_ALERT schedule."""
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.CHAIN_INTEGRITY)
+    assert spec.command == "cairn integrity"
+    assert spec.on_calendar == "weekly"
+    assert spec.windows_trigger == "WEEKLY"
+    assert spec.name == "agent-suite-chain-integrity"
