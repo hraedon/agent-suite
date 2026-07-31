@@ -456,14 +456,19 @@ def collect_wheel_artifacts(
     result: dict[str, tuple[str, str]] = {}
     for ident in sorted(lock.components):
         pin = lock.components[ident]
-        dist_name = ident.replace("-", "_")
-        # Match {dist_name}-{version}-*.whl; the tag portion may differ
-        # from the default py3-none-any if the wheel has C extensions.
-        prefix = f"{dist_name}-{pin.version}-"
-        candidates = [
-            p for p in wheels_dir.glob(f"{prefix}*.whl")
-            if p.is_file()
-        ]
+        # Match on the component's declared distribution names, not its
+        # ident: published distributions carry suffixes (regista-hraedon)
+        # or entirely different names (agent-provenance ships `cairn`), so
+        # an ident-derived prefix never matches a real wheel.
+        candidates: list[Path] = []
+        for dist in _distribution_names_for(ident):
+            prefix = f"{dist.replace('-', '_')}-{pin.version}-"
+            candidates = [
+                p for p in wheels_dir.glob(f"{prefix}*.whl")
+                if p.is_file()
+            ]
+            if candidates:
+                break
         if candidates:
             # Prefer the py3-none-any wheel if present; else the first match.
             wheel = candidates[0]
@@ -473,6 +478,16 @@ def collect_wheel_artifacts(
                     break
             result[ident] = (wheel.name, _sha256_file(wheel))
     return result
+
+
+def _distribution_names_for(ident: str) -> tuple[str, ...]:
+    """Declared distribution names for a component ident, ident as fallback."""
+    from agent_suite.components import COMPONENTS
+
+    for comp in COMPONENTS:
+        if comp.ident == ident:
+            return comp.distribution_names or (ident,)
+    return (ident,)
 
 
 def collect_source_artifacts(
@@ -488,10 +503,11 @@ def collect_source_artifacts(
     result: dict[str, str] = {}
     for ident in sorted(lock.components):
         pin = lock.components[ident]
-        dist_name = ident.replace("-", "_")
-        candidate = sources_dir / f"{dist_name}-{pin.version}.tar.gz"
-        if candidate.is_file():
-            result[ident] = _sha256_file(candidate)
+        for dist in _distribution_names_for(ident):
+            candidate = sources_dir / f"{dist.replace('-', '_')}-{pin.version}.tar.gz"
+            if candidate.is_file():
+                result[ident] = _sha256_file(candidate)
+                break
     return result
 
 

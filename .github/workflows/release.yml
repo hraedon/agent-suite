@@ -125,19 +125,49 @@ jobs:
           print('source_tree_converged: true')
           "
 
-      # The release manifest is the release-time description of the SOURCE
-      # candidate (see the file-header note). It records the umbrella tag SHA
-      # (resolved from the git tag that triggered this run), all six constituent
-      # source SHAs from SUITE.lock, the regista version quad, and the lock
-      # identity. Wheel hashes are empty strings today — there is no wheel-build
-      # step until Gate 2 (release-board WI-2.3) — so the manifest does not claim
-      # wheel reproducibility yet.
+      # Gate 2 (release-board WI-2.3): build immutable wheels from the exact
+      # SUITE.lock-pinned checkouts already validated above, so the manifest
+      # records real wheel hashes and the release ships installable artifacts
+      # — the candidate is no longer source-only.
+      - name: Build component wheels from pinned checkouts
+        run: |
+          pip install build
+          mkdir -p out/wheels
+          for c in /tmp/siblings/*/; do
+            if [ -f "$c/pyproject.toml" ]; then
+              python3 -m build --wheel --outdir out/wheels "$c"
+            elif [ -f "$c/daemon/pyproject.toml" ]; then
+              # agent-wake's package lives in daemon/
+              python3 -m build --wheel --outdir out/wheels "$c/daemon"
+            fi
+          done
+          python3 -m build --wheel --outdir out/wheels .
+          ls -l out/wheels
+
+      # The release manifest is the release-time description of the candidate
+      # (see the file-header note). It records the umbrella tag SHA (resolved
+      # from the git tag that triggered this run), all six constituent source
+      # SHAs from SUITE.lock, the regista version quad, the lock identity, and
+      # the SHA-256 of each wheel built above from the pinned revisions.
       - name: Build release manifest
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          agent-suite release-manifest build --tag "$RELEASE_TAG" --json > out/release-manifest.json
+          agent-suite release-manifest build --tag "$RELEASE_TAG" --wheels-dir out/wheels --json > out/release-manifest.json
           cat out/release-manifest.json
+
+      - name: Verify manifest records every component wheel
+        run: |
+          python3 -c "
+          import json, sys
+          with open('out/release-manifest.json') as f:
+              m = json.load(f)
+          missing = [c['ident'] for c in m['constituents'] if not c['wheel_sha256']]
+          if missing:
+              print(f'ERROR: no wheel hash recorded for: {missing}', file=sys.stderr)
+              sys.exit(1)
+          print('all component wheels hashed in manifest')
+          "
 
       - name: Attach artifacts to release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # softprops/action-gh-release@v2
@@ -145,3 +175,4 @@ jobs:
           files: |
             out/candidate-inventory.json
             out/release-manifest.json
+            out/wheels/*.whl
