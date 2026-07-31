@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -40,7 +41,7 @@ from agent_suite._redact import redact_url as _redact_url
 from agent_suite.codex_catalog import CODEX_PLUGIN_CATALOG, CodexPluginId, with_marketplace
 from agent_suite.codex_health import CodexHealthReport, check_codex_health, format_codex_health_text
 from agent_suite.components import COMPONENTS, Component, Locality, Tier
-from agent_suite.config import MemoryProviderConfig
+from agent_suite.config import MemoryProviderConfig, configured_project_slugs
 from agent_suite.profiles import (
     PROFILE_REQUIREMENTS,
     Profile,
@@ -938,7 +939,18 @@ def aggregate(
     key_rotation: key_watch.KeyRotationResult | None = None
     store_growth: key_watch.StoreGrowthResult | None = None
     if key_watch_checks:
-        key_rotation = key_watch.check_key_rotation(runner=runner, installed=installed)
+        # WI-049: regista's `principal list` needs a project and the keyset path,
+        # and resolves neither from a project-less invocation. Hosts keep both in
+        # suite.env, so a probe that omitted them failed with
+        # "[UNKNOWN_KEY_ID] hmac_key_path is required" — which the old prose scan
+        # then reported as "regista does not support 'principal list'".
+        slugs = configured_project_slugs()
+        key_rotation = key_watch.check_key_rotation(
+            project=slugs[0] if slugs else None,
+            key_path=os.environ.get("REGISTA_KEY_PATH") or None,
+            runner=runner,
+            installed=installed,
+        )
         store_growth = key_watch.check_store_growth(runner=runner, installed=installed)
 
     profile_classification: ProfileClassification | None = None

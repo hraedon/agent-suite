@@ -16,8 +16,14 @@ After this guide, an operator will have a running suite with a green
 |------------|------------|
 | Python | 3.12, 3.13, or 3.14 |
 | Postgres | 18+ (reachable from this host) — the same floor as [deployment-guide.md](deployment-guide.md) §2.1 |
-| Postgres role | the DSN's role needs **CREATEROLE**: `regista provision` creates a per-project service role, and without it provisioning applies the schema migrations and then fails (WI-046) |
+| Postgres role | the DSN's role needs **CREATEROLE**: `regista provision` creates a per-project service role, and without it provisioning applies the schema migrations and then fails, leaving a half-provisioned project (WI-046) |
 | pgvector | required in the agent-notes database (`CREATE EXTENSION vector`, superuser) — see [deployment-guide.md](deployment-guide.md) §2.2 |
+
+**Verify these three before bootstrapping.** Nothing in the suite checks them
+first — `bootstrap`'s `probe_db` step establishes that Postgres is *reachable*,
+not that the role can do what provisioning needs. The three `psql` one-liners and
+the recovery procedure for a half-provisioned project are in
+[deployment-guide.md](deployment-guide.md) §2.2.1.
 | Secret backend | Vault, AKV, or Windows Credential Manager (this host is Linux, so Vault or AKV — see [secrets-vault.md](secrets-vault.md) or [secrets-akv.md](secrets-akv.md)) |
 | OS | systemd-based Linux (Ubuntu 22.04+, RHEL 9+) |
 | Permissions | root (or sudo) for system-level config and service install |
@@ -78,6 +84,28 @@ names and aborts on the ones that do not.
 
 See [`suite.env.example`](../suite.env.example) for the canonical placeholder
 set, and the relevant [secrets runbook](secrets-vault.md) for the backend refs.
+
+**On a Profile B host (one that runs dossier), the `PROFILE B` block in
+`suite.env.example` is not optional.** dossier refuses to start without
+`DOSSIER_SESSION_SECRET`, and eleven further variables decide whether the
+deployment is safe — TLS and cookie posture, deny-by-default project access, the
+identity binding that makes a human's acceptance attributable to that human, and
+the `DOSSIER_HUMAN_SIGNING` posture that refuses a write which could only be
+signed with the shared store key. The Linux qualification had to discover the
+whole set by restarting dossier and reading each crash in turn, because the file
+this section calls canonical named two of them (WI-047).
+
+`DOSSIER_SESSION_SECRET` is the one variable that cannot live in this file:
+dossier resolves no backend ref for it (dossier WI-036), so it must reach
+dossier's own process as a literal. Inject it through the unit
+(`EnvironmentFile=` pointing at a 0600 root-owned file, or `LoadCredential=`)
+rather than putting it in the shared `suite.env`, which `bootstrap-contract.md`
+§2 forbids.
+
+What each component's config actually requires is declared in
+`src/agent_suite/config_surface.py`, and `tests/test_config_surface.py` asserts
+this file covers it — plus, wherever dossier is installed, that the declaration
+still matches dossier's own config module.
 
 ## 4. Bootstrap
 

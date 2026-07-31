@@ -190,7 +190,7 @@ def _step_probe_secrets(
     WI-041. ``regista secrets --list-providers`` proves a provider *class is
     registered*, which is why this step reported "secret backend reachable" on a
     host whose only ``vault:`` ref was provably 403. What
-    ``docs/secrets-vault.md`` §7 promises is resolution, so that is what this
+    ``docs/secrets-vault.md`` §8 promises is resolution, so that is what this
     does: enumerate the refs this host's resolved config actually names, then
     resolve each one, naming the failing ref.
 

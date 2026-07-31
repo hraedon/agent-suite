@@ -86,6 +86,45 @@ On an existing role, add the attribute in place:
 ALTER ROLE "DB-SERVICE-ACCOUNT" WITH CREATEROLE;
 ```
 
+### 2.2.1 Verify the prerequisites before you bootstrap (WI-046)
+
+Nothing in the suite checks these before acting. `agent-suite bootstrap`'s
+`probe_db` step establishes that Postgres is *reachable* — presence, not
+capability — and the missing `CREATEROLE` is discovered by `regista provision`
+**after** it has applied every schema migration, leaving a half-provisioned
+project. Bootstrap reports that failure honestly (WI-040), but the cheapest place
+to catch it is here, before anything is written. Run these three against the
+store as the operator, not as the service role:
+
+```sh
+# 1. The version floor (must be >= the floor in docs/install-linux.md §1).
+psql "$REGISTA_DSN" -tAc "SHOW server_version"
+
+# 2. The service role can create the per-project role `regista provision` needs.
+#    Must print `t`. If it prints `f`, run the ALTER ROLE above.
+psql "$REGISTA_DSN" -tAc \
+  "SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user"
+
+# 3. pgvector is available in the agent-notes database (superuser-created).
+psql "$AGENT_NOTES_DSN" -tAc \
+  "SELECT 1 FROM pg_extension WHERE extname = 'vector'"
+```
+
+**Recovering a half-provisioned project.** If `regista provision` already failed
+on the role step, the schema and its migrations are in place and only the service
+role is missing. Grant the attribute and re-run the same command — provisioning
+is idempotent, so it reports `schema exists, service role created` rather than
+re-applying anything:
+
+```sh
+psql -c 'ALTER ROLE "DB-SERVICE-ACCOUNT" WITH CREATEROLE'   # as superuser
+regista provision --project <slug>                          # re-run; idempotent
+```
+
+There is an open request for `regista doctor` to report `rolcreaterole` so
+`bootstrap` can verify this prerequisite itself instead of discovering it
+mid-flight (regista WI-230).
+
 ### 2.3 Install uv
 
 ```bash

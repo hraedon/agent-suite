@@ -9,11 +9,19 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
+import sys
 from enum import Enum
 from typing import assert_never
 
 from agent_suite.conformance.envelope import emit_error
 from agent_suite.harness import HarnessTarget
+
+#: The name ``preflight-windows`` shipped under until WI-050. Kept as a working
+#: alias — an operator or script that already runs ``agent-suite preflight`` must
+#: not break — but it warns, and it is not a :class:`Command` member, so no new
+#: surface can grow around it.
+PREFLIGHT_ALIAS = "preflight"
 
 
 class Command(Enum):
@@ -27,7 +35,7 @@ class Command(Enum):
     SCHEDULE = "schedule"
     INSTALL_SERVICES = "install-services"
     ALERT_CHECK = "alert-check"
-    PREFLIGHT = "preflight"
+    PREFLIGHT_WINDOWS = "preflight-windows"
     SETUP_INSTALL = "setup-install"
     DUAL_CONTROL = "dual-control"
     DEPLOY = "deploy"
@@ -269,27 +277,42 @@ def _build_parser() -> argparse.ArgumentParser:
         help="path to the state file for debouncing",
     )
     alert_check.add_argument("--json", action="store_true", help="emit the result as JSON")
-    preflight = sub.add_parser(
-        Command.PREFLIGHT.value,
-        help="read-only Windows host preflight check (Plan 013 WI-0.3)",
-    )
-    preflight.add_argument("--json", action="store_true", help="emit the report as JSON")
-    preflight.add_argument(
-        "--profile",
-        choices=["A", "B", "C"],
-        default="B",
-        help="deployment profile to evaluate against (default: B)",
-    )
-    preflight.add_argument("--postgres-host", default="localhost", help="Postgres host to probe")
-    preflight.add_argument("--postgres-port", type=int, default=5432, help="Postgres port to probe")
-    preflight.add_argument(
-        "--dns-hostname", default="suite-db.example", help="hostname for DNS probe"
-    )
-    preflight.add_argument("--tls-host", default="suite-db.example", help="hostname for TLS probe")
-    preflight.add_argument("--tls-port", type=int, default=443, help="port for TLS probe")
-    preflight.add_argument("--release-file", help="path to release identity file")
-    preflight.add_argument("--lock-file", help="path to SUITE.lock file for lock identity")
-    preflight.add_argument("--install-dir", help="path to check for existing installation")
+    # WI-050: the verb is named for the platform it checks. `preflight` remains a
+    # deprecated alias so anything already scripting it keeps working — see
+    # PREFLIGHT_ALIAS.
+    for _preflight_name in (Command.PREFLIGHT_WINDOWS.value, PREFLIGHT_ALIAS):
+        deprecated = _preflight_name == PREFLIGHT_ALIAS
+        preflight = sub.add_parser(
+            _preflight_name,
+            help=(
+                f"deprecated alias for {Command.PREFLIGHT_WINDOWS.value}"
+                if deprecated
+                else "read-only preflight check of a native Windows host (Plan 013 WI-0.3)"
+            ),
+        )
+        preflight.add_argument("--json", action="store_true", help="emit the report as JSON")
+        preflight.add_argument(
+            "--profile",
+            choices=["A", "B", "C"],
+            default="B",
+            help="deployment profile to evaluate against (default: B)",
+        )
+        preflight.add_argument(
+            "--postgres-host", default="localhost", help="Postgres host to probe"
+        )
+        preflight.add_argument(
+            "--postgres-port", type=int, default=5432, help="Postgres port to probe"
+        )
+        preflight.add_argument(
+            "--dns-hostname", default="suite-db.example", help="hostname for DNS probe"
+        )
+        preflight.add_argument(
+            "--tls-host", default="suite-db.example", help="hostname for TLS probe"
+        )
+        preflight.add_argument("--tls-port", type=int, default=443, help="port for TLS probe")
+        preflight.add_argument("--release-file", help="path to release identity file")
+        preflight.add_argument("--lock-file", help="path to SUITE.lock file for lock identity")
+        preflight.add_argument("--install-dir", help="path to check for existing installation")
     setup_install = sub.add_parser(
         Command.SETUP_INSTALL.value,
         help="execute a Windows setup plan (Plan 014 WI-1.2)",
@@ -517,7 +540,17 @@ def main(argv: list[str] | None = None) -> int:
 
     load_suite_env_into_environ()
     args = _build_parser().parse_args(argv)
-    command = Command(args.command)
+    raw_command = args.command
+    if raw_command == PREFLIGHT_ALIAS:
+        # WI-050: honour it, name the replacement, and carry on.
+        print(
+            f"warning: 'agent-suite {PREFLIGHT_ALIAS}' is deprecated and checks a "
+            f"native Windows host only; use "
+            f"'agent-suite {Command.PREFLIGHT_WINDOWS.value}'.",
+            file=sys.stderr,
+        )
+        raw_command = Command.PREFLIGHT_WINDOWS.value
+    command = Command(raw_command)
     match command:
         case Command.DOCTOR:
             import json as _json
@@ -929,7 +962,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(format_alert_text(alert_result))
             return 0 if alert_result.suite_ok else 1
-        case Command.PREFLIGHT:
+        case Command.PREFLIGHT_WINDOWS:
             from pathlib import Path
 
             from agent_suite.profiles import Profile
@@ -940,6 +973,31 @@ def main(argv: list[str] | None = None) -> int:
                 profile_operations,
                 run_preflight,
             )
+
+            # WI-050. On a Linux host this used to run the probes anyway and print
+            # `State: blocked` with `windows: unsupported (required)`,
+            # `powershell: unsupported (required)` and `dns/tls: unavailable` —
+            # a red, exit-1 report about a platform the operator is not on and
+            # cannot become. `install-linux.md` never mentions the command, and
+            # `deploy` uses the same word for a different check, so a Linux
+            # operator who runs "the preflight" learns nothing true.
+            #
+            # It still exits 1: contract §2 says every path that reports an error
+            # does, and a script that stopped on the old red report must keep
+            # stopping. What changes is that the report is now accurate about
+            # *why*, and nothing was probed to produce it.
+            if os.name != "nt":
+                return emit_error(
+                    "PLATFORM_NOT_APPLICABLE",
+                    f"agent-suite {Command.PREFLIGHT_WINDOWS.value} checks a native "
+                    f"Windows host; this host is {platform.system() or os.name}",
+                    detail=(
+                        "Nothing was probed. For a Linux host see "
+                        "docs/install-linux.md; `agent-suite deploy --dry-run` is "
+                        "the cross-platform pre-deployment check."
+                    ),
+                    json_mode=getattr(args, "json", False),
+                )
 
             release_file = Path(args.release_file) if args.release_file else None
             lock_file = Path(args.lock_file) if args.lock_file else None
@@ -1412,7 +1470,6 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         case Command.RELEASE_MANIFEST:
             import json as _json
-            import sys
 
             from agent_suite.release_manifest import (
                 ReleaseManifestSubcommand,

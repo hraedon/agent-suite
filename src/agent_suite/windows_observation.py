@@ -209,8 +209,14 @@ def observe_host(
 
 
 def format_preflight_text(report: object) -> str:
-    """Format a PreflightReport as human-readable text."""
-    lines: list[str] = ["agent-suite preflight"]
+    """Format a PreflightReport as human-readable text.
+
+    The header names the verb the operator ran (WI-050). It said
+    ``agent-suite preflight`` — a Windows-only check under a generic name, which
+    on Linux produced a red ``State: blocked`` report about a platform the reader
+    was not on.
+    """
+    lines: list[str] = ["agent-suite preflight-windows"]
     state_val = report.state.value if hasattr(report, "state") else "unknown"
     lines.append(f"  State: {state_val}")
     lines.append("")

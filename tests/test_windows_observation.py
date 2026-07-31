@@ -205,5 +205,5 @@ def test_format_preflight_text_contains_state_and_checks() -> None:
     )
     report = run_preflight(observation, request)
     text = format_preflight_text(report)
-    assert "agent-suite preflight" in text
+    assert "agent-suite preflight-windows" in text
     assert report.state.value in text

@@ -1019,3 +1019,182 @@ def test_format_text_labels_the_weakest_rung_and_names_gaps(
     assert "bytecode_cache" in text
     assert isinstance(result, ArtifactAttestation)
     assert result.unattested_total > 0
+
+
+# ---------------------------------------------------------------------------
+# WI-048 — --require-artifact-binding is not reachable with the documented
+# install, and the docs must say so rather than implying a method
+# ---------------------------------------------------------------------------
+
+RELEASE_MANIFEST_DOC = Path(__file__).resolve().parents[1] / "docs" / "release-manifest.md"
+
+#: The two residue kinds `uv tool install` — the method deployment-guide.md §3
+#: prescribes — produces by construction. Neither is removable: the console
+#: scripts ARE how the CLIs are invoked, and `_virtualenv.pth` is seeded by
+#: uv/virtualenv rather than shipped by a wheel.
+_IRREDUCIBLE_RESIDUE = frozenset(
+    {UnattestedKind.INSTALLER_GENERATED, UnattestedKind.SITE_CUSTOMIZATION}
+)
+
+
+@pytest.fixture
+def uv_tool_install(tmp_path: Path) -> tuple[Path, Path]:
+    """The tree shape `uv tool install` actually leaves behind.
+
+    Console script, INSTALLER, `direct_url.json` and a `_virtualenv.pth`, with no
+    bytecode cache (uv compiles none by default). This is what
+    `deployment-guide.md` §3 tells operators to produce.
+    """
+    wheel = _build_wheel(tmp_path / "wheels")
+    dist_info = _install_wheel(
+        wheel,
+        tmp_path / "env",
+        direct_url={"url": wheel.as_uri(), "archive_info": {}},
+        compile_bytecode=False,
+        seeder_pth=True,
+        console_script=True,
+    )
+    return wheel, dist_info
+
+
+def test_the_documented_install_method_cannot_reach_a_binding(
+    uv_tool_install: tuple[Path, Path],
+) -> None:
+    """The Linux qualification's finding, as a test.
+
+    All five components reached `wheel_hash_chain` with `ok: true` and none
+    reached `binds_release_identity: true`. The residue was 18 files of exactly
+    two kinds, neither removable. So `--require-artifact-binding` cannot be a
+    steady-state gate on a host installed the way the guide prescribes — which is
+    why the docs now say what the flag covers instead of offering three steps to
+    reach it (WI-048).
+    """
+    wheel, dist_info = uv_tool_install
+    result = attest_component(
+        _constituent(wheel_sha256=_sha256_file(wheel)),
+        _provenance(dist_info, archive_url=wheel.as_uri()),
+        wheels_dir=wheel.parent,
+    )
+    # The strong rung IS reached: manifest -> wheel bytes -> every shipped file.
+    assert result.ok, result.mismatches
+    assert result.strength is AttestationStrength.WHEEL_HASH_CHAIN
+    assert binds_release_identity(result.strength) is True
+    # And the tree still holds content no manifest hash covers, so the component
+    # does not bind. Both facts are true at once; that is the honest report.
+    assert result.binds_release_identity is False
+    assert _kinds(result) == _IRREDUCIBLE_RESIDUE
+
+
+def test_clearing_bytecode_does_not_bring_the_gate_within_reach(
+    tmp_path: Path,
+) -> None:
+    """Step 2 of the old instructions worked and step 3 was the wall.
+
+    Suppressing bytecode removed 150 entries on the qualification host — a real
+    improvement — and changed the verdict not at all, because the console scripts
+    and the seeder `.pth` remain. Pinning this stops the residue being mistaken
+    for "one more sweep away".
+    """
+    wheel = _build_wheel(tmp_path / "wheels")
+    with_bytecode = _install_wheel(
+        wheel,
+        tmp_path / "env-pip",
+        direct_url={"url": wheel.as_uri(), "archive_info": {}},
+        compile_bytecode=True,
+    )
+    without_bytecode = _install_wheel(
+        wheel,
+        tmp_path / "env-uv",
+        direct_url={"url": wheel.as_uri(), "archive_info": {}},
+        compile_bytecode=False,
+    )
+    before = attest_component(
+        _constituent(wheel_sha256=_sha256_file(wheel)),
+        _provenance(with_bytecode, archive_url=wheel.as_uri()),
+        wheels_dir=wheel.parent,
+    )
+    after = attest_component(
+        _constituent(wheel_sha256=_sha256_file(wheel)),
+        _provenance(without_bytecode, archive_url=wheel.as_uri()),
+        wheels_dir=wheel.parent,
+    )
+    # The sweep is a genuine improvement...
+    assert UnattestedKind.BYTECODE_CACHE in _kinds(before)
+    assert UnattestedKind.BYTECODE_CACHE not in _kinds(after)
+    assert sum(u.count for u in after.unattested) < sum(u.count for u in before.unattested)
+    # ...and neither tree binds.
+    assert before.binds_release_identity is False
+    assert after.binds_release_identity is False
+    assert _kinds(after) == _IRREDUCIBLE_RESIDUE
+
+
+def test_the_gate_is_reachable_only_on_a_never_installed_tree(tmp_path: Path) -> None:
+    """The flag is not useless — it is a build/release-verification check.
+
+    `_pristine_install` is an unpacked tree with no console script, no INSTALLER
+    and no seeder `.pth`: a freshly extracted, never-executed artifact set. That
+    is the only shape entitled to claim a binding, and the docs now name it as the
+    flag's home rather than presenting it as a host state to reach.
+    """
+    wheel, dist_info = _pristine_install(tmp_path)
+    result = attest_component(
+        _constituent(wheel_sha256=_sha256_file(wheel)),
+        _provenance(dist_info),
+        wheels_dir=wheel.parent,
+    )
+    assert result.binds_release_identity is True
+    assert result.unattested == ()
+
+
+def test_the_docs_no_longer_promise_a_reachable_bindable_state() -> None:
+    """The heading was the claim: "Bringing a host to a fully bindable state".
+
+    An operator followed its three steps and the third had no achievable form.
+    Whatever the section is called, it must not offer a route to a state the
+    prescribed install method cannot produce.
+    """
+    doc = RELEASE_MANIFEST_DOC.read_text(encoding="utf-8")
+    headings = [line for line in doc.splitlines() if line.startswith("#")]
+    assert not any("bindable state" in h for h in headings), (
+        f"a heading still promises a bindable state: {headings}"
+    )
+    # The old heading may be *quoted* while explaining the change; what it may not
+    # be is the section's own claim.
+    assert "cannot pass it" in doc or "not reachable" in doc
+
+
+def test_the_docs_name_every_residue_kind_the_code_can_report() -> None:
+    """Docs/code surface agreement, the test_secret_refs.py pattern.
+
+    A new `UnattestedKind` is a new thing an operator will see in `unattested` and
+    have to judge. Adding one without documenting it is how this section drifted
+    into promising a state the enum made impossible.
+    """
+    doc = RELEASE_MANIFEST_DOC.read_text(encoding="utf-8")
+    missing = [kind.value for kind in UnattestedKind if kind.value not in doc]
+    assert missing == [], f"docs/release-manifest.md does not mention: {missing}"
+
+
+def test_the_docs_name_the_achievable_target_and_what_it_leaves_uncovered() -> None:
+    """Lane C's exit criterion, written down.
+
+    "wheel_hash_chain with enumerated residue" is what a running host can assert.
+    Saying so is the difference between a qualification that fails on an
+    unreachable criterion and one that asserts the strongest true thing.
+    """
+    doc = RELEASE_MANIFEST_DOC.read_text(encoding="utf-8")
+    assert "wheel_hash_chain" in doc
+    assert "enumerated" in doc
+    # It must also be explicit about the gap that remains, not just the target.
+    assert "uncovered" in doc
+
+
+def test_the_docs_give_the_working_bytecode_suppression() -> None:
+    """`PYTHONDONTWRITEBYTECODE=1` in /etc/environment does nothing for a unit.
+
+    643 `__pycache__` directories were back after a reboot because systemd does
+    not read that file. The old step 2 told operators to set it there.
+    """
+    doc = RELEASE_MANIFEST_DOC.read_text(encoding="utf-8")
+    assert "Environment=PYTHONDONTWRITEBYTECODE=1" in doc
+    assert "systemd units do not read" in doc or "systemd" in doc

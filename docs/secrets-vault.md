@@ -23,8 +23,8 @@ for why the signing keys live in the backend, not on disk.
   (`uv tool install --with hvac …`) and confirm per component; the suite core
   stays stdlib-only (see `pyproject.toml`).
 - `VAULT_ADDR` set to the Vault endpoint (e.g. `https://vault.example:8200`).
-- `VAULT_TOKEN` (dev) or AppRole `role_id` + `secret_id` (production), reachable
-  by the process that runs `agent-suite bootstrap`.
+- Credentials reachable by every process that resolves a ref — see §6, which
+  states plainly which methods each component can actually use today.
 
 ## 2. Set up Vault
 
@@ -61,9 +61,15 @@ vault write -f -field=secret_id auth/approle/role/agent-suite/secret-id
 ```
 
 Store the `role_id` and `secret_id` where the suite process can read them (a
-systemd `EnvironmentFile=`, a Windows service env block, or a root-owned file).
-Rotate `secret_id` per your organizational policy — see
-[key-operations.md](key-operations.md) §Rotation.
+systemd `EnvironmentFile=`, a Windows service env block, or a root-owned file);
+§6.1 gives the variable names. Rotate `secret_id` per your organizational
+policy — see [key-operations.md](key-operations.md) §Rotation.
+
+> **§6 is how the suite consumes this.** Standing up the AppRole is one half;
+> §6.1 gives the variables each component reads, §6.2 covers the shared plane file
+> acb writes, and §6.3 is the doctor row that tells you which method a host ended
+> up on. If acb provisions your AppRoles, you may not need to capture `role_id`
+> and `secret_id` by hand at all — see §6.2.
 
 ## 3. Store the secrets
 
@@ -178,19 +184,139 @@ authenticated session.
 1. Parses the `vault:` scheme, the mount (`kv`), the KV path
    (`agent-suite/regista`), and the field (`signing_key`) — the **last**
    segment.
-2. Authenticates to Vault via the configured AppRole (production) or static
-   token (dev).
+2. Authenticates to Vault — AppRole in production, a static token only for a
+   dev Vault. §6 is the full account of the methods and their variables.
 3. Reads the secret value from KV v2.
 4. Returns the value to the caller; the caller uses it and clears it from
    memory after the operation (transient custody — see the
    [threat model](key-custody-threat-model.md) §T1).
+
+### 5.1 SecretID delivery: response wrapping
+
+A SecretID is a credential, so it should not be copied around in plaintext.
+Vault's **response wrapping** turns it into a single-use, short-lived token that
+is exchanged for the real SecretID on the host itself:
+
+```sh
+# On the operator's machine — the SecretID never leaves Vault in the clear:
+vault write -f -wrap-ttl=300s auth/approle/role/agent-suite/secret-id
+
+# Hand ONLY the resulting wrapping token to the host, and let the host unwrap it
+# into the file VAULT_SECRET_ID_FILE names:
+vault unwrap -field=secret_id <wrapping-token> > /etc/agent-suite/vault-secret-id
+chmod 0600 /etc/agent-suite/vault-secret-id
+```
+
+The channel is genuinely one-shot: the Linux qualification proved a second unwrap
+of the same token returns **HTTP 400**, and the wrapping token was deleted
+immediately after use. Only a 300-second wrapping token ever crossed onto the
+host.
+
+regista can also unwrap for you: set `VAULT_SECRET_ID_RESPONSE_WRAPPED=1` and
+point `VAULT_SECRET_ID_FILE` at a file holding the *wrapping token* rather than
+the SecretID. That pairing is required — setting it with an inline
+`VAULT_SECRET_ID` is an error, not a silent downgrade.
 
 Every `secrets.resolve` call is recorded in Vault's audit log. Correlating
 audit-log entries against the event log's signed events is the detection
 story for key-access anomalies — see the [threat model](key-custody-threat-model.md)
 §T1 mitigation 2.
 
-## 6. Per-principal Vault policies (hardening)
+## 6. How each component authenticates to Vault
+
+Every component resolves its own `vault:` refs, in its own process, and therefore
+authenticates on its own. A provider registered in one CLI's venv says nothing
+about another's (§1).
+
+**AppRole is the production posture and it works.** regista gained AppRole login
+in WI-228 (`origin/main` `e32ec9b`, PR #16), together with a `custody:vault_auth`
+doctor row that states *which* method a host is on. Before that it read
+`VAULT_TOKEN` and nothing else, which is why the Linux qualification could not run
+AppRole-only and had to inject a token per invocation from an undocumented wrapper
+script — a compensating control that no health surface distinguished from a working
+posture (regista WI-221, now closed by WI-228). If you are reading an older
+qualification log, that is the discrepancy.
+
+### 6.1 The AppRole variables
+
+Verified against regista `origin/main` (`e32ec9b`, `src/regista/_secrets.py`).
+`suite.env.example` carries the same set.
+
+| Variable | Purpose |
+|----------|---------|
+| `VAULT_ADDR` | the Vault endpoint |
+| `VAULT_ENV_FILE` | a mode-0600 **plane file** holding `VAULT_ADDR` / `VAULT_ROLE_ID` / `VAULT_SECRET_ID` — see §6.2 |
+| `VAULT_ROLE_ID` | the AppRole RoleID, inline |
+| `VAULT_ROLE_ID_FILE` | ...or a file holding it (preferred: keeps it out of `/proc/<pid>/environ`) |
+| `VAULT_SECRET_ID_FILE` | a file holding the SecretID — **preferred over inline**; it is the channel response-wrapped delivery writes to (§5.1) |
+| `VAULT_SECRET_ID` | inline SecretID, for cases where a file is impossible |
+| `VAULT_SECRET_ID_RESPONSE_WRAPPED` | `1` when `VAULT_SECRET_ID_FILE` holds a response-**wrapping token** rather than the SecretID itself. Requires `VAULT_SECRET_ID_FILE`; setting it with an inline SecretID is an error, not a silent downgrade |
+| `VAULT_APPROLE_MOUNT_POINT` | the auth mount (default `approle`) |
+| `VAULT_TOKEN` | **dev only.** A static token, kept so `vault server -dev` still works |
+
+Two properties worth relying on:
+
+- **Any AppRole variable being set means AppRole, and there is no fallback.** From
+  that point `VAULT_TOKEN` is not consulted: a RoleID with no SecretID is an error
+  naming the missing variable, because falling back would turn a broken production
+  posture into a working dev one without saying so.
+- **A named-but-missing file is an error**, not a silent fall-through to whatever
+  ambient credentials exist. An operator who named a file meant to use it.
+
+### 6.2 `VAULT_ENV_FILE` — one credential file for regista and acb
+
+acb (agent-capability-broker) *provisions* AppRoles, and when it does it writes a
+mode-0600 env-style **plane file** carrying `VAULT_ADDR`, `VAULT_ROLE_ID` and
+`VAULT_SECRET_ID`. Those are the same variable names regista's resolver reads, so
+pointing `VAULT_ENV_FILE` at that file makes **one** credential file serve both
+components instead of each inventing its own. That interop is the point of the
+variable — it is not merely another way to spell `VAULT_ROLE_ID_FILE`.
+
+```env
+# The file acb wrote when it provisioned this host's AppRole.
+VAULT_ENV_FILE=/etc/agent-suite/vault-plane.env
+```
+
+Semantics worth knowing before you rely on it:
+
+- **The process environment wins over the file**, matching acb's own merge — so an
+  explicitly-set variable still overrides a provisioned plane. Useful for a
+  one-off override; not a way to leave a stale plane in place.
+- **A missing file is an error**, with a message naming the file and what belongs
+  in it. It never falls through to ambient credentials.
+- The `custody:vault_auth` row attributes each value to its real source,
+  `plane:VAULT_ROLE_ID` versus `env:VAULT_ROLE_ID`, so "where did this credential
+  come from" has an answer that does not require guessing.
+- It is a credential file: mode 0600, owned by the service user.
+
+### 6.3 Which method is this host on
+
+Ask the doctor rather than inferring it from config:
+
+```sh
+regista doctor --json | jq '.checks[] | select(.name == "custody:vault_auth")'
+```
+
+The row is **graded, not merely reported** — which is the point, since the
+qualification's whole problem was that a compensating control looked like a
+working posture:
+
+| Status | Meaning |
+|--------|---------|
+| `ok` | `vault auth: AppRole at auth/<mount> — role_id from …, secret_id from …. No VAULT_TOKEN required.` The production posture. |
+| `warn` | A static token — the dev-only method. Names it as such and tells you to set `VAULT_ROLE_ID` and `VAULT_SECRET_ID_FILE`. |
+| `fail` | AppRole material is present but unusable, **or** `secret_backend` is `vault` while `hvac` is not importable in this process. Either way the host resolves nothing. |
+| `skip` | No Vault configured (`VAULT_ADDR` unset), or the provider is not registered and `vault` is not the declared backend. |
+
+Run it **per component**, not once on the host: each resolves in its own venv, and
+`skip` for `hvac absent` is exactly the estate-wide failure Plan 020 §2 names.
+
+> Plan 020 Lane C also cites a suite-wide custody *strategy* document,
+> `docs/secrets-instantiation.md`. It is not in this repo's tree yet — it is in an
+> open PR — so this runbook is the operative one. If that PR has since merged,
+> read it for the estate-level policy and this file for the mechanics.
+
+## 7. Per-principal Vault policies (hardening)
 
 For a stricter posture, scope the AppRole policy so the suite can read each
 principal's key only at its path:
@@ -212,7 +338,7 @@ active principal's key) is described in the
 [key-custody threat model](key-custody-threat-model.md) §T1 mitigation 3; v1
 grants the AppRole read access to all principal paths.
 
-## 7. Verify
+## 8. Verify
 
 After configuring `suite.env`, confirm the backend is reachable and the refs
 resolve before bootstrapping:

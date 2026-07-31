@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from agent_suite.backup import (
+    RESTORE_PARTIAL_REMEDY,
     BackupResult,
     BackupStatus,
     BackupStep,
@@ -17,6 +18,7 @@ from agent_suite.backup import (
     RestoreStep,
     RestoreStepResult,
     _mask_dsn,
+    classify_pg_restore,
     format_backup_text,
     format_restore_text,
     run_backup,
@@ -412,3 +414,162 @@ def test_format_restore_text() -> None:
     text = format_restore_text(result)
     assert len(text) > 0
     assert "restore" in text
+
+
+# ---------------------------------------------------------------------------
+# WI-054 — a non-zero pg_restore is never DONE
+# ---------------------------------------------------------------------------
+
+#: The exact stderr shape that used to be downgraded to DONE. pg_restore emits
+#: this when an object could not be created, and it exits 1 having *skipped* it.
+_PG_RESTORE_ALREADY_EXISTS = _completed(
+    returncode=1,
+    stderr=(
+        "pg_restore: error: could not execute query: ERROR:  relation "
+        '"events" already exists\n'
+        "pg_restore: warning: errors ignored on restore: 3\n"
+    ),
+)
+
+_PG_RESTORE_NO_MATCHING = _completed(
+    returncode=1,
+    stderr="pg_restore: warning: no matching schemas were found\n",
+)
+
+
+def test_classify_pg_restore_zero_exit_is_done() -> None:
+    verdict = classify_pg_restore(returncode=0, stderr="", dump_path="/b/database.dump")
+    assert verdict.status is BackupStatus.DONE
+    assert verdict.errors_ignored == 0
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        'ERROR:  relation "events" already exists',
+        "pg_restore: warning: no matching schemas were found",
+        "ERROR:  permission denied for schema public",
+        "",
+    ],
+)
+def test_no_prose_can_turn_a_non_zero_pg_restore_into_success(stderr: str) -> None:
+    """The WI-054 defect, pinned.
+
+    ``"already exists"`` and ``"no matching"`` used to return DONE; every other
+    message returned FAILED. Both readings came from scanning the message. The
+    exit code is now the whole decision, so the first two rows here are no longer
+    special — and none of them is success.
+    """
+    verdict = classify_pg_restore(returncode=1, stderr=stderr, dump_path="/b/d.dump")
+    assert verdict.status is BackupStatus.PARTIAL
+    assert verdict.status is not BackupStatus.DONE
+
+
+def test_classify_pg_restore_reports_the_count_pg_restore_itself_computed() -> None:
+    """The one number pg_restore emits that is structured, not prose."""
+    verdict = classify_pg_restore(
+        returncode=1,
+        stderr=_PG_RESTORE_ALREADY_EXISTS.stderr,
+        dump_path="/b/d.dump",
+    )
+    assert verdict.errors_ignored == 3
+    assert "3 object(s) skipped" in verdict.detail
+
+
+def test_classify_pg_restore_says_so_when_no_count_was_reported() -> None:
+    verdict = classify_pg_restore(returncode=1, stderr="boom", dump_path="/b/d.dump")
+    assert verdict.errors_ignored is None
+    assert "not reported by pg_restore" in verdict.detail
+
+
+@pytest.mark.parametrize(
+    "restore_result", [_PG_RESTORE_ALREADY_EXISTS, _PG_RESTORE_NO_MATCHING]
+)
+def test_restore_with_skipped_objects_is_not_ok_even_when_verification_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    restore_result: subprocess.CompletedProcess[str],
+) -> None:
+    """The fail-open case this change closes.
+
+    ``verify_restore`` replays the chain, and a chain can verify perfectly while
+    an unrelated table never came back. Before WI-054 this combination reported
+    ``restore: OK`` over a database missing objects.
+    """
+    _stub_verify_restore_ok(monkeypatch)
+    (tmp_path / "database.dump").write_bytes(b"dump")
+    runner = StubRunner({
+        ("agent-suite", "doctor"): _DOCTOR_OK,
+        ("pg_restore",): restore_result,
+    })
+
+    result = run_restore(
+        backup_dir=tmp_path, dsn=_DSN, runner=runner, installed=_installed_all
+    )
+
+    statuses = {s.step: s.status for s in result.steps}
+    assert statuses[RestoreStep.PG_RESTORE] is BackupStatus.PARTIAL
+    assert result.ok is False
+    assert "skipped objects" in result.note
+
+
+def test_a_partial_pg_restore_still_runs_the_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """verify_restore is the authority on the store, so it must always speak.
+
+    The old code returned early on any pg_restore it did not tolerate, leaving
+    the operator with a half-restored database and no verdict on it.
+    """
+    _stub_verify_restore_ok(monkeypatch)
+    (tmp_path / "database.dump").write_bytes(b"dump")
+    runner = StubRunner({
+        ("agent-suite", "doctor"): _DOCTOR_OK,
+        ("pg_restore",): _completed(returncode=1, stderr="ERROR:  permission denied"),
+    })
+
+    result = run_restore(
+        backup_dir=tmp_path, dsn=_DSN, runner=runner, installed=_installed_all
+    )
+
+    reached = [s.step for s in result.steps]
+    assert RestoreStep.VERIFY_RESTORE in reached
+    assert RestoreStep.POST_DOCTOR in reached
+    assert result.ok is False
+
+
+def test_a_partial_restore_whose_verification_fails_reports_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_verify_restore_fail(monkeypatch)
+    (tmp_path / "database.dump").write_bytes(b"dump")
+    runner = StubRunner({
+        ("agent-suite", "doctor"): _DOCTOR_OK,
+        ("pg_restore",): _PG_RESTORE_ALREADY_EXISTS,
+    })
+
+    result = run_restore(
+        backup_dir=tmp_path, dsn=_DSN, runner=runner, installed=_installed_all
+    )
+
+    statuses = {s.step: s.status for s in result.steps}
+    assert statuses[RestoreStep.PG_RESTORE] is BackupStatus.PARTIAL
+    assert statuses[RestoreStep.VERIFY_RESTORE] is BackupStatus.FAILED
+    assert result.ok is False
+
+
+def test_partial_names_the_remedy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same convention as verify-restore (99df507): a report names its remedy."""
+    _stub_verify_restore_ok(monkeypatch)
+    (tmp_path / "database.dump").write_bytes(b"dump")
+    runner = StubRunner({
+        ("agent-suite", "doctor"): _DOCTOR_OK,
+        ("pg_restore",): _PG_RESTORE_ALREADY_EXISTS,
+    })
+
+    result = run_restore(
+        backup_dir=tmp_path, dsn=_DSN, runner=runner, installed=_installed_all
+    )
+    text = format_restore_text(result)
+    assert RESTORE_PARTIAL_REMEDY.split(";")[0] in text
+    assert "NOT OK" in text

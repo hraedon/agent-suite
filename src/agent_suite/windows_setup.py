@@ -255,10 +255,18 @@ def run_preflight(observation: HostObservation, request: SetupRequest) -> Prefli
         PreflightCheck("dns", observation.dns, needs_network, "DNS reachability"),
         PreflightCheck("tls", observation.tls, needs_network, "TLS reachability"),
         PreflightCheck(
-            "secret_provider",
+            # WI-050: named for what it does. The row's own detail read "provider
+            # availability only" — it stated in the report that it observes
+            # presence rather than verifying anything, which is exactly Plan 020's
+            # standing review question. A preflight runs before any config exists,
+            # so presence is genuinely all it can establish; the honest fix is the
+            # name, not a check it has no subject for. `agent-suite bootstrap`
+            # step 0 is where a ref is resolved (see secret_refs.py, WI-041).
+            "secret_provider_present",
             observation.secret_provider,
             needs_secret_provider,
-            "provider availability only",
+            "a provider is installed; no ref is resolved here — "
+            "bootstrap step 0 verifies resolution",
         ),
         _probe_check("release_identity", identity_state, "immutable release and lock identity"),
         _probe_check("ownership", ownership_state, "no conflicting installation owner"),
