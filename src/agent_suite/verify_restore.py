@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, assert_never
 
+from agent_suite.signature_assurance import BindingStatus, principal_binding
+
 
 class ProjectVerifyStatus(Enum):
     """The closed set of per-project verification outcomes.
@@ -33,6 +35,13 @@ class ProjectVerifyStatus(Enum):
     VERIFIED = "verified"
     DRIFT_DETECTED = "drift"
     WARNINGS_DETECTED = "warnings"
+    #: The chain replayed cleanly but its events are signed by a key the
+    #: project never registered — intact and *unattributable* (WI-051). A
+    #: distinct status because the remedy is nothing like drift's.
+    NOT_ATTRIBUTABLE = "not_attributable"
+    #: regista did not verify principal binding, so attributability is unknown.
+    #: Not a pass: a missing failure count is not a zero one.
+    BINDING_UNVERIFIED = "binding_unverified"
     UNREACHABLE = "unreachable"
     ERROR = "error"
 
@@ -67,6 +76,8 @@ class ProjectVerifyResult:
     replayed_drift: int = 0
     halted: int = 0
     warnings: int = 0
+    principal_binding: str = BindingStatus.NOT_VERIFIED.value
+    principal_binding_failures: int | None = None
     detail: str = ""
 
     def to_dict(self) -> dict[str, object]:
@@ -77,6 +88,8 @@ class ProjectVerifyResult:
             "replayed_drift": self.replayed_drift,
             "halted": self.halted,
             "warnings": self.warnings,
+            "principal_binding": self.principal_binding,
+            "principal_binding_failures": self.principal_binding_failures,
             "detail": self.detail,
         }
 
@@ -235,36 +248,48 @@ def _verify_one(
             detail="regista replay emitted malformed replay counts",
         )
 
-    if replayed_drift > 0 or halted > 0:
+    binding = principal_binding(data)
+
+    def _result(
+        status: ProjectVerifyStatus, detail: str
+    ) -> ProjectVerifyResult:
         return ProjectVerifyResult(
             project=project,
-            status=ProjectVerifyStatus.DRIFT_DETECTED,
+            status=status,
             replayed_ok=replayed_ok,
             replayed_drift=replayed_drift,
             halted=halted,
             warnings=warnings,
-            detail=f"drift detected: {replayed_drift} drift, {halted} halted",
+            principal_binding=binding.status.value,
+            principal_binding_failures=binding.failures,
+            detail=detail,
         )
+
+    if replayed_drift > 0 or halted > 0:
+        return _result(
+            ProjectVerifyStatus.DRIFT_DETECTED,
+            f"drift detected: {replayed_drift} drift, {halted} halted",
+        )
+
+    # Principal binding is read before the generic warning count, because a
+    # binding failure *is* one of those warnings and "possible chain-link
+    # tampering" is the wrong diagnosis for it (WI-051): the links are intact.
+    if binding.status is BindingStatus.FAILED:
+        return _result(ProjectVerifyStatus.NOT_ATTRIBUTABLE, binding.detail)
 
     if warnings > 0:
-        return ProjectVerifyResult(
-            project=project,
-            status=ProjectVerifyStatus.WARNINGS_DETECTED,
-            replayed_ok=replayed_ok,
-            replayed_drift=replayed_drift,
-            halted=halted,
-            warnings=warnings,
-            detail=f"warnings detected: {warnings} warnings (possible chain-link tampering)",
+        return _result(
+            ProjectVerifyStatus.WARNINGS_DETECTED,
+            f"warnings detected: {warnings} warnings (possible chain-link tampering)",
         )
 
-    return ProjectVerifyResult(
-        project=project,
-        status=ProjectVerifyStatus.VERIFIED,
-        replayed_ok=replayed_ok,
-        replayed_drift=replayed_drift,
-        halted=halted,
-        warnings=warnings,
-        detail=f"verified: {replayed_ok} events replayed ok",
+    if binding.status is BindingStatus.NOT_VERIFIED:
+        return _result(ProjectVerifyStatus.BINDING_UNVERIFIED, binding.detail)
+
+    return _result(
+        ProjectVerifyStatus.VERIFIED,
+        f"verified: {replayed_ok} events replayed ok, every signing key "
+        f"registered to its actor",
     )
 
 
@@ -281,6 +306,8 @@ def _compute_ok(results: list[ProjectVerifyResult]) -> bool:
             case (
                 ProjectVerifyStatus.DRIFT_DETECTED
                 | ProjectVerifyStatus.WARNINGS_DETECTED
+                | ProjectVerifyStatus.NOT_ATTRIBUTABLE
+                | ProjectVerifyStatus.BINDING_UNVERIFIED
                 | ProjectVerifyStatus.UNREACHABLE
                 | ProjectVerifyStatus.ERROR
             ):
@@ -377,6 +404,16 @@ def format_text(result: VerifyRestoreResult) -> str:
                     f"  {p.project:<24} warnings     "
                     f"{p.replayed_ok} ok, {p.replayed_drift} drift, "
                     f"{p.halted} halted, {p.warnings} warnings"
+                )
+            case ProjectVerifyStatus.NOT_ATTRIBUTABLE:
+                lines.append(
+                    f"  {p.project:<24} not attributable  "
+                    f"{p.principal_binding_failures} event(s) signed by a key "
+                    f"this project never registered — {p.detail}"
+                )
+            case ProjectVerifyStatus.BINDING_UNVERIFIED:
+                lines.append(
+                    f"  {p.project:<24} binding unverified  {p.detail}"
                 )
             case ProjectVerifyStatus.UNREACHABLE:
                 lines.append(f"  {p.project:<24} unreachable   {p.detail}")

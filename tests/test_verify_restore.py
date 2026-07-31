@@ -30,7 +30,16 @@ def _replay_json(
     replayed_drift: int = 0,
     halted: int = 0,
     warnings: int = 0,
+    principal_binding_verified: bool = True,
+    principal_binding_failures: int | None = 0,
 ) -> str:
+    """A ``regista replay --json`` payload, in ``ReplayReport.to_dict``'s shape.
+
+    Note what that shape does deliberately (regista WI-223): it always emits
+    ``principal_binding_verified``, and it **omits**
+    ``principal_binding_failures`` when the check did not run, so no consumer
+    can read "not checked" as "zero failures".
+    """
     d: dict[str, object] = {
         "table_name": "events",
         "replayed_ok": replayed_ok,
@@ -39,6 +48,10 @@ def _replay_json(
     }
     if warnings > 0:
         d["warnings"] = warnings
+    d["principal_binding_verified"] = principal_binding_verified
+    if principal_binding_verified or (principal_binding_failures or 0) > 0:
+        if principal_binding_failures is not None:
+            d["principal_binding_failures"] = principal_binding_failures
     return json.dumps(d)
 
 
@@ -181,7 +194,13 @@ def test_warnings_key_omitted_is_verified() -> None:
     runner = StubRunner(
         {
             "alpha": _completed(
-                stdout=json.dumps({"replayed_ok": 5, "replayed_drift": 0, "halted": 0})
+                stdout=json.dumps({
+                    "replayed_ok": 5,
+                    "replayed_drift": 0,
+                    "halted": 0,
+                    "principal_binding_verified": True,
+                    "principal_binding_failures": 0,
+                })
             )
         }
     )
@@ -194,6 +213,89 @@ def test_warnings_key_omitted_is_verified() -> None:
     assert result.ok is True
     assert result.projects[0].status is ProjectVerifyStatus.VERIFIED
     assert result.projects[0].warnings == 0
+
+
+# ---------------------------------------------------------------------------
+# WI-051 — attributability is its own verdict, and absence is not a pass
+# ---------------------------------------------------------------------------
+
+
+def test_binding_failure_is_not_reported_as_chain_link_tampering() -> None:
+    """The misattributed detail: a cross-project key collision is not tampering.
+
+    regista's replay reports a principal-binding failure *as a warning*, so
+    verify_restore correctly refused to call the project verified — and then
+    told the operator to go looking for chain-link tampering. The links are
+    intact; the signatures are valid; nothing is attributable.
+    """
+    runner = StubRunner(
+        {
+            "alpha": _completed(
+                stdout=_replay_json(
+                    replayed_ok=4, warnings=4, principal_binding_failures=4
+                )
+            )
+        }
+    )
+    result = verify_restore(
+        dsn=_DSN, projects=["alpha"], runner=runner, installed=_installed_all()
+    )
+    assert result.ok is False
+    project = result.projects[0]
+    assert project.status is ProjectVerifyStatus.NOT_ATTRIBUTABLE
+    assert project.principal_binding_failures == 4
+    assert "tampering" not in project.detail
+    assert "not attributable" in project.detail
+    assert "bundle verify" in project.detail
+
+
+def test_missing_binding_count_is_not_read_as_zero() -> None:
+    """``--no-verify-principal-binding`` (or an older regista) is not a pass.
+
+    regista omits the count when the check did not run, precisely so this cannot
+    be read as "zero failures". A verified verdict requires
+    ``principal_binding_verified`` to be true.
+    """
+    runner = StubRunner(
+        {
+            "alpha": _completed(
+                stdout=_replay_json(
+                    replayed_ok=5,
+                    principal_binding_verified=False,
+                    principal_binding_failures=None,
+                )
+            )
+        }
+    )
+    result = verify_restore(
+        dsn=_DSN, projects=["alpha"], runner=runner, installed=_installed_all()
+    )
+    assert result.ok is False
+    project = result.projects[0]
+    assert project.status is ProjectVerifyStatus.BINDING_UNVERIFIED
+    assert project.principal_binding_failures is None
+    assert "not checked" in project.detail
+
+
+def test_a_zero_count_without_the_verified_flag_is_still_not_a_pass() -> None:
+    """The exact shape an opted-out or older regista could produce."""
+    runner = StubRunner(
+        {
+            "alpha": _completed(
+                stdout=json.dumps({
+                    "replayed_ok": 5,
+                    "replayed_drift": 0,
+                    "halted": 0,
+                    "principal_binding_failures": 0,
+                })
+            )
+        }
+    )
+    result = verify_restore(
+        dsn=_DSN, projects=["alpha"], runner=runner, installed=_installed_all()
+    )
+    assert result.ok is False
+    assert result.projects[0].status is ProjectVerifyStatus.BINDING_UNVERIFIED
 
 
 # --- test 3: unreachable project ----------------------------------------------

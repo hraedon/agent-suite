@@ -26,7 +26,7 @@
     "memory_provider": {"type": "object", "required": false, "description": "Memory provider health when agent-notes is installed and memory_provider_checks is True (Plan 012 WI-2.1)"},
     "codex_health": {"type": "object", "required": false, "description": "Codex plugin probe health (ok) and minimum required-plugin readiness (ready); individual plugin states remain visible"}
   },
-  "verify_restore_status_values": ["verified", "drift", "warnings", "unreachable", "error"],
+  "verify_restore_status_values": ["verified", "drift", "warnings", "not_attributable", "binding_unverified", "unreachable", "error"],
   "key_age_status_values": ["ok", "approaching", "expired", "unsupported", "unreachable", "error"],
   "store_growth_status_values": ["ok", "unsupported", "unreachable", "error"],
   "codex_plugin_health_status_values": ["plugin_absent", "installed_disabled", "installed_enabled", "version_mismatch", "invalid_metadata"],

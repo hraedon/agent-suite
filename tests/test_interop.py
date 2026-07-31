@@ -35,6 +35,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_suite.signature_assurance import bundle_verdict
 from tests.conftest import (
     RegistaProject,
     _can_run,
@@ -758,9 +759,27 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
         )
         assert binding_report.replayed_drift == 0
         assert binding_report.halted == 0
+        # A zero failure count only means anything when the check ran (WI-051).
+        assert binding_report.principal_binding_verified is True
         assert binding_report.principal_binding_failures == 0, (
             f"binding failures: {binding_report.principal_binding_failures}"
         )
+
+        # --- (7) The §5 lock assertion: EVERY signature is per-actor ---
+        #
+        # `bootstrap-contract.md` §5 requires the mixed human+agent chain to
+        # verify "with per-actor signatures". The Lane C qualification passed
+        # that lock while producing "4 signatures verified, 1 unverifiable
+        # (symmetric scheme)" — the human leg, signed with the shared store HMAC
+        # key. "The bundle verified" is not the requirement, so assert the
+        # requirement: zero unverifiable, and the check enforced (WI-052 ask 4).
+        bundle_path = str(tmp_path / "interop-bundle.json")
+        verifier.export_audit_bundle(bundle_path)
+        payload = regista.Regista.verify_audit_bundle_offline(bundle_path)
+        verdict = bundle_verdict(payload)
+        assert verdict.ok, f"§5 per-actor signature requirement: {verdict.detail}"
+        assert verdict.unverifiable == 0
+        assert verdict.verified == verdict.events
     finally:
         for handle in (agent_face, human_face, verifier, boot):
             if handle is not None:
