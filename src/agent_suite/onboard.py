@@ -27,13 +27,52 @@ CLI (``regista provision``, ``regista spec sign``, component
 with no real binaries or live infra.  ``assert_never`` over the step-kind and
 step-status enums so a newly added kind or status can't slip through
 ungated.  stdlib-only core.
+
+WI-053 — the sign step now calls a command that exists
+------------------------------------------------------
+
+``_step_sign_spec`` built ``regista spec sign --project X --spec P``. Every part
+of that was wrong, so the feature had never worked on any host:
+
+* ``--spec`` is not an option — the spec file is a **positional** argument, and
+  ``--spec`` is in fact ambiguous against ``--spec-md-file`` / ``--spec-md-hash``
+  / ``--spec-id``, so argparse rejected it before anything else was considered.
+* ``--project`` is declared on regista's **top-level** parser, so it must precede
+  the subcommand.
+* ``--schema-version`` and ``--actor-id`` are **required** and were never passed.
+* ``spec_md_hash`` must be non-empty — regista raises ``INVALID_ARGUMENT`` on a
+  blank one — and this passed ``--spec-md-hash`` only when a sibling ``spec.md``
+  happened to exist.
+
+Lane H made the step fail honestly rather than possibly reporting
+``already_done``; this makes it work. Verified against regista main
+(``_cli.py`` ``spec_sign``, ``_api_meta.sign_spec``).
+
+**Idempotency, and what a re-run does.** regista exposes no "already signed"
+signal — no result flag and no error code meaning "this exact spec is already
+event-zero" — and ``sign_spec`` generates a fresh random ``spec_id`` on every
+call, so a naive re-run mints a *second, unrelated* spec entity. So the step
+derives the entity id deterministically from the project slug
+(:func:`spec_entity_id`) and asks ``regista spec events --spec-id …`` first:
+
+* same project, same spec content already signed → ``ALREADY_DONE``, nothing
+  written. This is the idempotency ``onboard`` promises.
+* same project, **changed** spec content → a further ``spec_signed`` event on the
+  *same* entity, and the step says the founding spec was amended. The chain then
+  records both versions in order, which is the honest outcome for an amended
+  spec and is what a random ``spec_id`` per run destroys.
+* the pre-check itself failing is a failure, never an assumption that the spec is
+  unsigned — signing again on a bad read is how a duplicate event-zero gets
+  written.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -209,12 +248,93 @@ def _compute_spec_md_hash(spec_path: Path) -> str | None:
     The spec.md is the human-readable companion to the machine-readable
     spec.yaml.  Its hash is included in the signed event-zero so both the
     machine and human specs are anchored.
+
+    ``None`` means there is no ``spec.md`` — which regista treats as a hard error
+    (``sign_spec`` raises ``INVALID_ARGUMENT`` on an empty ``spec_md_hash``), so
+    the step refuses rather than inventing a hash for a file that does not exist.
     """
     spec_md_path = spec_path.with_suffix(".md")
     try:
         return hashlib.sha256(spec_md_path.read_bytes()).hexdigest()
     except OSError:
         return None
+
+
+#: Namespace for the derived spec entity id. Fixed forever: changing it would make
+#: every already-onboarded project look unsigned and mint a duplicate event-zero.
+_SPEC_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "https://agent-suite/spec-zero")
+
+
+def spec_entity_id(project: str) -> uuid.UUID:
+    """The project's founding-spec entity id, derived from its slug.
+
+    regista's ``sign_spec`` generates a random ``spec_id`` when none is given, so
+    two runs of ``onboard --spec`` produce two unrelated spec entities and there
+    is no way to ask "is this project's spec already signed?" (WI-053). Deriving
+    the id makes the question answerable — ``regista spec events --spec-id`` — and
+    makes an amended spec a second event on the *same* entity rather than a
+    second, competing event-zero.
+
+    A project has exactly one founding-spec entity, so the slug is the whole
+    input. Deriving from the spec *content* instead would give each edit its own
+    entity, which is the same problem in a different shape.
+    """
+    return uuid.uuid5(_SPEC_ID_NAMESPACE, project)
+
+
+def spec_sign_argv(
+    *,
+    project: str,
+    spec_path: Path,
+    schema_version: str,
+    actor_id: str,
+    spec_md_hash: str,
+    spec_id: uuid.UUID,
+) -> tuple[str, ...]:
+    """Build ``regista spec sign`` as regista's parser actually defines it.
+
+    ``--project`` is a top-level option so it precedes the subcommand; the spec
+    file is a positional; ``--schema-version`` and ``--actor-id`` are required.
+    """
+    return (
+        "regista",
+        "--project",
+        project,
+        "spec",
+        "sign",
+        str(spec_path),
+        "--schema-version",
+        schema_version,
+        "--actor-id",
+        actor_id,
+        "--spec-md-hash",
+        spec_md_hash,
+        "--spec-id",
+        str(spec_id),
+        "--json",
+    )
+
+
+def spec_events_argv(*, project: str, spec_id: uuid.UUID) -> tuple[str, ...]:
+    """Build the idempotency pre-check: this project's spec events, if any.
+
+    Filtered to the derived entity and bounded by regista's own ``--limit``, so
+    the cost does not grow with the project's history (Plan 020's first standing
+    question — ``onboard`` is not a health path, but an unbounded read on it is
+    still a defect).
+    """
+    return (
+        "regista",
+        "--project",
+        project,
+        "spec",
+        "events",
+        "--spec-id",
+        str(spec_id),
+        "--limit",
+        "50",
+        "--json",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +395,75 @@ def _step_provision(
     )
 
 
+def _already_signed(
+    *,
+    runner: Runner,
+    project: str,
+    spec_id: uuid.UUID,
+    spec_md_hash: str,
+    schema_version: str,
+) -> tuple[bool, OnboardStepResult | None]:
+    """Whether this exact spec is already this project's event-zero.
+
+    regista offers no idempotent signal, so the suite constructs one from a
+    bounded read of the derived entity's own events. A signed spec matches when
+    both the ``spec_md_hash`` and the ``spec_schema_version`` recorded in the
+    payload agree — those are the two fields ``sign_spec`` stores that identify
+    *which* spec was signed (the ``spec_yaml`` is stored too, but comparing it
+    would mean shipping the whole document through an argv-adjacent read).
+
+    Returns ``(already_signed, failure)``. A pre-check that could not run is a
+    **failure**, never "assume unsigned": signing on a bad read is precisely how
+    a duplicate event-zero gets written.
+    """
+    argv = spec_events_argv(project=project, spec_id=spec_id)
+    try:
+        result = runner(argv)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        return False, OnboardStepResult(
+            OnboardStep.SIGN_SPEC,
+            OnboardStatus.FAILED,
+            f"could not read existing spec events: {exc} — refusing to sign "
+            f"without knowing whether {project} already has an event-zero",
+        )
+    if result.returncode != 0:
+        return False, OnboardStepResult(
+            OnboardStep.SIGN_SPEC,
+            OnboardStatus.FAILED,
+            f"regista spec events exited {result.returncode}: "
+            f"{result.stderr.strip()[:300] or 'no detail'} — refusing to sign "
+            f"without knowing whether {project} already has an event-zero",
+        )
+    try:
+        events = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return False, OnboardStepResult(
+            OnboardStep.SIGN_SPEC,
+            OnboardStatus.FAILED,
+            "regista spec events --json emitted non-JSON — refusing to sign "
+            "without knowing whether this project already has an event-zero",
+        )
+    if not isinstance(events, list):
+        return False, OnboardStepResult(
+            OnboardStep.SIGN_SPEC,
+            OnboardStatus.FAILED,
+            f"regista spec events --json returned {type(events).__name__}, "
+            f"expected a list — refusing to sign on an unreadable result",
+        )
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if (
+            payload.get("spec_md_hash") == spec_md_hash
+            and str(payload.get("spec_schema_version", "")) == schema_version
+        ):
+            return True, None
+    return False, None
+
+
 def _step_sign_spec(
     *,
     runner: Runner,
@@ -282,34 +471,88 @@ def _step_sign_spec(
     dry_run: bool,
     project: str,
     spec_path: Path,
+    schema_version: str | None,
+    principal: str | None = None,
 ) -> OnboardStepResult:
+    """Sign the spec as the project's event-zero via ``regista spec sign``.
+
+    See the module docstring for what a re-run does. Every required regista
+    argument is now supplied, and each one that the suite cannot supply is a
+    refusal that names the missing input rather than a call that fails obscurely.
+    """
     if not installed("regista"):
         return OnboardStepResult(
             OnboardStep.SIGN_SPEC,
             OnboardStatus.FAILED,
             "regista CLI not installed — cannot sign spec",
         )
+    spec_md_path = spec_path.with_suffix(".md")
     if dry_run:
-        md_note = " (+ spec.md hash)" if spec_path.with_suffix(".md").exists() else ""
+        md_note = " (+ spec.md hash)" if spec_md_path.exists() else ""
         return OnboardStepResult(
             OnboardStep.SIGN_SPEC,
             OnboardStatus.PENDING,
-            f"would sign {spec_path}{md_note} as event-zero for project {project}",
+            f"would sign {spec_path}{md_note} as event-zero for project {project} "
+            f"(spec entity {spec_entity_id(project)})",
         )
 
+    # regista requires --schema-version; the suite reads it out of the spec in
+    # step 1. Without it there is nothing to pass, and inventing a default would
+    # sign a version claim the spec does not make.
+    if not schema_version:
+        return OnboardStepResult(
+            OnboardStep.SIGN_SPEC,
+            OnboardStatus.REFUSED,
+            f"{spec_path} declares no 'schema_version', which "
+            f"'regista spec sign' requires — add one (recognised: "
+            f"{sorted(RECOGNIZED_SPEC_VERSIONS)}) and re-run",
+        )
+
+    # regista raises INVALID_ARGUMENT on an empty spec_md_hash, so the human
+    # companion document is mandatory, not optional. Refuse and say which file.
     spec_md_hash = _compute_spec_md_hash(spec_path)
+    if spec_md_hash is None:
+        return OnboardStepResult(
+            OnboardStep.SIGN_SPEC,
+            OnboardStatus.REFUSED,
+            f"'regista spec sign' requires a spec.md hash and {spec_md_path} does "
+            f"not exist — the signed event-zero anchors both the machine-readable "
+            f"and human-readable spec, so create it and re-run",
+        )
 
-    sign_cmd: list[str] = [
-        "regista", "spec", "sign",
-        "--project", project,
-        "--spec", str(spec_path),
-    ]
-    if spec_md_hash is not None:
-        sign_cmd += ["--spec-md-hash", spec_md_hash]
-    sign_cmd.append("--json")
+    # The actor is the principal step 2 provisioned a key for. regista binds each
+    # key to a principal and rejects any event whose actor_id differs from its
+    # key's principal_id, so this must be that same id (see provisioning.py).
+    actor_id = default_principal(principal)
+    spec_id = spec_entity_id(project)
 
+    already, failure = _already_signed(
+        runner=runner,
+        project=project,
+        spec_id=spec_id,
+        spec_md_hash=spec_md_hash,
+        schema_version=schema_version,
+    )
+    if failure is not None:
+        return failure
+    if already:
+        return OnboardStepResult(
+            OnboardStep.SIGN_SPEC,
+            OnboardStatus.ALREADY_DONE,
+            f"spec {spec_path} is already event-zero for {project} "
+            f"(spec entity {spec_id}, schema_version {schema_version})",
+        )
+
+    sign_cmd = spec_sign_argv(
+        project=project,
+        spec_path=spec_path,
+        schema_version=schema_version,
+        actor_id=actor_id,
+        spec_md_hash=spec_md_hash,
+        spec_id=spec_id,
+    )
     try:
-        result = runner(tuple(sign_cmd))
+        result = runner(sign_cmd)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         return OnboardStepResult(
             OnboardStep.SIGN_SPEC,
@@ -317,19 +560,18 @@ def _step_sign_spec(
             f"spec sign failed: {exc}",
         )
     verdict = evaluate_component_result(
-        command=f"regista spec sign --project {project}",
+        command=f"regista --project {project} spec sign",
         returncode=result.returncode,
         stdout=result.stdout,
         stderr=result.stderr,
     )
     if not verdict.ok:
-        # Deliberately no "already signed" branch. regista's `spec sign` has no
-        # idempotent already-signed signal — no result flag and no error code
-        # meaning "this exact spec is already event-zero" — so the old
-        # "already"/"exists" substring match was reporting *any* failure whose
-        # message happened to contain those words (an idempotency collision with
-        # a *different* payload says exactly that) as a completed step. Until
-        # regista offers a code to branch on, an error here is an error.
+        # Still no "already signed" branch on the *failure* path: regista has no
+        # code meaning "this exact spec is already event-zero", and the old
+        # "already"/"exists" substring match reported any failure whose message
+        # happened to contain those words as a completed step. Idempotency is
+        # established before the write, by reading the chain — not inferred
+        # afterwards from prose.
         return OnboardStepResult(
             OnboardStep.SIGN_SPEC,
             OnboardStatus.FAILED,
@@ -338,7 +580,9 @@ def _step_sign_spec(
     return OnboardStepResult(
         OnboardStep.SIGN_SPEC,
         OnboardStatus.DONE,
-        f"spec signed as event-zero for project {project}",
+        f"spec signed as event-zero for project {project} "
+        f"(spec entity {spec_id}, actor {actor_id}, "
+        f"schema_version {schema_version})",
     )
 
 
@@ -540,6 +784,7 @@ def run_onboard(
         sign_result = _step_sign_spec(
             runner=runner, installed=installed, dry_run=dry_run,
             project=project, spec_path=spec_path,
+            schema_version=spec_version, principal=principal,
         )
         steps.append(sign_result)
         if _is_terminal(sign_result.status):

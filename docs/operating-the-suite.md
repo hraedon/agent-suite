@@ -275,24 +275,76 @@ the configured channel). This plan owns the scheduling and emitting.
 Checks each signing key's age against the rotation-cadence policy (default
 90 days, per [key-operations.md](key-operations.md) §2):
 
-| State | Meaning | Action |
-|-------|---------|--------|
-| **ok** | Key age < 80% of cadence | None |
-| **approaching** | Key age 80-100% of cadence | Schedule rotation |
-| **expired** | Key age > cadence | **Rotate immediately** — doctor fails |
-| **unsupported** | regista doesn't expose `principal list` | Feature request in regista |
-| **unreachable** | regista not installed or command failed | Check regista health |
+| State | `checked` | Meaning | Action |
+|-------|-----------|---------|--------|
+| **ok** | true | Every active key is < 80% of cadence | None |
+| **approaching** | true | A key is at 80-100% of cadence | Schedule rotation |
+| **expired** | true | A key is past cadence | **Rotate immediately** — doctor fails |
+| **unsupported** | false | regista's *parser* has no `principal list` verb | Feature request in regista |
+| **unreachable** | false | regista absent, or the command ran and failed | **Read the detail** — this is usually a config gap on this host, not a regista gap |
+| **error** | false | The registry read succeeded but could not be parsed | Report the output shape |
 
 A key past its rotation cadence makes `suite_ok` false.
 
+**Read `checked`, not just `ok` (WI-049).** Every non-`ok` state above leaves the
+key ages unknown, and `ok` stays true because "this host cannot run the key-age
+check" is not the same failure as "this host has an expired key". `checked: false`
+is what distinguishes them, and the text report prefixes such a line with
+`not checked —`. A zero next to no evidence of counting is the defect Lane G is
+removing from regista's `principal_binding_failures`; the same rule applies here.
+
+**`unsupported` requires evidence about regista, not a word in an error
+message.** The Linux qualification host printed
+`unsupported: regista does not support 'principal list'` on every doctor run
+while the command worked from the same shell — the probe was passing regista's
+global `--json` *after* the subcommand (argparse rejects that), had no project or
+key path, and then matched `"unrecognized"` in argparse's complaint. The check now
+reports `unsupported` only when regista's parser names the subcommand itself as
+an invalid choice. Anything else is `unreachable` with regista's real diagnostic
+and the remedy.
+
+The check needs `REGISTA_PROJECT` and `REGISTA_KEY_PATH` in `suite.env`:
+`regista principal list` resolves neither from a project-less invocation, so
+without them it reports `unreachable`, not a clean bill of health.
+
 ### 5.2 Store growth telemetry
 
-Surfaces per-project event counts and byte sizes (via `regista stats --json`)
-so the regista Plan 028 archival decision is made from data. This check is
+Surfaces per-project event counts and byte sizes (via `regista stats`) so the
+regista Plan 028 archival decision is made from data. This check is
 informational — it does not gate `suite_ok`.
 
-If regista doesn't support `stats`, the check reports `unsupported` — a
-named state, not a crash.
+`regista stats` does not exist yet, so this check reports `unsupported` on every
+host today — a named state, not a crash, and now reached by the same
+evidence-based detection as §5.1 rather than by scanning the message.
+
+---
+
+## 5.3 Onboarding a project from a signed spec (WI-053)
+
+`agent-suite onboard <slug> --spec spec.yaml` signs the spec into regista as the
+project's **event-zero**, so the audit chain runs spec → work → review → done.
+
+Two inputs are **required**, because `regista spec sign` requires them:
+
+| Input | Where it comes from | If missing |
+|-------|--------------------|------------|
+| `schema_version` | a top-level field in `spec.yaml` | the step **refuses** and names the field; the project is still provisioned, just spec-unanchored |
+| `spec.md` | a sibling of `spec.yaml` (the human-readable companion) | the step **refuses** and names the file — regista rejects an empty spec.md hash, so this document is not optional |
+
+Neither is guessed. Signing a `schema_version` the spec does not declare, or a
+spec.md hash for a file that does not exist, would put a false claim in the chain.
+
+**Re-running.** regista exposes no idempotent "already signed" signal, and
+`sign_spec` mints a random spec entity id when none is given — so a naive re-run
+would append a *second, unrelated* event-zero. The suite therefore derives the
+spec entity id from the project slug and reads that entity's events first:
+
+- **unchanged spec** → `already_done`. Nothing is written.
+- **amended spec** (different content or `schema_version`) → a further
+  `spec_signed` event on the *same* entity. The chain records both versions in
+  order, which is what an amended founding spec should look like.
+- **the pre-check itself fails** → the step fails. It never assumes "unsigned",
+  because that assumption performs a write.
 
 ---
 
