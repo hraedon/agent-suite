@@ -15,7 +15,9 @@ After this guide, an operator will have a running suite with a green
 | Dependency | Requirement |
 |------------|------------|
 | Python | 3.12, 3.13, or 3.14 |
-| Postgres | 18+ (reachable from this host) |
+| Postgres | 18+ (reachable from this host) — the same floor as [deployment-guide.md](deployment-guide.md) §2.1 |
+| Postgres role | the DSN's role needs **CREATEROLE**: `regista provision` creates a per-project service role, and without it provisioning applies the schema migrations and then fails (WI-046) |
+| pgvector | required in the agent-notes database (`CREATE EXTENSION vector`, superuser) — see [deployment-guide.md](deployment-guide.md) §2.2 |
 | Secret backend | Vault, AKV, or Windows Credential Manager (this host is Linux, so Vault or AKV — see [secrets-vault.md](secrets-vault.md) or [secrets-akv.md](secrets-akv.md)) |
 | OS | systemd-based Linux (Ubuntu 22.04+, RHEL 9+) |
 | Permissions | root (or sudo) for system-level config and service install |
@@ -59,11 +61,20 @@ sudo $EDITOR /etc/agent-suite/suite.env
 Fill in the placeholders. Secrets are backend refs, never literals:
 
 ```env
-REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista
-REGISTA_DSN_PASSWORD=vault:secret/agent-suite/regista#dsn_password
-REGISTA_KEY_PATH=vault:secret/agent-suite/regista#signing_key
+REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT:PASSWORD@suite-db.example:5432/regista
+REGISTA_KEY_PATH=/etc/agent-suite/keys.json
 REGISTA_REQUIRE_SSL=true
+CAIRN_CONTENT_KEY_REF=vault:kv/agent-suite/hosts/HOSTNAME/cairn/content_key
 ```
+
+`REGISTA_KEY_PATH` is a path to a `keys.json` **file**, not a ref — a custodied
+signing key is a `secret_ref` entry *inside* that file
+([secrets-vault.md](secrets-vault.md) §4.1). There is no
+`REGISTA_DSN_PASSWORD` variable in regista's config vocabulary; the DSN password
+is part of `REGISTA_DSN`. A `vault:` ref is
+`vault:<mount>/<path…>/<field>` — the field is the **last path segment**, never
+a `#field` suffix. `agent-suite bootstrap` step 0 resolves every ref this file
+names and aborts on the ones that do not.
 
 See [`suite.env.example`](../suite.env.example) for the canonical placeholder
 set, and the relevant [secrets runbook](secrets-vault.md) for the backend refs.
