@@ -79,6 +79,28 @@ names and aborts on the ones that do not.
 See [`suite.env.example`](../suite.env.example) for the canonical placeholder
 set, and the relevant [secrets runbook](secrets-vault.md) for the backend refs.
 
+**On a Profile B host (one that runs dossier), the `PROFILE B` block in
+`suite.env.example` is not optional.** dossier refuses to start without
+`DOSSIER_SESSION_SECRET`, and eleven further variables decide whether the
+deployment is safe — TLS and cookie posture, deny-by-default project access, the
+identity binding that makes a human's acceptance attributable to that human, and
+the `DOSSIER_HUMAN_SIGNING` posture that refuses a write which could only be
+signed with the shared store key. The Linux qualification had to discover the
+whole set by restarting dossier and reading each crash in turn, because the file
+this section calls canonical named two of them (WI-047).
+
+`DOSSIER_SESSION_SECRET` is the one variable that cannot live in this file:
+dossier resolves no backend ref for it (dossier WI-036), so it must reach
+dossier's own process as a literal. Inject it through the unit
+(`EnvironmentFile=` pointing at a 0600 root-owned file, or `LoadCredential=`)
+rather than putting it in the shared `suite.env`, which `bootstrap-contract.md`
+§2 forbids.
+
+What each component's config actually requires is declared in
+`src/agent_suite/config_surface.py`, and `tests/test_config_surface.py` asserts
+this file covers it — plus, wherever dossier is installed, that the declaration
+still matches dossier's own config module.
+
 ## 4. Bootstrap
 
 Run the bootstrap in dry-run first to confirm the plan:
