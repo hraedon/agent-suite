@@ -81,6 +81,9 @@ class RuntimeProvenance:
     manager_package: str | None = None
     pep668: bool = False
     detail: str = ""
+    dist_info_path: str | None = None
+    archive_url: str | None = None
+    archive_sha256: str | None = None
 
     def fingerprint(self) -> tuple[object, ...]:
         """Stable mutation target identity used for pre-apply revalidation."""
@@ -113,6 +116,9 @@ class RuntimeProvenance:
             "manager_package": self.manager_package,
             "pep668": self.pep668,
             "detail": self.detail,
+            "dist_info_path": self.dist_info_path,
+            "archive_url": self.archive_url,
+            "archive_sha256": self.archive_sha256,
         }
 
 
@@ -192,9 +198,24 @@ if selected is None:
     raise SystemExit(0)
 
 requested, dist = selected
+
+# The .dist-info directory of the selected distribution. RECORD is
+# mandatory for an installed wheel (PEP 376), so its parent is the
+# portable way to locate dist-info without touching private attributes.
+dist_info = None
+for item in (dist.files or ()):
+    if str(item).replace("\\", "/").endswith(".dist-info/RECORD"):
+        try:
+            dist_info = str(pathlib.Path(dist.locate_file(item)).parent.resolve())
+        except (OSError, RuntimeError):
+            dist_info = None
+        break
+
 source = "unrecorded"
 revision = None
 source_path = None
+archive_url = None
+archive_sha256 = None
 raw_direct = dist.read_text("direct_url.json")
 if raw_direct is not None:
     try:
@@ -223,6 +244,21 @@ if raw_direct is not None:
             source = "local"
         elif isinstance(archive, dict):
             source = "archive"
+            raw_url = direct.get("url")
+            if isinstance(raw_url, str):
+                archive_url = raw_url
+            # PEP 610 archive_info may carry `hashes` (preferred) or the
+            # deprecated single `hash` as "<algo>=<hex>". Either is a real
+            # cryptographic binding of this install to the artifact bytes;
+            # most installers (uv from a local file, pip without --hash)
+            # record neither, in which case there is nothing to read.
+            hashes = archive.get("hashes")
+            if isinstance(hashes, dict) and isinstance(hashes.get("sha256"), str):
+                archive_sha256 = hashes["sha256"]
+            else:
+                legacy = archive.get("hash")
+                if isinstance(legacy, str) and legacy.startswith("sha256="):
+                    archive_sha256 = legacy.partition("=")[2]
 
         if source in ("editable", "local"):
             raw_url = direct.get("url")
@@ -255,6 +291,9 @@ print(json.dumps({
     "source": source,
     "revision": revision,
     "source_path": source_path,
+    "dist_info": dist_info,
+    "archive_url": archive_url,
+    "archive_sha256": archive_sha256,
 }))
 """
 
@@ -263,6 +302,10 @@ def _is_valid_sha(value: object) -> bool:
     if not isinstance(value, str) or len(value) not in (40, 64):
         return False
     return all(char in "0123456789abcdef" for char in value.lower())
+
+
+def _opt_str(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 def _path_within(path: Path, root: Path) -> bool:
@@ -547,6 +590,13 @@ def probe_runtime_provenance(
         manager_package=manager_package,
         pep668=probe.get("pep668") is True,
         detail=detail,
+        dist_info_path=_opt_str(probe.get("dist_info")),
+        archive_url=_opt_str(probe.get("archive_url")),
+        archive_sha256=(
+            str(probe["archive_sha256"])
+            if _is_valid_sha(probe.get("archive_sha256"))
+            else None
+        ),
     )
 
 

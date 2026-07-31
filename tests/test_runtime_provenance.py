@@ -196,3 +196,128 @@ def test_uv_tool_detected_when_interpreter_is_symlink(tmp_path):
 
     assert _path_within(interp, uv_root) is False  # the resolving check misses
     assert _path_within_lexical(interp, uv_root) is True
+
+
+# --- artifact-era fields (WI-036) --------------------------------------------
+
+
+def test_archive_install_carries_dist_info_and_archive_url(tmp_path: Path) -> None:
+    """A wheel install must expose what it *can* be attested against."""
+    cli = tmp_path / "example"
+    cli.write_text("#!/usr/bin/python3\n")
+    dist_info = tmp_path / "site-packages" / "example_canonical-1.2.3.dist-info"
+    runner = ProbeRunner(
+        _payload(
+            tmp_path,
+            source="archive",
+            dist_info=str(dist_info),
+            archive_url="file:///wheels/example_canonical-1.2.3-py3-none-any.whl",
+            archive_sha256=None,
+        )
+    )
+
+    record = probe_runtime_provenance(
+        _component(),
+        runner=runner,
+        which=lambda name: str(cli) if name == "example" else None,
+    )
+
+    assert record.source is ArtifactSource.ARCHIVE
+    assert record.revision is None  # by construction: archives carry no revision
+    assert record.dist_info_path == str(dist_info)
+    assert record.archive_url.endswith("example_canonical-1.2.3-py3-none-any.whl")
+    assert record.archive_sha256 is None
+    payload = record.to_dict()
+    assert payload["dist_info_path"] == str(dist_info)
+    assert payload["archive_sha256"] is None
+
+
+def test_recorded_archive_sha256_is_carried_when_valid(tmp_path: Path) -> None:
+    cli = tmp_path / "example"
+    cli.write_text("#!/usr/bin/python3\n")
+    digest = "b" * 64
+    runner = ProbeRunner(
+        _payload(tmp_path, source="archive", archive_sha256=digest)
+    )
+    record = probe_runtime_provenance(
+        _component(),
+        runner=runner,
+        which=lambda name: str(cli) if name == "example" else None,
+    )
+    assert record.archive_sha256 == digest
+
+
+def test_malformed_archive_sha256_is_dropped_not_trusted(tmp_path: Path) -> None:
+    """A non-hex or wrong-length digest must not be passed off as a hash."""
+    cli = tmp_path / "example"
+    cli.write_text("#!/usr/bin/python3\n")
+    for bogus in ("not-a-hash", "abc", "z" * 64, ""):
+        runner = ProbeRunner(
+            _payload(tmp_path, source="archive", archive_sha256=bogus)
+        )
+        record = probe_runtime_provenance(
+            _component(),
+            runner=runner,
+            which=lambda name: str(cli) if name == "example" else None,
+        )
+        assert record.archive_sha256 is None, bogus
+
+
+def test_probe_reads_pep610_archive_hashes_from_a_real_dist(tmp_path: Path) -> None:
+    """Exercise the in-process probe source itself against a synthetic dist.
+
+    The probe is a string executed by another interpreter, so it is otherwise
+    only covered by stubs. This runs it for real against a dist-info tree
+    carrying ``archive_info.hashes``, which is the one PEP 610 field that
+    cryptographically binds an install to a wheel.
+    """
+    from agent_suite.runtime_provenance import _METADATA_PROBE
+
+    site = tmp_path / "site-packages"
+    dist_info = site / "example_canonical-1.2.3.dist-info"
+    dist_info.mkdir(parents=True)
+    (site / "example_canonical.py").write_text("def main() -> None:\n    pass\n")
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: example-canonical\nVersion: 1.2.3\n"
+    )
+    (dist_info / "entry_points.txt").write_text(
+        "[console_scripts]\nexample = example_canonical:main\n"
+    )
+    digest = "c" * 64
+    (dist_info / "direct_url.json").write_text(
+        json.dumps(
+            {
+                "url": "https://example.invalid/example_canonical-1.2.3.whl",
+                "archive_info": {"hashes": {"sha256": digest}},
+            }
+        )
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cli = bin_dir / "example"
+    cli.write_text("#!/usr/bin/python3\n")
+    # RECORD paths are relative to site-packages; the console script sits
+    # outside it, exactly as a real install records it.
+    (dist_info / "RECORD").write_text(
+        "../bin/example,,\n"
+        "example_canonical.py,,\n"
+        f"{dist_info.name}/METADATA,,\n"
+        f"{dist_info.name}/RECORD,,\n"
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable, "-c", _METADATA_PROBE,
+            "example", str(cli), "example-canonical",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"PYTHONPATH": str(site), "PATH": "/usr/bin:/bin"},
+    )
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True, payload
+    assert payload["source"] == "archive"
+    assert payload["archive_sha256"] == digest
+    assert payload["archive_url"].endswith("example_canonical-1.2.3.whl")
+    assert Path(payload["dist_info"]) == dist_info.resolve()
