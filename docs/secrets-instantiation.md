@@ -25,12 +25,18 @@ credential, from where, and what happens when it must die.*
   (`~/.config/regista/keys.json`); regista logs `keys.plaintext_at_rest` on
   every load. The same key file is present on multiple hosts — key
   compromise on one host is compromise of the estate's attribution story.
-- At least one production `vault:` ref is **configured but unverified**:
+- Two ref-shape traps, both now proven on the live server: refs use
+  `vault:<mount>/<path…>/<field>` (last segment is the field — the
+  `#field` form documented in earlier runbook revisions never resolved),
+  and a component resolves `vault:` refs only if `hvac` is importable in
+  **its own** environment. The estate hit both:
   `suite.env` carries `vault:homelab/cairn/content-key#key`, while the
   secret lives at `kv/homelab/cairn/content-key` and regista's resolver
   reads the first ref segment as the *mount*. Component doctors check that
-  a ref is set, not that it resolves. (Qualification gains a check for
-  this — §6.)
+  a ref is set, not that it resolves. Both are corrected in the live
+  `suite.env` and the ref now resolves end-to-end (43-byte key read from
+  `kv/homelab/cairn/content-key`). (Qualification gains a check for this —
+  §6.)
 
 ## 2. Principles (the contract this strategy must satisfy)
 
@@ -132,7 +138,10 @@ lifecycle exercise, not yet shipped behavior.
 
 - Every `vault:` ref in the host's `suite.env` **resolves end-to-end** at
   bootstrap and at doctor time (a ref that is set-but-unresolvable is a
-  fail, not a warn — closes the §1 latent bug class).
+  fail, not a warn — closes the §1 latent bug class). This catches all
+  three failure shapes seen in the estate: wrong mount, `#field` instead
+  of a trailing path segment, and a component whose environment lacks
+  `hvac` so the `vault` provider never registers.
 - A production/AppRole host operates with **no `VAULT_TOKEN` in its
   environment** — AppRole only (guards against the ambient-token class of
   bug found in the acb Plan-009 review). Dev-mode installs per

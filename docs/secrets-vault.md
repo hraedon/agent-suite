@@ -15,9 +15,12 @@ for why the signing keys live in the backend, not on disk.
 ## 1. Prerequisites
 
 - A Vault server (dev mode for evaluation, or a production cluster).
-- `hvac` installed on the host that runs `agent-suite`:
-  `pip install agent-suite[vault]` (the `vault` extra pulls `hvac`; the core
-  stays stdlib-only — see `pyproject.toml`).
+- `hvac` installed **in the environment of every component that resolves a
+  `vault:` ref**, not just agent-suite's: regista registers the `vault`
+  secret provider only when `hvac` imports, and without it a `vault:` ref
+  fails with `Unknown secret provider: 'vault'`. For uv-tool installs that
+  means `uv tool install --with hvac <component>` (verified necessary for
+  cairn on 2026-07-31).
 - `VAULT_ADDR` set to the Vault endpoint (e.g. `https://vault.example:8200`).
 - `VAULT_TOKEN` (dev) or AppRole `role_id` + `secret_id` (production), reachable
   by the process that runs `agent-suite bootstrap`.
@@ -103,8 +106,8 @@ In the system `suite.env` (`/etc/agent-suite/suite.env` on Linux,
 
 ```env
 REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista
-REGISTA_DSN_PASSWORD=vault:kv/agent-suite/regista#dsn_password
-REGISTA_KEY_PATH=vault:kv/agent-suite/regista#signing_key
+REGISTA_DSN_PASSWORD=vault:kv/agent-suite/regista/dsn_password
+REGISTA_KEY_PATH=vault:kv/agent-suite/regista/signing_key
 REGISTA_REQUIRE_SSL=true
 ```
 
@@ -115,13 +118,13 @@ file**. Compare with [`suite.env.example`](../suite.env.example), which carries
 placeholders only.
 
 Per-principal key paths are resolved by dossier at sign time
-(`vault:kv/agent-suite/principals/<principal_id>#key`) and are not stored
+(`vault:kv/agent-suite/principals/<principal_id>/key`) and are not stored
 in the system `suite.env` — they are looked up by `principal_id` from the
 authenticated session.
 
 ## 5. How resolution works
 
-`regista.secrets.resolve("vault:kv/agent-suite/regista#signing_key")`:
+`regista.secrets.resolve("vault:kv/agent-suite/regista/signing_key")`:
 
 1. Parses the `vault:` scheme, the KV path (`kv/agent-suite/regista`),
    and the field (`signing_key`).
