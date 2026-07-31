@@ -385,7 +385,7 @@ def test_conformance_wheel_exposes_public_api(tmp_path: Path) -> None:
         "print(','.join(sorted(c.__all__)))"
     )
     proc = subprocess.run(
-        [sys.executable, "-c", probe],
+        [sys.executable, "-S", "-c", probe],
         capture_output=True, text=True, check=False,
         cwd=tmp_path,
         env={
