@@ -67,7 +67,7 @@ def _matrix_postgres_major() -> str:
 _POSTGRES_FLOOR_RE = re.compile(r"Postgres[^\d\n]{0,12}(\d+)\+", re.IGNORECASE)
 
 
-@pytest.mark.parametrize("doc", _PREREQ_DOCS, ids=lambda p: p.name)  # type: ignore[misc]
+@pytest.mark.parametrize("doc", _PREREQ_DOCS, ids=lambda p: p.name)
 def test_no_document_states_a_postgres_floor_other_than_the_matrix(doc: Path) -> None:
     """The 15-vs-18 disagreement, pinned.
 
@@ -176,7 +176,7 @@ def test_the_guides_admit_the_suite_does_not_verify_this() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("doc", _PREREQ_DOCS, ids=lambda p: p.name)  # type: ignore[misc]
+@pytest.mark.parametrize("doc", _PREREQ_DOCS, ids=lambda p: p.name)
 def test_pgvector_is_documented_as_a_prerequisite(doc: Path) -> None:
     """agent-notes' `schema/000_core.sql` does `CREATE EXTENSION vector`.
 

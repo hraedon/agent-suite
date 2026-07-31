@@ -68,7 +68,7 @@ def test_the_declaration_is_not_empty() -> None:
 
 
 @pytest.mark.parametrize(
-    "var", PROFILE_B_CONFIG_SURFACE, ids=lambda v: v.name  # type: ignore[misc]
+    "var", PROFILE_B_CONFIG_SURFACE, ids=lambda v: v.name
 )
 def test_suite_env_example_names_every_declared_variable(var: ConfigVar) -> None:
     """One case per variable, so a failure names the missing one."""
