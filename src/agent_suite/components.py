@@ -121,7 +121,14 @@ COMPONENTS: tuple[Component, ...] = (
     ),
     _component(
         "agent-notes", "hraedon/agent-notes", Tier.FACE, ("agent-notes", "doctor", "--json"),
-        service_unit="agent-notes",
+        # No service_unit (WI-044). This declared `agent-notes`, but no
+        # `agent-notes.service` has ever existed in any repo or wheel, and
+        # agent-notes has no Tier 0-1 daemon — it is a CLI over the projection
+        # database. Its `agent-notes-bridge` / `-requeue` / `-trigger-loop` units
+        # are optional harness-side helpers, not the face itself. The phantom
+        # entry made `agent-suite upgrade` attempt `systemctl restart agent-notes`
+        # (which could only ever fail) and made install-linux.md §7's
+        # `systemctl enable --now agent-notes` look supported.
         upgrade_package="agent-notes-hraedon",
         distribution_names=("agent-notes-hraedon", "agent-notes"),
     ),
