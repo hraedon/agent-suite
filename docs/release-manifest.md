@@ -260,32 +260,108 @@ Two of the gaps are additionally *checked*, not merely named:
   `RECORD` are reported, which catches a `.pyc` injected where the installer
   wrote none.
 
-### Bringing a host to a fully bindable state
+### What `--require-artifact-binding` covers, and what it cannot (WI-048)
 
 `--require-artifact-binding` (doctor) / `--require-binding`
 (`release-manifest verify --installed`) makes every gap above fatal. It also
 fails when nothing attestable was found at all — a host with every component
 absent, or every component installed editable, has zero attestable artifacts,
-and greening it would certify nothing. That is the platform-qualification
-posture (Plan 020 Lane C). To reach it:
+and greening it would certify nothing.
 
-1. Keep the release wheels on the host and pass `--artifact-wheels-dir`
-   (or install from a hashed URL so `archive_info.hashes` is recorded).
-2. Install without bytecode compilation (`pip install --no-compile`; uv's
-   default writes none) and clear any `__pycache__` the interpreter has since
-   created inside the component trees.
-3. Account for every `.pth` in each environment's `site-packages`, and for the
-   generated console scripts — or accept them as named residue and record that
-   decision in the qualification evidence rather than in a passing gate.
+**A normally-installed host cannot pass it, and this section used to imply
+otherwise.** It was headed "Bringing a host to a fully bindable state" and gave
+three steps, the third of which ("account for every `.pth` … and the generated
+console scripts") has no achievable form. The Linux qualification followed all
+three and recorded the result:
 
-Routine `doctor --release-manifest` does **not** require any of this: a
+```
+step 1  keep the wheels + --artifact-wheels-dir     done
+step 2  PYTHONDONTWRITEBYTECODE=1, cleared every __pycache__
+        -> removed 150 bytecode_cache entries, a real improvement
+step 3  account for every .pth and console script   NOT ACHIEVABLE
+```
+
+Irreducible residue, 18 files across five components:
+
+| Kind | Count | What |
+|---|---|---|
+| `installer_generated` | 13 | the console scripts themselves (`bin/regista`, `bin/agent-notes`, `bin/cairn`, `bin/dossier`, `bin/agent-suite`, …) plus `INSTALLER` and `direct_url.json` |
+| `site_customization` | 5 | `_virtualenv.pth`, one per `uv tool` env |
+
+All five components reached `wheel_hash_chain` with `ok: true`. None reached
+`binds_release_identity: true`.
+
+#### Why it is not reachable, rather than merely not reached
+
+**The residue is not removable.** The console scripts *are* how the CLIs are
+invoked, and `_virtualenv.pth` is seeded by uv/virtualenv, not by a wheel.
+`deployment-guide.md` §3 prescribes `uv tool install`, so the prescribed install
+method structurally produces content no manifest hash covers.
+
+**It is not manifest-bindable either.** A console script's bytes are decided at
+install time — its shebang is the absolute path of *this* host's interpreter — so
+there is no release-determined hash to compare against. The same is true of
+`INSTALLER` and `direct_url.json`.
+
+**And an allowlist keyed to hashes recorded on the host is the install receipt
+this document already rejected**, under a different name: it would live in the
+same writable tree as `RECORD` and be forgeable by the same actor. Accepting it
+for this flag after rejecting it for attestation generally would be inconsistent,
+and it would weaken the gate rather than satisfy it.
+
+**Finally, the state decays.** After `lxc restart` with services running, **643
+`__pycache__` directories** were back, despite `PYTHONDONTWRITEBYTECODE=1` in
+`/etc/environment` — systemd units do not read that file. Even if the residue
+were eliminable, a gate whose subject reverts on every boot cannot be a
+steady-state check. (If you want bytecode suppressed for the processes systemd
+starts, the variable belongs in the unit as `Environment=PYTHONDONTWRITEBYTECODE=1`,
+not in `/etc/environment`. That covers those processes and nothing else — an
+operator's interactive `regista` invocation will still write caches.)
+
+#### So what is the flag for
+
+**A freshly unpacked, never-executed tree** — a build or release-verification
+step, or a container image inspected before first run. There, no bytecode exists
+yet, and if the artifacts were unpacked rather than installed by uv there are no
+console scripts or `.pth` files either. `--require-binding` on
+`release-manifest verify --installed` in CI is its intended home.
+
+It is **not** a host health gate, and `doctor --exit-code` does not apply it
+unless asked. Routine `doctor --release-manifest` requires none of this: a
 runtime-generated `.pyc` on a correct host is not evidence of compromise, so the
-default reports the gap and keeps `ok` true. What it will never again do is
-report `binds_release_identity: true` for such a host.
+default reports the gap and keeps `ok` true. What it will never do is report
+`binds_release_identity: true` for such a host — that flag went from vacuously
+passing to honestly failing, and the honest failure is the correct outcome.
 
-An **install receipt** written at deploy time was considered and rejected: it
-would live in the same writable tree as `RECORD` and be forgeable by the same
-actor, so it would add ceremony without adding strength.
+#### The achievable target for a running host
+
+**`wheel_hash_chain` with `ok: true`, and the `unattested` residue enumerated and
+reviewed.** That is what Lane C recorded and what a qualification should assert:
+
+```sh
+agent-suite doctor --exit-code --profile B \
+  --release-manifest /opt/suite-artifacts/release-manifest.json \
+  --artifact-wheels-dir /opt/suite-artifacts/wheels
+# exit=0   artifact attestation: ok - verified at 'wheel_hash_chain';
+#          no release-identity binding
+```
+
+Then read `unattested` and satisfy yourself that every entry is one of the kinds
+above. The two checked gaps do real work here: a console script pointing at an
+import target the wheel's `entry_points.txt` never declared is a **hard
+mismatch**, not residue, so the realistic attack on the largest residue class is
+caught even though the script body is not hashed.
+
+What that leaves uncovered, stated plainly: the *bodies* of 13 installer-generated
+files and 5 `.pth` files per host, and any `__pycache__` written since the last
+sweep. Closing it needs a mechanism this ladder does not have — a signed install
+receipt from a party the host cannot impersonate, or immutable delivery (a
+read-only image whose digest is the artifact) — and both are outside a hash
+comparison against `RECORD`.
+
+An **install receipt** written at deploy time by the host itself was considered
+and rejected: same writable tree as `RECORD`, same forging actor, ceremony without
+strength.
 
 ## See also
 
