@@ -217,6 +217,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     schedule.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
     schedule.add_argument("--json", action="store_true", help="emit the result as JSON")
+    schedule.add_argument(
+        "--bin-dir",
+        metavar="PATH",
+        default=None,
+        help=(
+            "directory holding the component CLIs, used to build an absolute ExecStart. "
+            "Default: this process's own bin/ then PATH. Never the invoking user's ~/.local/bin "
+            "when running under sudo — install refuses instead (WI-045/WI-038)"
+        ),
+    )
 
     alert_check = sub.add_parser(
         Command.ALERT_CHECK.value,
@@ -799,8 +809,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(format_upgrade_text(up_result))
             return 0 if up_result.ok else 1
         case Command.SCHEDULE:
+            from pathlib import Path
+
             from agent_suite.schedule import (
                 SCHEDULES,
+                default_search_dirs,
                 format_schedule_report,
                 install_schedules,
                 remove_schedules,
@@ -828,7 +841,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.action == "install":
-                sched_report = install_schedules(dry_run=args.dry_run)
+                raw_bin_dir = getattr(args, "bin_dir", None)
+                sched_report = install_schedules(
+                    dry_run=args.dry_run,
+                    search_dirs=(
+                        (Path(raw_bin_dir), *default_search_dirs()) if raw_bin_dir else None
+                    ),
+                )
             else:
                 sched_report = remove_schedules(dry_run=args.dry_run)
 
