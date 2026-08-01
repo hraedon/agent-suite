@@ -190,6 +190,132 @@ available.
   doc/reality divergences this week alone.
 - **B5. Record merge provenance,** not orphaned pre-squash SHAs.
 
+## Part D — Breaking changes to take in the same pass
+
+The owner has put deferred disruptive work in scope, explicitly
+including breaking regista changes. The selection rule is not "what
+could we break" but **"what will we otherwise pay for forever, and what
+gets cheaper by being broken once alongside everything else?"** Each of
+these is currently deferred *because* it breaks something; each is
+cheapest now, with no external consumers, a corpus reset in flight, and
+a single tree to change atomically.
+
+### D1. One new envelope version — not five increments
+
+Four deferred changes all edit the signed envelope: signed-vs-asserted
+lineage (regista WI-215), the delegation chain (WI-008), deriving
+`actor_kind` from the principal kind (WI-055), and pinning `key_id` on
+the chain-opening event (WI-227). Shipped separately that is four
+breaking versions and four reader paths.
+
+Cut **one** new envelope version carrying all of them, and delete every
+older reader path rather than keeping compatibility branches. Part 0
+makes this nearly free: the corpus that would have forced back-compat is
+being archived anyway. This is the single clearest instance of the
+mandate — five migrations and their explainers collapse into one format.
+
+### D2. Project-prefixed work-item identifiers
+
+`WI-055` currently names three different items in three projects;
+`WI-040` names two; `WI-038` names two. Every reference in prose, every
+commit message and every review comment has to carry the project name to
+disambiguate — a tax paid dozens of times in this session alone, and a
+live source of misfiling. agent-notes WI-032 already proposes the fix.
+
+Adopt per-project prefixes (`RG-231`, `AS-55`, `CN-40`, `DS-36`,
+`AN-52`, `AB-17`) and renumber once. Breaking for anything that stored a
+bare identifier, trivial at 4,642 tracker events, and permanently
+unambiguous afterwards.
+
+### D3. One database
+
+The estate runs two: `regista` and `agent_notes`, on the same server,
+with separate credentials, separate migration systems (agent-notes ships
+14 SQL files of its own), and separate backup/restore paths. Once A2
+makes agent-notes a regista client, its store is largely redundant.
+
+Fold it in. Two DSNs become one, which also **collapses two of the four
+rollout units in the credential-migration plan into one** — a direct
+reduction in that plan's blast radius, not just its length.
+
+### D4. Squash regista's migration history to a baseline
+
+Schema version 44 means a fresh install replays 44 migrations and CI
+carries the test surface for all of them. With the corpus reset, that
+history has no live consumer. Collapse it to a single baseline schema at
+v1. New installs run one migration; the migration test matrix collapses
+with it. This is only safe while nothing external depends on
+intermediate states — that window is now.
+
+### D5. CLI contract v1, enforced atomically
+
+acb and agent-wake still implement and test exit 2 where the ratified
+contract says dry-run success is 0 (the sibling leg agent-suite WI-032
+could not close). In seven repos that is a coordination problem; in one
+workspace it is a single PR with one conformance run.
+
+### D6. One bundle format change, not two
+
+Bundle v3's registry⇄chain trust derivation (WI-209) and witness key
+enrollment (WI-238) are the same trust model applied to two key kinds —
+and WI-043 already ratified that witness keys must not get a second,
+weaker mechanism. Ship them as one format change. While the format is
+open, also prove hash agility end-to-end (WI-207) rather than
+discovering at need that non-SHA-256 was never exercised.
+
+### D7. Provider capability split
+
+WI-235's breaking half: separate reader/writer/deleter capabilities
+(`supports_write()` currently reports read-only providers writable),
+reject non-string Vault values instead of coercing with `str()`, and add
+`store_material()`. Small blast radius, and the coercion bug is a latent
+repeat of WI-231.
+
+### Explicitly NOT in scope, even now
+
+Being able to break things is not a reason to. These stay deferred with
+their existing rationale:
+
+- **Per-agent credential isolation (Plan 017).** The host-as-boundary
+  profile is ratified as transitional and expires when a second human
+  principal appears. Build it then, against a real requirement.
+- **Operator-forgery defense (WI-007).** Needs an external anchoring or
+  witness ecosystem to mean anything; today's partial mitigations are
+  the right posture.
+- **IdP integration.** No IdP exists yet. A1 must not *preclude* it;
+  building for it now would be speculative.
+- **Any rewrite of the signing scheme itself.** It works, it is
+  reviewed, and nothing about the reset argues for touching it.
+
+### One-way doors — the discipline for this pass
+
+Part 0, A3 and D1 together make this a v2 of the estate, so the
+irreversible steps get explicit guards:
+
+- **Verify before truncating.** The archived provenance bundle must
+  verify standalone before the live project is cleared.
+- **Old repos go read-only, not deleted.** The July publication
+  remediation permanently lost 46 PR discussions; archive rather than
+  repeat that.
+- **One pass per change class.** A half-consolidated estate, or two
+  envelope versions in flight, is worse than either endpoint.
+
+## Sequencing
+
+Part 0 first — it is a day's work and it deletes most of A1's
+complexity. A4 and B1 next, so the tracker stops accumulating false
+state. B2 next, because it makes everything after it cheaper to review.
+A5 is a scope call available immediately. Then A3 (the consolidation) as
+one pass, and A2 and A1 land inside or just after it — both are far
+cheaper once there is a single tree to change atomically.
+
+Part D rides the same passes rather than forming its own phase: D2, D3
+and D4 belong to the consolidation change; D1 and D6 belong with A1's
+identity specification, since they are its wire format; D5 and D7 are
+small and land wherever their surface is already open. Nothing in Part D
+should be shipped as a standalone breaking release — the point is that
+they break once, together. B3–B5 fold into whatever touches them.
+
 ## Part C — What the mandate does *not* license
 
 - **No gate is weakened.** A5 adds a correction path; it removes no
@@ -205,15 +331,6 @@ available.
 - **The archive is real.** Part 0 exports and verifies before it
   truncates. Discarding without a verified archive is not the same
   decision.
-
-## Sequencing
-
-Part 0 first — it is a day's work and it deletes most of A1's
-complexity. A4 and B1 next, so the tracker stops accumulating false
-state. B2 next, because it makes everything after it cheaper to review.
-A5 is a scope call available immediately. Then A3 (the consolidation) as
-one pass, and A2 and A1 land inside or just after it — both are far
-cheaper once there is a single tree to change atomically. B3–B5 fold into whatever touches them.
 
 ## The metric to watch
 
