@@ -3,7 +3,7 @@
 
 [suite]
 release = "1.0.0-dev"
-regista_library_version = "0.5.4"
+regista_library_version = "0.5.5"
 regista_schema_version = 44
 regista_workflow_version = "2"
 regista_envelope_version = 5
