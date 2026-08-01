@@ -767,6 +767,170 @@ def test_scan_files_caller_owned_collector_does_not_raise(
     assert unreadable == [target]
 
 
+# ---------------------------------------------------------------------------
+# WI-031 — the --staged scan must judge the index, not the working tree.
+#
+# A commit records the index. The pre-commit path used to collect staged PATHS
+# from git but then read the worktree FILES at those paths, so any staged/
+# worktree divergence (git add -p, staging then editing, deleting the worktree
+# copy) made the gate judge bytes that were not being committed — hiding a
+# staged forbidden blob behind a clean unstaged copy, and blocking clean
+# commits behind a dirty one. Each case below plants a divergence and asserts
+# the gate's verdict tracks the index side of it.
+# ---------------------------------------------------------------------------
+
+
+def test_staged_forbidden_blob_blocks_despite_clean_worktree(tmp_path: Path) -> None:
+    """THE WI-031 bypass: stage forbidden content, overwrite the file with clean
+    content, commit. The old gate scanned the clean worktree copy and passed the
+    forbidden blob into history. The gate must judge what git will record."""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    leaked = repo / "notes.md"
+    leaked.write_text("token ZZS-INDEX-TOKEN-444 here\n")
+    subprocess.run(["git", "-C", str(repo), "add", "notes.md"], check=True)
+    # Hide it: the worktree copy is clean, the index still holds the token.
+    leaked.write_text("perfectly clean content\n")
+
+    result = _run_gate(repo, env_secret="ZZS-INDEX-TOKEN-444", staged=True)
+    assert result.returncode != 0, (
+        f"a forbidden STAGED blob must block even when the worktree copy is clean; "
+        f"got rc=0.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "notes.md" in _combined(result)
+
+
+def test_clean_staged_blob_passes_despite_forbidden_worktree_edit(tmp_path: Path) -> None:
+    """Inverse divergence: clean content staged, forbidden content in an
+    UNSTAGED worktree edit. Nothing forbidden is being committed, so the gate
+    must pass — blocking here is the over-block half of scanning the wrong tree."""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "notes.md").write_text("perfectly clean content\n")
+    subprocess.run(["git", "-C", str(repo), "add", "notes.md"], check=True)
+    # The forbidden token exists only in the worktree, not in the index.
+    (repo / "notes.md").write_text("token ZZS-INDEX-TOKEN-444 here\n")
+
+    result = _run_gate(repo, env_secret="ZZS-INDEX-TOKEN-444", staged=True)
+    assert result.returncode == 0, (
+        f"a clean index must pass regardless of unstaged worktree edits; "
+        f"got rc={result.returncode}.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+def test_staged_forbidden_blob_blocks_when_worktree_copy_is_deleted(tmp_path: Path) -> None:
+    """Staged file deleted from the worktree: the blob is still committed, so it
+    must still be scanned and blocked — not reported as an unreadable file."""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "notes.md").write_text("token ZZS-INDEX-TOKEN-444 here\n")
+    subprocess.run(["git", "-C", str(repo), "add", "notes.md"], check=True)
+    (repo / "notes.md").unlink()
+
+    result = _run_gate(repo, env_secret="ZZS-INDEX-TOKEN-444", staged=True)
+    assert result.returncode != 0
+    combined = _combined(result)
+    assert "ZZS-INDEX-TOKEN-444".lower() in combined.lower(), (
+        f"the staged token must be reported as a violation, not an unreadable file:\n"
+        f"{combined}"
+    )
+
+
+def test_clean_staged_blob_passes_when_worktree_copy_is_deleted(tmp_path: Path) -> None:
+    """The other half of the deleted-worktree case: a CLEAN staged file whose
+    worktree copy is gone must pass. The old gate failed it as unreadable —
+    blocking a commit over a file it could in fact read from the index."""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "notes.md").write_text("perfectly clean content\n")
+    subprocess.run(["git", "-C", str(repo), "add", "notes.md"], check=True)
+    (repo / "notes.md").unlink()
+
+    result = _run_gate(repo, env_secret="ZZS-INDEX-TOKEN-444", staged=True)
+    assert result.returncode == 0, (
+        f"a clean staged blob must pass even with the worktree copy deleted; "
+        f"got rc={result.returncode}.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+def test_staged_utf16_blob_with_forbidden_token_is_caught(tmp_path: Path) -> None:
+    """The BOM sniff must apply to index blobs exactly as it does to files —
+    UTF-16 staged content must not be misclassified binary and skipped."""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "export.txt").write_text("leaked ZZS-UTF16-INDEX-222 here\n", encoding="utf-16")
+    subprocess.run(["git", "-C", str(repo), "add", "export.txt"], check=True)
+    # Divergence too: hide the worktree copy behind clean ASCII.
+    (repo / "export.txt").write_text("clean\n")
+
+    result = _run_gate(repo, env_secret="ZZS-UTF16-INDEX-222", staged=True)
+    assert result.returncode != 0, (
+        f"a UTF-16 staged blob with a forbidden token must be caught; got rc=0.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "export.txt" in _combined(result)
+
+
+def test_staged_binary_blob_is_skipped_no_false_positive(tmp_path: Path) -> None:
+    """The binary heuristic must apply to index blobs: a NUL-bearing staged blob
+    is skipped, not scanned into a false positive or a crash."""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "blob.bin").write_bytes(b"stub-binary-index-token\x00\x01\x02more bytes")
+    subprocess.run(["git", "-C", str(repo), "add", "blob.bin"], check=True)
+
+    result = _run_gate(repo, env_secret="stub-binary-index-token", staged=True)
+    assert result.returncode == 0, (
+        f"a binary staged blob must be skipped; got rc={result.returncode}.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+def test_staged_symlink_target_scanned_from_index(tmp_path: Path) -> None:
+    """A staged symlink's index blob is its target string and must be scanned —
+    even when the worktree entry has been swapped for a clean regular file."""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    link = repo / "link"
+    link.symlink_to("../elsewhere/zzs-link-token-666/skill")
+    subprocess.run(["git", "-C", str(repo), "add", "link"], check=True)
+    # Swap the worktree entry: the index still records the symlink blob.
+    link.unlink()
+    link.write_text("clean regular file\n")
+
+    result = _run_gate(repo, env_secret="zzs-link-token-666", staged=True)
+    assert result.returncode != 0, (
+        f"a forbidden identifier in a STAGED symlink target must block; got rc=0.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "zzs-link-token-666" in _combined(result)
+
+
+def test_scan_staged_blobs_fails_closed_when_blob_unreadable(tmp_path: Path) -> None:
+    """A staged path whose blob cannot be read must fail closed, matching the
+    scan_files contract: collected when a list is supplied, GateError otherwise."""
+    import os
+
+    from scripts.check_committed_identifiers import GateError, scan_staged_blobs
+
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    cwd = Path.cwd()
+    os.chdir(repo)
+    try:
+        ghost = Path("never-staged.md")  # no such index entry: git show fails
+        unreadable: list[Path] = []
+        violations = scan_staged_blobs(
+            frozenset({"zzq-token-abc"}), [ghost], unreadable=unreadable
+        )
+        assert violations == []
+        assert unreadable == [ghost], "an unreadable staged blob must be reported"
+        with pytest.raises(GateError, match="could not be read"):
+            scan_staged_blobs(frozenset({"zzq-token-abc"}), [ghost])
+    finally:
+        os.chdir(cwd)
+
+
 def test_gate_script_fits_100_cols_with_the_longest_fleet_env_var() -> None:
     """The script must stay under 100 columns AFTER per-repo substitution.
 

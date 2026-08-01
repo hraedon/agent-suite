@@ -103,6 +103,126 @@ def test_owner_parsed_from_every_remote_url_shape(tmp_path: Path, url: str) -> N
     assert parse_remote_owner(url) == "expected-owner"
 
 
+# ---------------------------------------------------------------------------
+# WI-030 — the owner check is meaningless without a host check.
+#
+# parse_remote_owner used to regex only the FINAL TWO path segments and never
+# looked at the host, so an owner-named remote on an arbitrary Git host —
+# https://attacker.example/<declared-owner>/repo.git — passed the remote_owner
+# check. Every test below plants an owner-MATCHING remote on a wrong host and
+# asserts the guard refuses on the host, in every URL shape the parser accepts.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # THE WI-030 bypass: right owner, arbitrary HTTPS host.
+        "https://attacker.example/expected-owner/repo.git",
+        # The same bypass over ssh — both the scp form and the ssh:// URL form.
+        "git@attacker.example:expected-owner/repo.git",
+        "ssh://git@attacker.example/expected-owner/repo.git",
+        # Lookalike host: github.com as a SUBDOMAIN of an attacker domain.
+        "https://github.com.attacker.example/expected-owner/repo.git",
+        # Real GitHub hosts that are still not github.com: exact match only.
+        "https://api.github.com/expected-owner/repo.git",
+        "git@ssh.github.com:expected-owner/repo.git",
+    ],
+)
+def test_owner_matching_remote_on_wrong_host_is_refused(tmp_path: Path, url: str) -> None:
+    """An owner-matching path on any host other than github.com must refuse."""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "publication.toml").write_text(_DECLARATION)
+
+    result = _run(repo, url)
+    assert result.returncode == 1, (
+        f"owner-matching remote on wrong host must be refused: {url}\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "remote host mismatch" in result.stderr, result.stderr
+
+
+def test_parse_remote_owner_returns_none_for_wrong_host() -> None:
+    """The unit seam of the same fix, for the copied-script estate: callers that
+    use parse_remote_owner directly must get None — a refusal — for a non-GitHub
+    host, never an owner string that satisfies their check."""
+    from scripts.check_publication_plumbing import parse_remote_owner, parse_remote_repo
+
+    assert parse_remote_owner("https://attacker.example/expected-owner/repo.git") is None
+    assert parse_remote_owner("git@attacker.example:expected-owner/repo.git") is None
+    assert parse_remote_repo("https://attacker.example/expected-owner/repo.git") is None
+
+
+def test_host_match_is_case_insensitive(tmp_path: Path) -> None:
+    """DNS hostnames are case-insensitive; GitHub.com must not be refused."""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "publication.toml").write_text(_DECLARATION)
+
+    result = _run(repo, "https://GitHub.COM/expected-owner/repo.git")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_credentialed_https_remote_still_passes(tmp_path: Path) -> None:
+    """A real PAT-style remote carries userinfo; stripping it must not refuse
+    an otherwise-correct github.com push."""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "publication.toml").write_text(_DECLARATION)
+
+    result = _run(repo, "https://x-access-token@github.com/expected-owner/repo.git")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Unauthenticated / plaintext schemes: refused even on the right host.
+        "git://github.com/expected-owner/repo.git",
+        "http://github.com/expected-owner/repo.git",
+        # Explicit port: an unrecognized shape, refused rather than guessed at.
+        "ssh://git@github.com:22/expected-owner/repo.git",
+        # A path that is not exactly owner/repo.
+        "https://github.com/expected-owner/group/repo.git",
+    ],
+)
+def test_strict_url_shapes_are_refused_not_guessed(tmp_path: Path, url: str) -> None:
+    """Shapes outside the strict https/ssh owner/repo grammar must refuse."""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    (repo / "publication.toml").write_text(_DECLARATION)
+
+    result = _run(repo, url)
+    assert result.returncode == 1, (
+        f"non-conforming URL must be refused: {url}\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "could not parse an owner" in result.stderr, result.stderr
+
+
+def test_wrong_host_never_reaches_the_gh_visibility_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """private-until-review + wrong host: the guard must refuse on the host and
+    never ask gh about an owner/repo parsed off a foreign host — gh would answer
+    for a different repository than the one being pushed to."""
+    import scripts.check_publication_plumbing as plumbing
+
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    _declare(repo, "private-until-review")
+
+    def _boom(owner: str, name: str) -> str:
+        raise AssertionError("gh must not be consulted for a wrong-host remote")
+
+    monkeypatch.setattr(plumbing, "remote_visibility", _boom)
+    problems = plumbing.check(
+        repo, "https://attacker.example/expected-owner/repo.git", None
+    )
+    assert any("remote host mismatch" in p for p in problems), problems
+
+
 def test_unparseable_remote_url_is_refused(tmp_path: Path) -> None:
     """An unrecognized remote shape must refuse, not guess."""
     repo = tmp_path / "repo"
