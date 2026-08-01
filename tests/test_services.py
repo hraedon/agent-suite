@@ -150,6 +150,10 @@ def test_bin_dir_steers_discovery_not_just_the_forwarded_flag(tmp_path: Path) ->
     `shutil.which` — and `--bin-dir` exists precisely because the default lookup
     cannot see it. Forwarding the flag while still discovering through PATH left
     `install-services --bin-dir ...` reporting `cli_missing`.
+
+    A tmp bin dir is user-owned, so the WI-038 scope gate (applied below in
+    test_install_refuses_a_non_system_bin_dir) would refuse it; this test
+    injects a probe to mark it system-scoped and focus on discovery alone.
     """
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -169,10 +173,44 @@ def test_bin_dir_steers_discovery_not_just_the_forwarded_flag(tmp_path: Path) ->
         which=lambda name: None,  # a sanitized sudo PATH sees nothing
         bin_dir=bindir,
         sleeper=_no_sleep,
+        system_scope_probe=lambda d: d.resolve() == bindir.resolve(),
     )
     assert report.ok, [r.detail for r in report.results]
     for comp in service_components():
         assert any(call[0] == str(bindir / comp.doctor_cmd[0]) for call in runner.calls)
+
+
+def test_install_refuses_a_non_system_bin_dir(tmp_path: Path) -> None:
+    """DEFECT 1: install-services applies the SAME scope gate as `schedule
+    install` (WI-038) — a CLI resolved from a user-writable bin dir is refused
+    rather than anchoring a root-run service on it. tmp_path is owned by the
+    test user, so the default ownership probe refuses it without any allowlist."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for comp in service_components():
+        exe = bindir / comp.doctor_cmd[0]
+        exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        exe.chmod(0o755)
+    report = install_component_services(
+        runner=_happy_runner(),
+        which=lambda name: str(bindir / name),  # resolves into the user-owned dir
+        bin_dir=bindir,
+        sleeper=_no_sleep,
+    )
+    assert not report.ok
+    assert all(r.status is ServiceStatus.CLI_NON_SYSTEM_SCOPE for r in report.results)
+    assert all("non-system bin directory" in r.detail for r in report.results)
+
+
+def test_install_accepts_a_system_scoped_bin_dir() -> None:
+    """DEFECT 1: a CLI resolved from a system bin dir (/usr/local/bin, on the
+    trusted allowlist) is accepted — install-services and schedule install agree
+    on the same directory."""
+    report = install_component_services(
+        sleeper=_no_sleep, runner=_happy_runner(), which=_which_all
+    )
+    assert report.ok, [r.detail for r in report.results]
+    assert all(r.status is ServiceStatus.INSTALLED for r in report.results)
 
 
 def test_install_reports_cli_missing_rather_than_a_traceback() -> None:

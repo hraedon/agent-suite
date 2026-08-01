@@ -68,6 +68,7 @@ from pathlib import Path
 from typing import Protocol
 
 from agent_suite.components import COMPONENTS, Component, Tier
+from agent_suite.schedule import SystemScopeProbe, is_system_scoped_bin_dir
 
 
 class Runner(Protocol):
@@ -107,6 +108,7 @@ class ServiceStatus(Enum):
     REMOVED = "removed"
     NO_SERVICE = "no_service"  # component is a CLI, nothing to install
     CLI_MISSING = "cli_missing"
+    CLI_NON_SYSTEM_SCOPE = "cli_non_system_scope"  # resolved from a user-writable dir (WI-038)
     UNSUPPORTED = "unsupported"  # CLI has no install-service command
     FAILED = "failed"
 
@@ -265,6 +267,7 @@ def _run_component_installer(
     extra_args: tuple[str, ...],
     settle_seconds: float,
     sleeper: Sleeper,
+    scope_probe: SystemScopeProbe | None = None,
 ) -> ComponentServiceResult:
     cli = _cli_name(comp)
     resolved = _locate_cli(cli, which=which, bin_dir=bin_dir)
@@ -277,6 +280,20 @@ def _run_component_installer(
                 f"{cli} is not on PATH — cannot install {comp.service_unit}. "
                 f"Install the component on a system PATH (docs/install-linux.md §2) or "
                 f"pass --bin-dir, and re-run. Note sudo replaces PATH with secure_path"
+            ),
+        )
+
+    resolved_bin = Path(resolved).parent
+    if not is_system_scoped_bin_dir(resolved_bin, probe=scope_probe):
+        return ComponentServiceResult(
+            component=comp.ident,
+            unit=comp.service_unit,
+            status=ServiceStatus.CLI_NON_SYSTEM_SCOPE,
+            detail=(
+                f"{cli} resolved to {resolved}, a non-system bin directory "
+                f"{resolved_bin} — refusing to anchor a root-run service on a "
+                f"foreign / user-writable dir (WI-038). Install the component on a "
+                f"system PATH (docs/install-linux.md §2) or a root-owned --bin-dir."
             ),
         )
 
@@ -394,13 +411,17 @@ def install_component_services(
     bin_dir: Path | None = None,
     settle_seconds: float = SETTLE_SECONDS,
     sleeper: Sleeper = time.sleep,
+    system_scope_probe: SystemScopeProbe | None = None,
 ) -> ServicesReport:
     """Run each component's own ``install-service`` and verify the unit is up.
 
     ``bin_dir`` is passed through to the component installers so an operator whose
     CLIs live somewhere non-standard can state it once. ``runner``/``which``
     default to the real implementations, resolved here rather than bound as
-    default arguments so a test can substitute the module attributes.
+    default arguments so a test can substitute the module attributes. A resolved
+    CLI whose bin directory is not system-scoped is refused (WI-038), agreeing
+    with ``schedule install`` via the shared :func:`is_system_scoped_bin_dir`;
+    ``system_scope_probe`` overrides the default ownership probe for tests.
     """
     runner = runner if runner is not None else _default_runner
     which = which if which is not None else _default_which
@@ -416,6 +437,7 @@ def install_component_services(
             extra_args=extra_args,
             settle_seconds=settle_seconds,
             sleeper=sleeper,
+            scope_probe=system_scope_probe,
         )
         for comp in service_components(components, max_tier=max_tier)
     ]

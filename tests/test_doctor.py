@@ -161,8 +161,7 @@ def test_doctor_records_invoking_context() -> None:
 
 def test_doctor_invoking_context_is_injectable() -> None:
     """The invoking context is injectable so a caller (or test) can pin it."""
-    from agent_suite.schedule import InvokingContext, ScopeContext
-    from agent_suite.schedule import ContextScope
+    from agent_suite.schedule import ContextScope, InvokingContext, ScopeContext
 
     fixed = InvokingContext(
         actor=ScopeContext(
