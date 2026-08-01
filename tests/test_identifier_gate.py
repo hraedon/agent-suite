@@ -876,10 +876,10 @@ def test_staged_binary_blob_is_skipped_no_false_positive(tmp_path: Path) -> None
     is skipped, not scanned into a false positive or a crash."""
     repo = tmp_path / "repo"
     _make_repo(repo)
-    (repo / "blob.bin").write_bytes(b"ZZS-BIN-INDEX-888\x00\x01\x02more bytes")
+    (repo / "blob.bin").write_bytes(b"stub-binary-index-token\x00\x01\x02more bytes")
     subprocess.run(["git", "-C", str(repo), "add", "blob.bin"], check=True)
 
-    result = _run_gate(repo, env_secret="ZZS-BIN-INDEX-888", staged=True)
+    result = _run_gate(repo, env_secret="stub-binary-index-token", staged=True)
     assert result.returncode == 0, (
         f"a binary staged blob must be skipped; got rc={result.returncode}.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
