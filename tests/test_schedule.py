@@ -604,6 +604,43 @@ def test_chain_integrity_unit_pins_shared_verdict_dir():
     assert env_pos < file_pos
 
 
+def _unit_path_value(unit: str) -> str:
+    """The ``PATH`` value from a generated unit's ``Environment=PATH=`` line."""
+    line = next(
+        line for line in unit.splitlines() if line.startswith("Environment=PATH=")
+    )
+    return line.removeprefix("Environment=PATH=")
+
+
+def test_doctor_alert_unit_pins_explicit_path_from_resolved_bin_dir() -> None:
+    """WI-038: the unit runs as root with systemd's stripped PATH, but the doctor
+    ``alert-check`` shells out to resolves component CLIs via the process PATH
+    (``shutil.which`` + subprocess). Without an explicit PATH the scheduled doctor
+    sees a different estate than the operator. The unit pins a PATH whose first
+    entry is the directory the installer resolved ``ExecStart`` from, so the
+    root-run doctor resolves the same binaries the operator installed."""
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
+    resolved = ResolvedCommand("/opt/agent-suite/bin/agent-suite", "alert-check")
+    unit = _systemd_service(spec, resolved=resolved)
+    assert _unit_path_value(unit).split(":")[0] == "/opt/agent-suite/bin"
+
+
+def test_unit_path_renders_before_environment_file() -> None:
+    """The pinned PATH is a unit-level default the operator's ``suite.env`` may
+    override, so it must render before ``EnvironmentFile`` (file-beats-unit)."""
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
+    unit = _systemd_service(spec, resolved=ResolvedCommand("/opt/x/bin/agent-suite", ""))
+    assert unit.index("Environment=PATH=") < unit.index("EnvironmentFile=")
+
+
+def test_reference_unit_path_first_entry_is_reference_bin_dir() -> None:
+    """The deploy/ reference rendering pins ``REFERENCE_BIN_DIR`` first, so a
+    reference copy installed verbatim on a system-scoped host resolves the system
+    component CLIs rather than nothing."""
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
+    assert _unit_path_value(_systemd_service(spec)).split(":")[0] == str(REFERENCE_BIN_DIR)
+
+
 def test_deploy_reference_copies_match_generator_output():
     """docs/operating-the-suite.md promises the reference copies in deploy/
     are identical to what `schedule install` generates — enforce it.

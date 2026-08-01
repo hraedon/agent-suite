@@ -267,6 +267,30 @@ SYSTEMD_UNIT_DIR = Path("/etc/systemd/system")
 # actually resolved.
 REFERENCE_BIN_DIR = Path("/usr/local/bin")
 
+# The standard system PATH a systemd unit falls back to. A root-run unit gets a
+# stripped PATH (systemd's default, or root's sudo ``secure_path``), so the
+# doctor that ``alert-check`` shells out to resolves component CLIs against a
+# different set of binaries than the operator sees — a different estate (WI-038).
+# The generated unit therefore pins an explicit ``PATH``: the directory the
+# installer resolved ``ExecStart`` from first (where this host's component CLIs
+# actually live), then these system directories. It is rendered as a unit-level
+# default *before* ``EnvironmentFile`` so the operator's ``suite.env`` can still
+# override it.
+_SYSTEMD_FALLBACK_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def _unit_path_environment(exec_path: str) -> str:
+    """The explicit ``PATH`` a generated unit runs with (WI-038).
+
+    ``exec_path`` is the absolute executable the unit invokes; its parent
+    directory is where the installing process resolved the suite CLI, which on a
+    pipx / venv / ``uv tool`` layout is the same ``bin/`` as the component CLIs
+    the doctor shells out to. Putting it first makes the root-run doctor resolve
+    the same estate the operator does, instead of systemd's stripped PATH.
+    """
+    return f"PATH={Path(exec_path).parent}:{_SYSTEMD_FALLBACK_PATH}"
+
+
 
 @dataclass(frozen=True)
 class ResolvedCommand:
@@ -367,9 +391,13 @@ def _systemd_service(spec: ScheduleSpec, *, resolved: ResolvedCommand | None = N
     ``resolved`` is the install-time resolution of ``spec.command``; without one
     the documented :data:`REFERENCE_BIN_DIR` rendering is used. Either way the
     ``ExecStart`` is absolute — systemd never searches the invoking user's PATH
-    (WI-045).
+    (WI-045). The unit also pins an explicit ``PATH`` (the resolved executable's
+    directory first, then the system directories) so a root-run unit resolves the
+    same component binaries as the operator (WI-038); without it the hourly
+    doctor sees a different estate than the human who installed the suite.
     """
-    command = (resolved or reference_command(spec)).exec_start
+    effective = resolved or reference_command(spec)
+    command = effective.exec_start
     return (
         f"[Unit]\n"
         f"Description={spec.description}\n"
@@ -380,6 +408,7 @@ def _systemd_service(spec: ScheduleSpec, *, resolved: ResolvedCommand | None = N
         f"Type=oneshot\n"
         f"ExecStart={command}\n"
         + "".join(f"Environment={e}\n" for e in spec.environment)
+        + f"Environment={_unit_path_environment(effective.exec_path)}\n"
         + "EnvironmentFile=-/etc/agent-suite/suite.env\n"
         "User=root\n"
         "\n"
