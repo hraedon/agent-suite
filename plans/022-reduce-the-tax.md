@@ -1,208 +1,188 @@
-# Plan 022 — Reduce the tax before the users arrive
+# Plan 022 — Reduce the tax; reset what only costs
 
-**Status: DRAFT** (2026-08-01, for owner review). Plans 020 and 021 answer
-"is the suite correct?" This one answers a different question: **is the
-suite worth its own overhead, and which of its costs are structural
-rather than incidental?** It is deliberately scheduled *before* real
-users, because every change here gets harder once someone outside the
-maintainer depends on the current shape.
+**Status: DRAFT** (2026-08-01, for owner review; revised the same day
+after the owner ratified a clean-slate mandate — *"if it makes sense to
+temporarily suspend correctness to arrive more painlessly at a good end
+state, that is acceptable… I would rather come out of this with
+something whose architecture is defensible than something with a hundred
+migrations and a novella of technical explainers about why."*)
 
-## The cost equation, measured
+Plans 020 and 021 ask whether the suite is correct. This one asks
+whether it is worth its own overhead — and, given the mandate, which of
+its costs exist only to preserve things that are not worth preserving.
 
-One data point from 2026-08-01, chosen because it is the smallest
-possible change: publishing regista 0.5.5 — a version bump — required
-**four consumer PRs**, a k8s image-tag fix, a Windows TOML-escaping fix,
-six CI re-runs, and about four hours of wall clock. Nothing went wrong;
-that is the *happy path* cost of moving the spine.
+## The measurement that reframes everything
 
-Three structural sources, in order of contribution:
+The estate holds **263,646 events**. Of those, **246,378 carry the
+identity conflict** that Plan 021's WI-055 work was designed around
+(`actor_id` with a `kind:` prefix while `actor_kind` says otherwise).
 
-1. **The spine pin is vendored four times.** Each component's
-   `SUITE.lock` carries a copy of the umbrella's `[components.regista]`
-   pin, explicitly so components need not clone agent-suite. Four copies
-   that must be manually synced is four PRs per spine move, with
-   merge-order constraints and a window where the estate disagrees with
-   itself.
-2. **agent-notes maintains two implementations of the same mutations.**
-   `_native.py` (902 lines) and `_regista.py` (483 lines) both implement
-   work-item writes; the degrade path is the *larger* one. BC-027,
-   WI-020 and WI-021 are all drift between them. This is a permanent
-   bug generator, not a backlog.
-3. **Red main is normal.** Reviewers spend real effort classifying
-   pre-existing versus new on every PR. That is the most corrosive cost
-   because it degrades the reviewer rather than the machine: after two
-   days of red, "CI failed" carries no information.
+The distribution is not uniform. It is this:
 
-The suite's benefit — attributable, replayable, independently-reviewed
-work — is real and was demonstrated repeatedly this week (the gates
-refused a self-review, a false lineage assertion, and a mismatched
-lock). But the benefit accrues at multi-user scale while the cost is
-paid per-change today. The goal of this plan is to move the break-even
-point left.
+| Scope | Events | Conflicted |
+|---|---|---|
+| `agent_provenance` (cairn session capture) | 259,004 | 246,324 |
+| All 24 other projects combined | 4,642 | **54** |
 
-## Part A — Structural changes (do these first; they get harder later)
+**99.98% of the identity problem is capture telemetry — the suite
+watching itself get built over two months.** The entire compatibility
+apparatus we specified for it (a `principal_kind_conflict` state, a
+`legacy_conflated` classification, an N-hop identity linkage record,
+per-project strict-mode activation, a pre-v5 unsigned-metadata caveat,
+and the standing rule that grammar must never be enforced at verify) is
+machinery to protect that telemetry. Its content has no downstream
+consumer; its value was demonstrating that capture works, and it has
+done that.
 
-### A1. One identity model, specified once (highest value)
+Fifty-four stray events sit in the tracker projects. Fifty-four is not
+an architecture problem.
 
-Five partial mechanisms currently answer "who did this": the WI-055
-grammar, `actor_kind`, `on_behalf_of`, lineage capture (regista WI-214),
-delegation (regista WI-008, unimplemented), and witness enrollment
-(regista WI-238). They were designed at different times and disagree —
-which is why ~231k events assert both a `human:` prefix and
-`actor_kind='agent'`.
+## Part 0 — The reset (do this first; everything else shrinks)
 
-Write **one identity specification** that defines the dimensions, their
-grammar, which are signed, which are derivable, and what each proves.
-Everything else derives from it. The WI-055 decision record is the
-seed; this promotes it to the normative document, and the other items
-become implementations of it rather than independent designs.
+**Archive the `agent_provenance` capture corpus and restart it under the
+new identity model.** Export it as a signed bundle, store it as
+historical evidence outside the live plane, truncate the project, and
+begin clean.
 
-Design the cutover assuming **there will be a third model** — the
-current one is already the second, and an IdP subject will force a
-third. That means an N-hop linkage record, not a one-shot mapping.
+What this deletes from the design, permanently:
 
-**Exit:** one document; every identity-related work item references it;
-no component defines identity semantics locally.
+- No legacy branch in the identity specification.
+- No `principal_kind_conflict` state to compute, surface, or explain.
+- No `legacy_conflated` classification.
+- No N-hop old-to-new linkage record, and no signed cutover record.
+- No per-project strict activation — **every project is strict from day
+  one**, grammar enforced at enrollment *and* append.
+- No pre-v5 envelope caveat: require v5, drop the older reader path.
+- `actor_kind` becomes derivable from the principal kind instead of a
+  separately-stored field that can contradict it.
 
-### A2. Collapse agent-notes' dual write path
+For the 54 tracker events: correct them in place as part of the cutover.
+They are individually inspectable.
 
-Delete `_native.py` as a mutation path. Make agent-notes strictly a
-regista client, with degrade meaning *refuse to write* rather than
-*write differently*. This deletes an entire class of defect (three open
-items today, more later) and removes ~900 lines whose only job is to
-disagree subtly with the other 483.
+**This is the whole argument of the plan.** The identity model was
+retrofitted after data existed, and nearly all of that data is
+self-observation. Discarding it converts a permanent compatibility
+burden into a one-time export.
 
-The counter-argument is availability: today agent-notes works with
-regista down. Weigh honestly — a tracker that silently writes to a
-different substrate during an outage, then reconciles imperfectly, is a
-worse failure than one that refuses and says so. This is the same
-"availability may fail open to digests, never to plaintext" principle
-the suite already ratified for content (cairn WI-035), applied to state.
+**Exit:** the identity specification has no "legacy" section; a fresh
+`agent_provenance` chain begins under one grammar; the archived bundle
+verifies standalone.
 
-**Exit:** one mutation path; degrade is a refusal with a clear message;
-BC-027/WI-020/WI-021 close as obsolete rather than fixed.
+## Part A — Structural changes, now cheap under the mandate
+
+### A1. One identity specification, no compatibility model
+
+With Part 0 done, this collapses from "a spec plus a legacy regime" to a
+spec. Define the dimensions once — acting principal, execution kind,
+delegation — with grammar `kind:subject`, enforced everywhere a
+principal is created or an event is appended, and derive everything
+else. Lineage capture (regista WI-214), delegation (WI-008) and witness
+enrollment (WI-238) become implementations of it rather than parallel
+designs.
+
+Still design for a **third** model: an IdP subject will eventually
+replace today's locally-minted one. But "designed for" now means a
+stable subject field and a documented re-issue path — not a live mapping
+table.
+
+### A2. Delete agent-notes' dual write path
+
+`_native.py` (902 lines) and `_regista.py` (483) both implement
+work-item mutation, and the degrade path is the larger. BC-027, WI-020
+and WI-021 are drift between them. Under the mandate: **delete
+`_native` outright**, no reconciliation, no migration. Degrade means
+refuse-and-say-so, which is the principle already ratified for content
+(cairn WI-035) applied to state.
 
 ### A3. Stop vendoring the spine pin
 
-The four component `SUITE.lock` copies exist to avoid cloning the
-umbrella. Replace vendoring with consumption: publish the umbrella lock
-as a versioned artifact (a tiny `agent-suite-lock` package, or a release
-asset fetched by `dev-install.py`), and have components read the pin
-from it. A spine move then becomes **one** change plus a dependency
-resolution, not four synchronized PRs.
+Four `SUITE.lock` copies of the umbrella's regista pin is why a version
+bump cost four PRs. Publish the umbrella lock as a consumable artifact;
+components read the pin rather than carrying a hand-synced copy. No
+back-compat shim needed.
 
-This is the smaller sibling of "should this be a monorepo." A uv
-workspace monorepo would eliminate more tax (one CI, one lock, atomic
-cross-component changes) but costs the per-repo publication gates,
-independent release cadence, and the "each component is independently
-useful" thesis. **Recommendation: do A3 now, and re-evaluate the
-monorepo question only if the tax remains high afterwards** — A3
-captures most of the benefit at a fraction of the disruption.
+### A4. Repo topology — the one genuinely open question
 
-**Exit:** a spine release requires one human action; no file contains a
-hand-synced copy of another file's version.
+The strongest available argument: **agent-suite largely exists to manage
+the consequences of there being seven repos.** Lock generation, spine
+pinning, release manifests, cross-component doctors, bootstrap
+orchestration — a substantial fraction of the umbrella's purpose is
+coordination overhead that a single workspace would not create.
 
-### A4. Give the tracker an admin plane
+Consolidating is cheap now and expensive once anyone external depends on
+the current shape, so this is close to now-or-never. The deciding factor
+is one thing only the owner knows: **is any component intended to be
+independently published or open-sourced?** If yes, keep it separate. If
+no, it is paying repo overhead for an option nobody will exercise.
 
-The gates deadlocked twice this week: nine items could not be moved out
-of a false state because the `adversarial_review` validator required a
-lineage fact the history did not contain, and the only bypass would have
-written a false assertion into a signed chain. The correct action was
-blocked by a control designed to prevent an incorrect one.
+Recommendation, pending that answer: merge `regista`, `agent-notes`,
+`agent-provenance` and `agent-suite` into one uv-workspace repo with
+independently versioned packages; keep `dossier` (a deployable service),
+`acb`, and `agent-wake` separate. That removes most of the tax while
+preserving the genuinely separable things. If A3 lands first and the
+remaining friction is tolerable, this can still be declined — but it
+should be declined deliberately, not by default.
 
-Add an **admin-correction transition**, signed and typed *as a
-correction* rather than as a review, recording actor, reason, and the
-state it overrides. This does not weaken the gates: a correction is
-visibly a correction in the chain, which is exactly what an auditor
-wants to see. Every durable system needs an out-of-band path; the
-absence of one is why prose warnings ended up stamped into item bodies
-as a substitute control.
+### A5. Tracker admin plane
 
-**Exit:** a false item state is fixable without lying; corrections are
-distinguishable from reviews in replay.
+The gates deadlocked twice this week: nine items could not leave a false
+state because `adversarial_review` demanded a lineage fact the history
+lacked, and the only bypass would write a false assertion into a signed
+chain. Add a **signed admin-correction transition**, typed as a
+correction, recording actor, reason and the state it overrides. This
+adds a path; it removes no check.
 
-### A5. Descope agent-wake from the GA gate
+### A6. Descope agent-wake from the GA gate
 
-agent-wake has 24 open items, is the youngest component, and is not on
-the critical path for multi-user attested work. Mark it **experimental,
-not GA-gated**. It continues to be developed; it stops contributing to
-the release matrix, the conformance sweep, and the reviewer load. If it
-matures, it re-enters.
+Roughly a quarter of the estate's open items, the youngest component,
+and not on the critical path for multi-user attested work. Mark it
+experimental and non-GA-gating. Clearest single cost/benefit lever
+available.
 
-This is the plan's clearest cost/benefit lever: one component's backlog
-is roughly a quarter of the estate's open items and none of it blocks
-the stated goal.
+## Part B — Mechanical fixes
 
-**Exit:** the GA gate names five components; agent-wake ships on its own
-cadence.
+- **B1. Verified `implemented_by`.** Items in a review state must carry
+  a commit or PR reference that resolves. Eight regista items sat in
+  review this week with no code anywhere; nothing detected it.
+- **B2. Baseline-diff CI gating.** Record main's failure set; a PR fails
+  only when it *adds* to it. Restores CI's information content.
+- **B3. Health checks name the action they performed.** A machine-
+  readable `action_performed` field; a check that cannot name an
+  executed action is definitionally an observation, and the conformance
+  kit can fail it mechanically. Six observe-vs-verify defects in a
+  month — including inside fixes for that class — shows discipline is
+  not the fix.
+- **B4. Docs assert machine-checkable claims.** Four silent
+  doc/reality divergences this week alone.
+- **B5. Record merge provenance,** not orphaned pre-squash SHAs.
 
-## Part B — Friction fixes (mechanical, high leverage)
+## Part C — What the mandate does *not* license
 
-### B1. `implemented_by`, verified
-
-Work items in a review state must carry a commit or PR reference that
-**resolves**. Eight regista items sat in `in_review` with no branch, no
-commit and no PR anywhere; nothing detected it and it was found by
-grepping `git log`. A verified field makes that state impossible to
-create. *This is the single highest-value mechanical fix.*
-
-### B2. Baseline-diff CI gating
-
-Record main's current failure set per repo. A PR fails only when it
-**adds** to that set. This restores CI's information content and deletes
-the per-PR "pre-existing or new?" investigation that consumed hours this
-week. Pair it with a visible, decaying baseline so red main stays
-embarrassing rather than becoming furniture.
-
-### B3. Health checks must name the action they performed
-
-Six observe-vs-verify defects in a month, including instances inside
-*fixes for that class*. Discipline is not working, because the doctor is
-always written by the feature's author, who checks what they know can
-break. Make the health contract require a machine-readable
-`action_performed` field: a check that cannot name an action it executed
-is definitionally an observation, and the conformance kit — which
-already exists — can fail it mechanically.
-
-### B4. Docs assert machine-checkable claims
-
-Four silent doc/reality divergences this week: promised Vault audit
-correlation with no audit device enabled, a runbook `secret_id_ttl=24h`
-against a live `0`, an install layout the new gate refuses, and witness
-documentation that now instructs the reader to reintroduce a hole just
-closed. agent-suite already has doc-claim tests; generalize the pattern
-so operational documents carry testable assertions.
-
-### B5. Record merge provenance, not commit SHAs
-
-Squash-merge permanently orphans the original commits, so a tracker
-claiming "this item's code is in main" cannot rely on SHAs surviving.
-Record the merge commit, or content digests, on the work item.
-
-## Part C — What not to do
-
-- **Do not start the monorepo migration** until A3 has been measured.
-- **Do not add features to agent-wake** while it is being descoped.
-- **Do not fix BC-027/WI-020/WI-021 individually** — A2 deletes them.
-- **Do not weaken any gate to unblock workflow.** A4 adds a path; it
-  does not remove a check. The gates firing against their own maintainer
-  this week is the strongest evidence the suite works.
+- **No gate is weakened.** A5 adds a correction path; it removes no
+  check. The gates firing against their own maintainer this week is the
+  strongest evidence the suite works, and that property is the reason
+  the suite exists.
+- **No fail-open.** "Suspend correctness" means *discard data whose only
+  value is that it exists*; it never means ship a check that reports
+  success it did not establish.
+- **No half-migrations.** The point of the mandate is to avoid
+  accumulating compatibility layers. A reset that leaves a legacy reader
+  path behind has bought nothing.
+- **The archive is real.** Part 0 exports and verifies before it
+  truncates. Discarding without a verified archive is not the same
+  decision.
 
 ## Sequencing
 
-A4 and B1 first — they are small and they stop the tracker from
-accumulating more false state while the rest proceeds. B2 next, because
-it makes every subsequent change cheaper to review. Then A5 (a
-scope decision, not code), A3, A2, and A1 in parallel as capacity
-allows; A1 is the longest and least urgent in wall-clock terms but the
-most consequential, so it should start early even if it lands late.
-B3–B5 fold into whatever touches their surface.
+Part 0 first — it is a day's work and it deletes most of A1's
+complexity. A5 and B1 next, so the tracker stops accumulating false
+state. B2 next, because it makes everything after it cheaper to review.
+Then A4 as a decision (not code), followed by A3, A2, A1. A6 is a scope
+call available immediately. B3–B5 fold into whatever touches them.
 
 ## The metric to watch
 
-Track the ratio of **events describing work on the suite** to **events
-describing work the suite witnessed**. Today it is dominated by the
-former, which is expected for infrastructure under construction. If it
-has not moved materially within a few months of real users, the suite
-has become the product rather than the tooling — and that is the signal
-to stop building and start using.
+The ratio of events describing work *on* the suite to events describing
+work the suite *witnessed*. Today it is 93.5% the former, which is what
+Part 0 is about. If that has not moved materially within a few months of
+real users, the suite has become the product rather than the tooling.
