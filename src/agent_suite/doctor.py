@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -41,7 +42,12 @@ from agent_suite._redact import redact_url as _redact_url
 from agent_suite.codex_catalog import CODEX_PLUGIN_CATALOG, CodexPluginId, with_marketplace
 from agent_suite.codex_health import CodexHealthReport, check_codex_health, format_codex_health_text
 from agent_suite.components import COMPONENTS, Component, Locality, Tier
-from agent_suite.config import MemoryProviderConfig, configured_project_slugs
+from agent_suite.config import (
+    MemoryProviderConfig,
+    configured_project_slugs,
+    system_suite_env_path,
+    user_suite_env_path,
+)
 from agent_suite.profiles import (
     PROFILE_REQUIREMENTS,
     Profile,
@@ -50,6 +56,7 @@ from agent_suite.profiles import (
     profile_label,
 )
 from agent_suite.release_manifest import ReleaseManifest
+from agent_suite.schedule import InvokingContext, build_invoking_context
 
 DEFAULT_GLOBAL_DEADLINE: float = 60.0
 
@@ -287,6 +294,7 @@ class SuiteReport:
     memory_provider: dict[str, object] | None = None
     codex_health: CodexHealthReport | None = None
     artifact_attestation: artifact_attestation.ArtifactAttestation | None = None
+    invoking_context: InvokingContext | None = None
     duration_ms: float | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -294,6 +302,9 @@ class SuiteReport:
             "suite_ok": self.suite_ok,
             "components": [c.to_dict() for c in self.components],
             "lock": self.lock.to_dict(),
+            "invoking_context": (
+                self.invoking_context.to_dict() if self.invoking_context else None
+            ),
             "duration_ms": self.duration_ms,
         }
         if self.post_restore is not None:
@@ -731,6 +742,30 @@ def _check_one_timed(
     return report
 
 
+def _doctor_invoking_context() -> InvokingContext:
+    """The doctor's own invoking context (WI-038): who ran it and how PATH /
+    config were resolved, split into the box (the machine / host a scheduled
+    unit runs in) and the actor (this doctor process).
+
+    Measured from the live process — the actor's bin dir (the interpreter's),
+    uid/euid, PATH, and the ``suite.env`` files actually present — so a scheduled
+    red is triageable from doctor output: an operator can see whether the doctor
+    ran as root with the unit's pinned PATH (box-aligned) or as a human with a
+    different estate. Reuses :func:`agent_suite.schedule.build_invoking_context`
+    so the doctor and ``schedule install`` report the same shape.
+    """
+    config_sources = tuple(
+        str(p)
+        for p in (system_suite_env_path(), user_suite_env_path())
+        if p.exists()
+    )
+    return build_invoking_context(
+        actor_bin_dir=Path(sys.executable).parent,
+        path_env=os.environ.get("PATH", ""),
+        actor_config_sources=config_sources,
+    )
+
+
 def aggregate(
     *,
     installed: Installed = _default_installed,
@@ -755,6 +790,7 @@ def aggregate(
     artifact_wheels_dir: Path | None = None,
     require_artifact_binding: bool = False,
     provenance_probe: ProvenanceProbe | None = None,
+    invoking_context: InvokingContext | None = None,
 ) -> SuiteReport:
     """Run each component's doctor and fold into one umbrella report.
 
@@ -1042,6 +1078,11 @@ def aggregate(
         memory_provider=memory_provider,
         codex_health=codex_health,
         artifact_attestation=attestation,
+        invoking_context=(
+            invoking_context
+            if invoking_context is not None
+            else _doctor_invoking_context()
+        ),
         duration_ms=round((time.monotonic() - t0) * 1000, 1),
     )
 
@@ -1057,6 +1098,17 @@ def format_text(report: SuiteReport) -> str:
         lines.append(f"  {c.component:<22} {tag:<10} {c.status.value:<15}{ver}{detail}{timing}")
     lines.append("")
     lines.append(lock.format_drift_text(report.lock))
+    if report.invoking_context is not None:
+        actor = report.invoking_context.actor
+        box = report.invoking_context.box
+        actor_scope = "system" if actor.system_scoped else "NON-system"
+        uid_str = f"uid={actor.uid}" if actor.uid is not None else "uid=n/a"
+        lines.append("")
+        lines.append("invoking context:")
+        lines.append(
+            f"  actor: {actor.bin_dir} ({actor_scope}, {uid_str})"
+        )
+        lines.append(f"  box:   {box.bin_dir} (system, uid={box.uid})")
     if report.post_restore is not None:
         lines.append("")
         lines.append("post-restore verification:")
