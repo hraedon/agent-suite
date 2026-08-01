@@ -15,7 +15,9 @@ import pytest
 from agent_suite.schedule import (
     REFERENCE_BIN_DIR,
     SCHEDULES,
+    SUITE_ENV_PATH,
     SYSTEM_BIN_DIRS,
+    SYSTEM_PATH,
     ContextScope,
     InstallStatus,
     OSTarget,
@@ -27,12 +29,14 @@ from agent_suite.schedule import (
     _systemd_service,
     _systemd_timer,
     _windows_task_script,
+    build_invoking_context,
     check_actor_system_scoped,
     check_exec_start_runnable,
     format_schedule_report,
     generate_schedule_files,
     install_schedules,
     invoking_context_for,
+    is_system_scoped_bin_dir,
     reference_command,
     remove_schedules,
     resolve_command,
@@ -127,7 +131,11 @@ def _treat_as_system_scoped(monkeypatch: pytest.MonkeyPatch, bindir: Path) -> No
 
     A real install resolves system-scoped; tests build executables in a private
     tmp dir (they cannot write into /usr/local/bin in CI), so SYSTEM_BIN_DIRS is
-    patched to include the tmp dir. Without this the reversed WI-038 gate would
+    patched to include the tmp dir. The scope probe consults SYSTEM_BIN_DIRS
+    *first* (before the ownership / profile check), so this monkeypatch takes
+    effect on every host OS: on Windows a tmp dir under ``%%USERPROFILE%%`` would
+    otherwise read as user-scoped, and on POSIX a test-user-owned tmp dir would
+    otherwise read as non-root-owned. Without this the reversed WI-038 gate would
     refuse the install as a non-system bin dir — which is exactly the behavior
     the non-system refusal tests below assert separately."""
     monkeypatch.setattr("agent_suite.schedule.SYSTEM_BIN_DIRS", (bindir,))
@@ -651,32 +659,34 @@ def _unit_path_value(unit: str) -> str:
     return line.removeprefix("Environment=PATH=")
 
 
-_SYSTEM_PATH = ":".join(str(p) for p in SYSTEM_BIN_DIRS)
-
-
 def test_unit_pins_system_path_only_not_resolved_bin_dir() -> None:
     """WI-038 (reversed): the unit pins *only* the system PATH. The previous
     approach prepended the directory the installer resolved ``ExecStart`` from,
     which can hide a tampered / foreign bin dir under a root-run unit. The unit
     must not search the resolved bin dir — a non-system actor resolution is
-    refused at install time instead (see test_install_refuses_non_system_bin_dir)."""
+    refused at install time instead (see test_install_refuses_non_system_bin_dir).
+
+    The pinned PATH is always the POSIX ``SYSTEM_PATH`` literal regardless of
+    host OS (systemd is Linux-only), so this holds on a Windows host too."""
     spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
     resolved_dir = "/opt/agent-suite/bin"
     resolved = ResolvedCommand(f"{resolved_dir}/agent-suite", "alert-check")
     unit = _systemd_service(spec, resolved=resolved)
     path = _unit_path_value(unit)
-    assert path == _SYSTEM_PATH
+    assert path == SYSTEM_PATH
+    assert "/" in path  # POSIX, never backslash-joined
     assert resolved_dir not in path.split(":")
 
 
 def test_unit_system_path_contains_reference_bin_dir() -> None:
     """The pinned system PATH contains REFERENCE_BIN_DIR, so a reference copy
     installed verbatim on a system-scoped host resolves the system component
-    CLIs (rather than pinning nothing useful)."""
+    CLIs (rather than pinning nothing useful). ``SYSTEM_PATH`` is the canonical
+    POSIX literal — never re-derived from host-flavored Path objects."""
     spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
     path = _unit_path_value(_systemd_service(spec))
     assert str(REFERENCE_BIN_DIR) in path.split(":")
-    assert path == _SYSTEM_PATH
+    assert path == SYSTEM_PATH
 
 
 def test_unit_path_renders_before_environment_file() -> None:
@@ -702,27 +712,134 @@ def test_check_actor_system_scoped_accepts_system_dir() -> None:
     assert check_actor_system_scoped(ResolvedCommand("/usr/local/bin/agent-suite")) is None
 
 
+def test_opt_root_owned_dir_is_accepted_via_ownership_not_path_membership() -> None:
+    """DEFECT 1: the scope predicate tests ownership/writability, not PATH
+    membership. ``/opt`` is root-owned (uid 0), mode 755, and NOT on the system
+    PATH allowlist — exactly the ``/opt/agent-suite`` venv layout
+    ``docs/install-linux.md`` §2/§7 prescribes. The literal-membership predicate
+    this replaces refused it; the ownership predicate accepts it. A CLI resolved
+    under a root-owned ``/opt`` directory anchors cleanly."""
+    opt = Path("/opt")
+    assert opt.exists(), "/opt must exist to demonstrate the docs layout"
+    assert opt.stat().st_uid == 0, "/opt must be root-owned to demonstrate the case"
+    assert opt not in SYSTEM_BIN_DIRS  # acceptance is NOT path membership
+    assert is_system_scoped_bin_dir(opt) is True  # accepted via OWNERSHIP
+    # bin_dir of "/opt/agent-suite" is "/opt" (root-owned) → accepted
+    assert check_actor_system_scoped(ResolvedCommand("/opt/agent-suite")) is None
+
+
+def test_user_owned_local_bin_dir_is_refused(tmp_path: Path) -> None:
+    """DEFECT 1: a user-writable / user-owned bin dir (~/.local/bin, a uv-tool
+    user dir, a pytest tmp_path) is refused — the privilege-escalation shape
+    WI-038 forbids. tmp_path is owned by the test user (uid != 0), so the
+    ownership predicate refuses it without any allowlist."""
+    user_bin = tmp_path  # owned by the invoking (non-root) user
+    assert user_bin.stat().st_uid != 0
+    assert user_bin not in SYSTEM_BIN_DIRS
+    assert is_system_scoped_bin_dir(user_bin) is False
+    reason = check_actor_system_scoped(ResolvedCommand(str(user_bin / "agent-suite")))
+    assert reason is not None
+    assert "non-system bin directory" in reason
+
+
+def test_documented_opt_bin_dir_install_works_when_system_scoped(
+    tmp_path: Path,
+) -> None:
+    """DEFECT 1: the ``sudo agent-suite schedule install --bin-dir
+    /opt/agent-suite/bin`` command from docs/install-linux.md §7 must work. CI
+    cannot create a root-owned ``/opt/agent-suite/bin``, so the layout is built
+    in tmp and a scope probe marks it system-scoped — mimicking the root-owned
+    property a real ``/opt`` install has (see
+    test_opt_root_owned_dir_is_accepted_via_ownership_not_path_membership). The
+    user-owned refusal is asserted separately by
+    test_install_refuses_non_system_bin_dir_records_context."""
+    opt_bin = _fake_bin_dir(tmp_path)  # stands in for /opt/agent-suite/bin
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=True,
+        runner=StubRunner(),
+        which=_no_which,
+        search_dirs=(opt_bin,),
+        system_scope_probe=lambda d: d.resolve() == opt_bin.resolve(),
+    )
+    assert all(r.status is InstallStatus.INSTALLED for r in report.results), [
+        r.detail for r in report.results
+    ]
+
+
 def test_invoking_context_box_vs_actor() -> None:
     """The invoking context surfaces both scopes (WI-038): the box (the machine
-    the unit runs in, system-scoped) and the actor (who resolved the CLI). An
-    actor that resolved from a system dir agrees with the box; one that resolved
-    from a foreign dir is flagged non-system so an operator reading the result
-    can tell a root/cron run from an operator run."""
-    system_ctx = invoking_context_for(ResolvedCommand("/usr/local/bin/agent-suite"))
+    the unit runs in, system-scoped) and the actor (who resolved the CLI). Both
+    sides carry MEASURED values — system_scoped runs the probe / the pinned-path
+    ownership check (never hardcoded), uid is read from the process / resolved
+    from the unit's User=root, and PATH provenance + config sources are recorded.
+    An actor that resolved from a system dir agrees with the box; one that
+    resolved from a foreign dir is flagged non-system so an operator reading the
+    result can tell a root/cron run from an operator run."""
+    system_ctx = invoking_context_for(
+        ResolvedCommand("/usr/local/bin/agent-suite"),
+        actor_uid=1000,
+        actor_euid=1000,
+        path_env="/usr/local/bin:/usr/bin",
+    )
     assert system_ctx.actor.system_scoped is True
-    assert system_ctx.box.system_scoped is True
+    assert system_ctx.box.system_scoped is True  # measured, not hardcoded
     assert system_ctx.box.scope is ContextScope.BOX
     assert system_ctx.actor.scope is ContextScope.ACTOR
     assert system_ctx.box.bin_dir == str(REFERENCE_BIN_DIR)
     assert system_ctx.actor.bin_dir == "/usr/local/bin"
 
-    foreign_ctx = invoking_context_for(ResolvedCommand("/home/op/.local/bin/agent-suite"))
+    # The box side is a real measurement: root's uid, the pinned system PATH,
+    # and the suite EnvironmentFile — not the two-field tautology it replaced.
+    assert system_ctx.box.uid == 0
+    assert system_ctx.box.euid is None
+    assert system_ctx.box.path_provenance == f"systemd-unit:{SYSTEM_PATH}"
+    assert system_ctx.box.config_sources == (str(SUITE_ENV_PATH),)
+    # The actor side records who invoked it and how PATH was resolved.
+    assert system_ctx.actor.uid == 1000
+    assert system_ctx.actor.euid == 1000
+    assert system_ctx.actor.path_provenance == "/usr/local/bin:/usr/bin"
+
+    foreign_ctx = invoking_context_for(
+        ResolvedCommand("/home/op/.local/bin/agent-suite"),
+        actor_uid=1000,
+        actor_euid=1000,
+        path_env="/home/op/.local/bin:/usr/bin",
+    )
     assert foreign_ctx.actor.system_scoped is False
     assert foreign_ctx.box.system_scoped is True
 
     assert system_ctx.to_dict()["actor"] == ScopeContext(
-        scope=ContextScope.ACTOR, bin_dir="/usr/local/bin", system_scoped=True
+        scope=ContextScope.ACTOR,
+        bin_dir="/usr/local/bin",
+        system_scoped=True,
+        uid=1000,
+        euid=1000,
+        path_provenance="/usr/local/bin:/usr/bin",
+        config_sources=(),
     ).to_dict()
+    assert system_ctx.to_dict()["box"] == ScopeContext(
+        scope=ContextScope.BOX,
+        bin_dir=str(REFERENCE_BIN_DIR),
+        system_scoped=True,
+        uid=0,
+        euid=None,
+        path_provenance=f"systemd-unit:{SYSTEM_PATH}",
+        config_sources=(str(SUITE_ENV_PATH),),
+    ).to_dict()
+
+
+def test_build_invoking_context_measures_real_uid_when_not_injected() -> None:
+    """Without injected values the actor uid/euid/PATH are measured from the
+    process, so the doctor (which does not know the schedule's resolved CLI) can
+    build the same shape against its own invocation."""
+    ctx = build_invoking_context(
+        actor_bin_dir=REFERENCE_BIN_DIR,
+        path_env=None,
+    )
+    assert ctx.actor.uid is not None  # measured from this process
+    assert ctx.actor.system_scoped is True
+    assert ctx.box.system_scoped is True
 
 
 def test_install_refuses_non_system_bin_dir_records_context(tmp_path: Path) -> None:
@@ -799,3 +916,147 @@ def test_deploy_reference_copies_match_generator_output():
         assert (repo / "deploy/windows" / f"{spec.name}.ps1").read_text() == (
             _windows_task_script(spec)
         ), spec.name
+
+
+# ---------------------------------------------------------------------------
+# Windows scope logic (DEFECT 3) — exercised on this Linux host by mocking the
+# OS surface (os.name / os.sep / sys.platform / USERPROFILE). The systemd unit
+# PATH is always POSIX (a separate, Linux-only concern); the Windows-native
+# path handling is for Scheduled-Task scope checks only. The two must not be
+# conflated, or a win32 host produces backslash-joined ``\usr\local\sbin``
+# against the unit's forward-slash literal.
+# ---------------------------------------------------------------------------
+
+
+def _mock_windows(monkeypatch: pytest.MonkeyPatch, *, userprofile: str) -> None:
+    """Pretend to run under Windows so the win32 scope branches execute here.
+
+    Patches ``sys.platform`` (what :func:`_is_system_owned` /
+    :func:`_box_system_scoped` consult) and sets ``USERPROFILE``; pytest restores
+    them after the test. ``os.name`` is deliberately NOT patched: Python 3.14's
+    ``pathlib`` refuses to instantiate ``WindowsPath`` on Linux when ``os.name``
+    is ``nt``, which would break every ``Path(...)`` in the code under test. The
+    win32 scope logic keys off ``sys.platform``, so this still exercises the real
+    branches; the uid helpers' ``os.name`` branch is covered separately by
+    :func:`test_uid_helpers_return_none_under_windows`.
+    """
+    import agent_suite.schedule as sched
+
+    monkeypatch.setattr(sched.sys, "platform", "win32")
+    monkeypatch.setenv("USERPROFILE", userprofile)
+
+
+def _fake_bins_in(bindir: Path) -> Path:
+    bindir.mkdir(parents=True, exist_ok=True)
+    for spec in SCHEDULES:
+        exe = bindir / _command_name(spec)
+        if not exe.exists():
+            exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            exe.chmod(0o755)
+    return bindir
+
+
+def test_uid_helpers_return_none_under_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On Windows there is no uid concept. The helpers key off ``os.name``; this
+    patches it in isolation (no ``Path`` construction in the body, so Python
+    3.14's WindowsPath guard is not tripped) and confirms each returns ``None``."""
+    from agent_suite.schedule import _current_euid, _current_uid, _system_unit_uid
+
+    monkeypatch.setattr("os.name", "nt")
+    assert _current_uid() is None
+    assert _current_euid() is None
+    assert _system_unit_uid() is None
+
+
+def test_win32_system_path_is_posix_regardless_of_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DEFECT 3: the systemd unit PATH is always the POSIX ``SYSTEM_PATH``
+    literal, even when the host reports as win32. It must never be re-derived
+    from host-flavored Path objects (which join with backslashes on Windows)."""
+    _mock_windows(monkeypatch, userprofile=str(tmp_path / "winuser"))
+    path = _unit_path_value(_systemd_service(SCHEDULES[0]))
+    assert path == SYSTEM_PATH
+    assert "\\" not in path
+    assert all(entry.startswith("/") for entry in path.split(":"))
+
+
+def test_win32_scope_probe_refuses_user_profile_dir_accepts_system_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DEFECT 3: on win32 a directory under the user profile is user-scoped
+    (refused), one outside it is system-scoped (accepted)."""
+    _mock_windows(monkeypatch, userprofile=str(tmp_path / "winuser"))
+    profile = tmp_path / "winuser"
+    user_dir = profile / "AppData" / "Local" / "uv"  # under profile
+    system_dir = tmp_path / "ProgramData" / "agent-suite" / "bin"  # outside profile
+    assert is_system_scoped_bin_dir(user_dir) is False
+    assert is_system_scoped_bin_dir(system_dir) is True
+
+
+def test_win32_treat_as_system_scoped_helper_takes_effect(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DEFECT 3: the ``_treat_as_system_scoped`` helper patches SYSTEM_BIN_DIRS,
+    which the probe must consult FIRST on win32 too — otherwise the helper is a
+    no-op and ~8 tests relying on it break (pytest ``tmp_path`` lives under
+    ``%%USERPROFILE%%`` on Windows)."""
+    _mock_windows(monkeypatch, userprofile=str(tmp_path / "winuser"))
+    bindir = _fake_bins_in(tmp_path / "winuser" / "AppData" / "Local" / "Temp" / "bin")
+    assert bindir.is_relative_to(tmp_path / "winuser")  # genuinely under the profile
+    # Without the allowlist the win32 ownership check refuses it.
+    assert is_system_scoped_bin_dir(bindir) is False
+    # The helper's monkeypatch now takes effect on win32.
+    _treat_as_system_scoped(monkeypatch, bindir)
+    assert is_system_scoped_bin_dir(bindir) is True
+
+
+def test_win32_invoking_context_box_system_scoped_and_profile_scope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DEFECT 2b/3: on win32 the box is measured system-scoped and the actor
+    scope follows the profile rule (outside profile = system-scoped)."""
+    _mock_windows(monkeypatch, userprofile=str(tmp_path / "winuser"))
+    outside = invoking_context_for(
+        ResolvedCommand(str(tmp_path / "ProgramData" / "agent-suite" / "agent-suite")),
+        path_env="C:/Program Files/agent-suite/bin",
+    )
+    assert outside.box.system_scoped is True
+    assert outside.actor.system_scoped is True  # outside the profile
+
+    inside = invoking_context_for(
+        ResolvedCommand(str(tmp_path / "winuser" / "AppData" / "bin" / "agent-suite")),
+        path_env="C:/Users/winuser/AppData",
+    )
+    assert inside.box.system_scoped is True
+    assert inside.actor.system_scoped is False  # under the profile
+
+
+def test_win32_install_accepts_system_scoped_bin_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DEFECT 3: a Windows Scheduled-Task install resolves cleanly when the CLI
+    is outside the user profile (system-scoped), and is refused when under it."""
+    _mock_windows(monkeypatch, userprofile=str(tmp_path / "winuser"))
+    system_bin = _fake_bins_in(tmp_path / "ProgramData" / "agent-suite" / "bin")
+    report = install_schedules(
+        os_target=OSTarget.WINDOWS_TASK,
+        dry_run=True,
+        runner=StubRunner(),
+        which=_no_which,
+        search_dirs=(system_bin,),
+    )
+    assert all(r.status is InstallStatus.INSTALLED for r in report.results), [
+        r.detail for r in report.results
+    ]
+
+    user_bin = _fake_bins_in(tmp_path / "winuser" / "AppData" / "bin")
+    refused = install_schedules(
+        os_target=OSTarget.WINDOWS_TASK,
+        dry_run=True,
+        runner=StubRunner(),
+        which=_no_which,
+        search_dirs=(user_bin,),
+    )
+    assert all(r.status is InstallStatus.FAILED for r in refused.results)
+    assert all("non-system bin directory" in r.detail for r in refused.results)

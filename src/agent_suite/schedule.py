@@ -61,6 +61,7 @@ import platform
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -213,25 +214,41 @@ SCHEDULES: tuple[ScheduleSpec, ...] = (
 class ScopeContext:
     """One side of the box-vs-actor split (WI-038).
 
-    Both sides carry the same shape so the split is a real comparison: a bin
-    directory and whether it is system-scoped. The defect WI-038 records is a
-    root-run unit resolving a different estate than the operator that installed
-    it — the unit pins *only* the system PATH and refuses an actor that resolved
-    the CLI from a non-system (user-writable / foreign) bin directory, so the
-    box's root-run estate and the actor's agree. An operator reading a result
-    can tell a root/cron run (actor system-scoped; box system-scoped) from an
-    operator run that tried to anchor a per-user bin dir.
+    Both sides carry the same shape so the split is a real comparison. The
+    defect WI-038 records is a root-run unit resolving a different estate than
+    the operator that installed it — the unit pins *only* the system PATH and
+    refuses an actor that resolved the CLI from a non-system (user-writable /
+    foreign) bin directory, so the box's root-run estate and the actor's agree.
+    An operator reading a result can tell a root/cron run (actor system-scoped;
+    box system-scoped) from an operator run that tried to anchor a per-user bin
+    dir.
+
+    Each field is a *measured* value, not a hardcoded tautology: ``system_scoped``
+    is computed by the scope probe (:class:`SystemScopeProbe`), ``uid``/``euid``
+    are read from the process, and ``path_provenance`` / ``config_sources``
+    record how PATH was resolved and which config the scope reads. Carrying
+    these on the doctor result (WI-038) is what makes a scheduled red
+    triageable from doctor output — the box (machine/host) context vs the actor
+    (invoking user) context.
     """
 
     scope: ContextScope
     bin_dir: str
     system_scoped: bool
+    uid: int | None = None
+    euid: int | None = None
+    path_provenance: str = ""
+    config_sources: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
             "scope": self.scope.value,
             "bin_dir": self.bin_dir,
             "system_scoped": self.system_scoped,
+            "uid": self.uid,
+            "euid": self.euid,
+            "path_provenance": self.path_provenance,
+            "config_sources": list(self.config_sources),
         }
 
 
@@ -343,9 +360,24 @@ REFERENCE_BIN_DIR = Path("/usr/local/bin")
 # override it.
 _SYSTEMD_FALLBACK_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-# The trusted system bin directories — the closed set an actor must resolve the
-# suite CLI from for a systemd install (WI-038). Anything outside this set is a
-# foreign / user-writable directory the unit must not search as root.
+SYSTEM_PATH: str = _SYSTEMD_FALLBACK_PATH
+"""The ``PATH`` a generated systemd unit runs with.
+
+Always POSIX ``:``-joined ``/`` paths regardless of host OS — systemd is
+Linux-only, so the unit PATH is a fixed POSIX literal. Windows-native path
+handling (``USERPROFILE`` scope checks, Scheduled Task resolution) is a
+separate concern and never reuses this constant (the two must not be conflated,
+or a Windows host produces backslash-joined ``\\usr\\local\\sbin`` against the
+unit's forward-slash literal)."""
+
+SUITE_ENV_PATH = Path("/etc/agent-suite/suite.env")
+"""The ``EnvironmentFile`` the generated units load — the box's config source."""
+
+# The trusted system bin directories — the closed set the scope probe treats as
+# system-scoped by explicit trust (the systemd fixed search path). Ownership /
+# writability is the *primary* signal (a root-owned ``/opt/agent-suite/bin`` is
+# system-scoped without being on this list); this set is an explicit allowlist
+# the deployment — and the tests — can extend (WI-038).
 SYSTEM_BIN_DIRS: tuple[Path, ...] = tuple(
     Path(entry) for entry in _SYSTEMD_FALLBACK_PATH.split(":")
 )
@@ -357,67 +389,227 @@ def _unit_system_path_environment() -> str:
     Deliberately independent of where the installer resolved ``ExecStart``: the
     unit must not search a foreign bin dir under root, so the actor's resolution
     is gated by :func:`check_actor_system_scoped` rather than merged into PATH.
+    Always :data:`SYSTEM_PATH` (POSIX), never re-derived from host-flavored
+    :class:`pathlib.Path` objects.
     """
-    return f"PATH={_SYSTEMD_FALLBACK_PATH}"
+    return f"PATH={SYSTEM_PATH}"
 
 
-def _is_system_bin_dir(bin_dir: Path) -> bool:
-    """Whether ``bin_dir`` is a system (not per-user / foreign) bin dir (WI-038).
+class SystemScopeProbe(Protocol):
+    """Classify a bin directory as system-scoped (WI-038).
 
-    POSIX: one of the trusted system directories (:data:`SYSTEM_BIN_DIRS`) a
-    systemd unit pins. Windows: any directory outside the user profile — the Task
-    Scheduler resolves a task's program against the system PATH, so an all-users
-    / machine location is system-scoped while a per-user (profile /
-    ``%%LOCALAPPDATA%%``) dir is the user-writable anchor WI-038 refuses.
+    ``True`` when the directory is not writable by an unprivileged user — the
+    property that makes it safe to anchor a root-run scheduled unit on it. The
+    default (:func:`_default_system_scope_probe`) measures ownership and mode
+    bits on the real filesystem; tests inject a stub.
+    """
+
+    def __call__(self, bin_dir: Path) -> bool: ...
+
+
+def _resolved(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _is_system_owned(bin_dir: Path) -> bool:
+    """Whether *bin_dir* is owned by the system and not user-writable (WI-038).
+
+    POSIX: the directory exists, is owned by root (uid 0), and is neither
+    group- nor other-writable. Windows: the directory is outside the user
+    profile (the Task Scheduler resolves a task's program against the system
+    PATH, so an all-users / machine location is system-scoped while a per-user
+    profile / ``%%LOCALAPPDATA%%`` dir is the user-writable anchor WI-038
+    refuses). A non-existent directory is not system-scoped.
     """
     if sys.platform == "win32":
-        profile = Path(os.environ.get("USERPROFILE") or Path.home())
+        profile = _resolved(Path(os.environ.get("USERPROFILE") or Path.home()))
         try:
-            bin_resolved = bin_dir.resolve()
-            profile_resolved = profile.resolve()
-        except OSError:
+            return not bin_dir.is_relative_to(profile)
+        except (OSError, ValueError):
             return False
-        return not bin_resolved.is_relative_to(profile_resolved)
-    return bin_dir in SYSTEM_BIN_DIRS
+    try:
+        st = bin_dir.stat()
+    except OSError:
+        return False
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return False
+    return st.st_uid == 0
 
 
-def _scope_context(scope: ContextScope, *, exec_path: str | None) -> ScopeContext:
+def _default_system_scope_probe(bin_dir: Path) -> bool:
+    """System-scoped = an unprivileged user cannot write to *bin_dir* (WI-038).
+
+    This is the predicate that decides whether an actor's resolved bin dir may
+    anchor a root-run unit. It tests **ownership / writability**, not PATH
+    membership: a root-owned ``/opt/agent-suite/bin`` is accepted (the layout
+    ``docs/install-linux.md`` §2/§7 prescribes), while ``~/.local/bin`` and
+    uv-tool user dirs (owned by the operator) are refused. :data:`SYSTEM_BIN_DIRS`
+    is consulted first as an explicit trust set so the documented systemd search
+    path — and the test fixtures that patch it — are accepted regardless of host
+    filesystem ownership.
+    """
+    target = _resolved(bin_dir)
+    if any(target == _resolved(d) for d in SYSTEM_BIN_DIRS):
+        return True
+    return _is_system_owned(target)
+
+
+def is_system_scoped_bin_dir(
+    bin_dir: Path, *, probe: SystemScopeProbe | None = None
+) -> bool:
+    """Whether *bin_dir* is system-scoped, delegating to *probe* (WI-038).
+
+    Shared by ``schedule install`` and ``install-services`` so the two commands
+    agree about the same directory. ``probe`` defaults to the ownership /
+    writability measurement (:func:`_default_system_scope_probe`).
+    """
+    return (probe or _default_system_scope_probe)(bin_dir)
+
+
+def _current_uid() -> int | None:
+    """The invoking process's real uid (POSIX), or ``None`` (no uid on Windows)."""
+    return os.getuid() if os.name == "posix" else None
+
+
+def _current_euid() -> int | None:
+    """The invoking process's effective uid (POSIX), or ``None`` on Windows."""
+    return os.geteuid() if os.name == "posix" else None
+
+
+def _system_unit_uid() -> int | None:
+    """The uid the generated unit runs as (``User=root``), resolved from the name.
+
+    Measured (resolved via the password database) rather than hardcoded, so the
+    box's identity is a real lookup. ``None`` on Windows (no uid concept).
+    """
+    if os.name != "posix":
+        return None
+    try:
+        import pwd
+
+        return pwd.getpwnam("root").pw_uid
+    except KeyError:
+        return 0
+
+
+def _box_system_scoped() -> bool:
+    """Measured: are the directories the unit pins actually system-owned here?
+
+    The box is the scheduled unit's runtime (root, the pinned system PATH); this
+    checks the real filesystem state of those directories rather than asserting
+    the result — so the box side carries a measured value, not a tautology. On
+    Windows the unit concept does not apply (Task Scheduler runs ``-RunLevel
+    Highest``), reported system-scoped.
+    """
+    if sys.platform == "win32":
+        return True
+    return all(_is_system_owned(Path(entry)) for entry in SYSTEM_PATH.split(":"))
+
+
+def _scope_context(
+    scope: ContextScope,
+    *,
+    bin_dir: Path,
+    system_scoped: bool,
+    uid: int | None,
+    euid: int | None,
+    path_provenance: str,
+    config_sources: tuple[str, ...],
+) -> ScopeContext:
     """Build one side of the box-vs-actor invoking context (WI-038).
 
     ``assert_never`` over :class:`ContextScope` keeps the closed set exhaustive.
-    The box is anchored system-scoped (the unit pins only the system PATH); the
-    actor is system-scoped only when it resolved the CLI from a trusted dir.
+    ``system_scoped`` is a *measured* value the caller computed (the actor runs
+    the scope probe; the box runs :func:`_box_system_scoped`) — never hardcoded
+    here, so the box side is a genuine measurement, not a tautology.
     """
     match scope:
-        case ContextScope.BOX:
-            return ScopeContext(
-                scope=scope,
-                bin_dir=str(REFERENCE_BIN_DIR),
-                system_scoped=True,
-            )
-        case ContextScope.ACTOR:
-            assert exec_path is not None
-            bin_dir = Path(exec_path).parent
+        case ContextScope.BOX | ContextScope.ACTOR:
             return ScopeContext(
                 scope=scope,
                 bin_dir=str(bin_dir),
-                system_scoped=_is_system_bin_dir(bin_dir),
+                system_scoped=system_scoped,
+                uid=uid,
+                euid=euid,
+                path_provenance=path_provenance,
+                config_sources=config_sources,
             )
         case other:
             assert_never(other)
 
 
-def invoking_context_for(resolved: ResolvedCommand) -> InvokingContext:
+def build_invoking_context(
+    *,
+    actor_bin_dir: Path,
+    probe: SystemScopeProbe | None = None,
+    actor_uid: int | None = None,
+    actor_euid: int | None = None,
+    path_env: str | None = None,
+    actor_config_sources: tuple[str, ...] = (),
+) -> InvokingContext:
+    """The measured box-vs-actor invoking context (WI-038).
+
+    The **actor** is the process invoking the install / doctor: its bin dir,
+    uid/euid, PATH, and config sources. The **box** is the machine / host the
+    scheduled unit runs in: root, the pinned system PATH, and the suite
+    ``EnvironmentFile``. Both sides are measured — the actor's ``system_scoped``
+    runs the scope probe, the box's runs :func:`_box_system_scoped`, and ``uid``
+    is read from the process / resolved from the unit's ``User=root`` — so an
+    operator reading the result can tell a root/cron run (actor system-scoped;
+    box system-scoped) from an operator run that resolved the CLI from a
+    per-user bin dir. Shared by ``schedule install`` and the doctor so the two
+    report the same shape.
+    """
+    actor_probe = probe if probe is not None else _default_system_scope_probe
+    return InvokingContext(
+        actor=_scope_context(
+            ContextScope.ACTOR,
+            bin_dir=actor_bin_dir,
+            system_scoped=actor_probe(actor_bin_dir),
+            uid=actor_uid if actor_uid is not None else _current_uid(),
+            euid=actor_euid if actor_euid is not None else _current_euid(),
+            path_provenance=(
+                path_env if path_env is not None else os.environ.get("PATH", "")
+            ),
+            config_sources=actor_config_sources,
+        ),
+        box=_scope_context(
+            ContextScope.BOX,
+            bin_dir=REFERENCE_BIN_DIR,
+            system_scoped=_box_system_scoped(),
+            uid=_system_unit_uid(),
+            euid=None,
+            path_provenance=f"systemd-unit:{SYSTEM_PATH}",
+            config_sources=(str(SUITE_ENV_PATH),),
+        ),
+    )
+
+
+def invoking_context_for(
+    resolved: ResolvedCommand,
+    *,
+    probe: SystemScopeProbe | None = None,
+    actor_uid: int | None = None,
+    actor_euid: int | None = None,
+    path_env: str | None = None,
+    actor_config_sources: tuple[str, ...] = (),
+) -> InvokingContext:
     """The box-vs-actor context for a resolved schedule command (WI-038).
 
-    The box is the machine the scheduled unit runs in (system-scoped, since the
-    unit pins only the system PATH); the actor is the process that resolved
-    ``resolved.exec_path``. When the actor is not system-scoped the install is
-    refused by :func:`check_actor_system_scoped`.
+    Thin wrapper over :func:`build_invoking_context` using the resolved
+    command's bin dir as the actor anchor. When the actor is not system-scoped
+    the install is refused by :func:`check_actor_system_scoped`.
     """
-    return InvokingContext(
-        actor=_scope_context(ContextScope.ACTOR, exec_path=resolved.exec_path),
-        box=_scope_context(ContextScope.BOX, exec_path=None),
+    return build_invoking_context(
+        actor_bin_dir=Path(resolved.exec_path).parent,
+        probe=probe,
+        actor_uid=actor_uid,
+        actor_euid=actor_euid,
+        path_env=path_env,
+        actor_config_sources=actor_config_sources,
     )
 
 
@@ -758,17 +950,22 @@ _UNRESOLVED_HINT = (
 )
 
 
-def check_actor_system_scoped(resolved: ResolvedCommand) -> str | None:
+def check_actor_system_scoped(
+    resolved: ResolvedCommand,
+    *,
+    probe: SystemScopeProbe | None = None,
+) -> str | None:
     """Return a refusal reason when the actor resolved the CLI from a non-system
     bin directory, or ``None`` when it is system-scoped (WI-038).
 
     The reversed WI-038 approach merged the resolved bin dir into the unit PATH;
     this refuses it instead, so a root-run unit never searches a foreign /
-    user-writable directory. The remedy is the documented one: install the
-    component CLIs on a system PATH (:data:`SYSTEM_BIN_DIRS`).
+    user-writable directory. Scope is decided by ownership / writability
+    (:func:`is_system_scoped_bin_dir`): a root-owned ``/opt/agent-suite/bin`` is
+    accepted, a user-owned ``~/.local/bin`` is refused.
     """
     bin_dir = Path(resolved.exec_path).parent
-    if _is_system_bin_dir(bin_dir):
+    if is_system_scoped_bin_dir(bin_dir, probe=probe):
         return None
     return (
         f"resolved ExecStart {resolved.exec_path!r} from a non-system bin directory "
@@ -787,6 +984,7 @@ def install_schedules(
     search_dirs: tuple[Path, ...] | None = None,
     schedules: tuple[ScheduleSpec, ...] = SCHEDULES,
     unit_dir: Path = SYSTEMD_UNIT_DIR,
+    system_scope_probe: SystemScopeProbe | None = None,
 ) -> ScheduleReport:
     """Install all scheduled operations.
 
@@ -855,7 +1053,7 @@ def install_schedules(
         # scheduled unit runs in, system-scoped) vs the actor (the process that
         # resolved the CLI), so an operator can tell a root/cron run from an
         # operator run.
-        ctx = invoking_context_for(resolved)
+        ctx = invoking_context_for(resolved, probe=system_scope_probe)
 
         # Pre-write gate: absolute, present, executable.
         reason = check_exec_start_runnable(resolved)
@@ -876,7 +1074,7 @@ def install_schedules(
         # bin dir rather than baking that dir into the unit PATH (systemd) or
         # trusting it under the Task Scheduler (Windows). The refusal carries the
         # invoking context so the operator can see the actor bin dir that tripped it.
-        scope_reason = check_actor_system_scoped(resolved)
+        scope_reason = check_actor_system_scoped(resolved, probe=system_scope_probe)
         if scope_reason is not None:
             results.append(
                 ScheduleResult(
