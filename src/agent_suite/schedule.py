@@ -132,6 +132,19 @@ class InstallStatus(Enum):
     FAILED = "failed"
 
 
+class ContextScope(Enum):
+    """The closed set of invoking-context scopes (WI-038 box vs actor).
+
+    ``assert_never`` is used over this enum so a newly added scope can't be
+    silently unhandled in the scope-construction dispatch. ``BOX`` is the
+    machine/host environment the scheduled unit runs in; ``ACTOR`` is the
+    process that installed the schedule.
+    """
+
+    BOX = "box"
+    ACTOR = "actor"
+
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -196,6 +209,51 @@ SCHEDULES: tuple[ScheduleSpec, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class ScopeContext:
+    """One side of the box-vs-actor split (WI-038).
+
+    Both sides carry the same shape so the split is a real comparison: a bin
+    directory and whether it is system-scoped. The defect WI-038 records is a
+    root-run unit resolving a different estate than the operator that installed
+    it — the unit pins *only* the system PATH and refuses an actor that resolved
+    the CLI from a non-system (user-writable / foreign) bin directory, so the
+    box's root-run estate and the actor's agree. An operator reading a result
+    can tell a root/cron run (actor system-scoped; box system-scoped) from an
+    operator run that tried to anchor a per-user bin dir.
+    """
+
+    scope: ContextScope
+    bin_dir: str
+    system_scoped: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "scope": self.scope.value,
+            "bin_dir": self.bin_dir,
+            "system_scoped": self.system_scoped,
+        }
+
+
+@dataclass
+class InvokingContext:
+    """HOW a schedule install was invoked, split into the box and the actor.
+
+    Surfaced on every :class:`ScheduleResult` (WI-038) so an operator can tell a
+    root/cron run from an operator run and distinguish the box's estate (the
+    machine the scheduled unit runs in) from the actor's (who installed it).
+    """
+
+    actor: ScopeContext
+    box: ScopeContext
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "actor": self.actor.to_dict(),
+            "box": self.box.to_dict(),
+        }
+
+
 @dataclass
 class ScheduleResult:
     """The outcome of a schedule install/remove operation.
@@ -212,6 +270,7 @@ class ScheduleResult:
     detail: str = ""
     exec_start: str = ""
     verified: list[str] = field(default_factory=list)
+    invoking_context: InvokingContext | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -221,6 +280,9 @@ class ScheduleResult:
             "detail": self.detail,
             "exec_start": self.exec_start,
             "verified": self.verified,
+            "invoking_context": (
+                self.invoking_context.to_dict() if self.invoking_context else None
+            ),
         }
 
 
@@ -267,28 +329,96 @@ SYSTEMD_UNIT_DIR = Path("/etc/systemd/system")
 # actually resolved.
 REFERENCE_BIN_DIR = Path("/usr/local/bin")
 
-# The standard system PATH a systemd unit falls back to. A root-run unit gets a
-# stripped PATH (systemd's default, or root's sudo ``secure_path``), so the
-# doctor that ``alert-check`` shells out to resolves component CLIs against a
-# different set of binaries than the operator sees — a different estate (WI-038).
-# The generated unit therefore pins an explicit ``PATH``: the directory the
-# installer resolved ``ExecStart`` from first (where this host's component CLIs
-# actually live), then these system directories. It is rendered as a unit-level
-# default *before* ``EnvironmentFile`` so the operator's ``suite.env`` can still
+# The system PATH a generated unit pins — and *only* this. systemd runs the
+# unit as root with a stripped PATH, so without an explicit pin the doctor that
+# ``alert-check`` shells out to would resolve component CLIs against a different
+# set of binaries than the operator — a different estate (WI-038). The pin is
+# the standard system directories and nothing else: the previous WI-038 approach
+# prepended the directory the installer resolved ``ExecStart`` from, which can
+# hide a tampered / user-writable / foreign bin dir under a root-run unit. The
+# unit instead pins only the system PATH and the install *refuses* a resolved
+# executable whose bin directory is not one of these (see
+# :func:`check_actor_system_scoped`). It renders as a unit-level default
+# *before* ``EnvironmentFile`` so the operator's ``suite.env`` can still
 # override it.
 _SYSTEMD_FALLBACK_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+# The trusted system bin directories — the closed set an actor must resolve the
+# suite CLI from for a systemd install (WI-038). Anything outside this set is a
+# foreign / user-writable directory the unit must not search as root.
+SYSTEM_BIN_DIRS: tuple[Path, ...] = tuple(
+    Path(entry) for entry in _SYSTEMD_FALLBACK_PATH.split(":")
+)
 
-def _unit_path_environment(exec_path: str) -> str:
-    """The explicit ``PATH`` a generated unit runs with (WI-038).
 
-    ``exec_path`` is the absolute executable the unit invokes; its parent
-    directory is where the installing process resolved the suite CLI, which on a
-    pipx / venv / ``uv tool`` layout is the same ``bin/`` as the component CLIs
-    the doctor shells out to. Putting it first makes the root-run doctor resolve
-    the same estate the operator does, instead of systemd's stripped PATH.
+def _unit_system_path_environment() -> str:
+    """The ``PATH`` a generated unit runs with: the system directories only (WI-038).
+
+    Deliberately independent of where the installer resolved ``ExecStart``: the
+    unit must not search a foreign bin dir under root, so the actor's resolution
+    is gated by :func:`check_actor_system_scoped` rather than merged into PATH.
     """
-    return f"PATH={Path(exec_path).parent}:{_SYSTEMD_FALLBACK_PATH}"
+    return f"PATH={_SYSTEMD_FALLBACK_PATH}"
+
+
+def _is_system_bin_dir(bin_dir: Path) -> bool:
+    """Whether ``bin_dir`` is a system (not per-user / foreign) bin dir (WI-038).
+
+    POSIX: one of the trusted system directories (:data:`SYSTEM_BIN_DIRS`) a
+    systemd unit pins. Windows: any directory outside the user profile — the Task
+    Scheduler resolves a task's program against the system PATH, so an all-users
+    / machine location is system-scoped while a per-user (profile /
+    ``%%LOCALAPPDATA%%``) dir is the user-writable anchor WI-038 refuses.
+    """
+    if sys.platform == "win32":
+        profile = Path(os.environ.get("USERPROFILE") or Path.home())
+        try:
+            bin_resolved = bin_dir.resolve()
+            profile_resolved = profile.resolve()
+        except OSError:
+            return False
+        return not bin_resolved.is_relative_to(profile_resolved)
+    return bin_dir in SYSTEM_BIN_DIRS
+
+
+def _scope_context(scope: ContextScope, *, exec_path: str | None) -> ScopeContext:
+    """Build one side of the box-vs-actor invoking context (WI-038).
+
+    ``assert_never`` over :class:`ContextScope` keeps the closed set exhaustive.
+    The box is anchored system-scoped (the unit pins only the system PATH); the
+    actor is system-scoped only when it resolved the CLI from a trusted dir.
+    """
+    match scope:
+        case ContextScope.BOX:
+            return ScopeContext(
+                scope=scope,
+                bin_dir=str(REFERENCE_BIN_DIR),
+                system_scoped=True,
+            )
+        case ContextScope.ACTOR:
+            assert exec_path is not None
+            bin_dir = Path(exec_path).parent
+            return ScopeContext(
+                scope=scope,
+                bin_dir=str(bin_dir),
+                system_scoped=_is_system_bin_dir(bin_dir),
+            )
+        case other:
+            assert_never(other)
+
+
+def invoking_context_for(resolved: ResolvedCommand) -> InvokingContext:
+    """The box-vs-actor context for a resolved schedule command (WI-038).
+
+    The box is the machine the scheduled unit runs in (system-scoped, since the
+    unit pins only the system PATH); the actor is the process that resolved
+    ``resolved.exec_path``. When the actor is not system-scoped the install is
+    refused by :func:`check_actor_system_scoped`.
+    """
+    return InvokingContext(
+        actor=_scope_context(ContextScope.ACTOR, exec_path=resolved.exec_path),
+        box=_scope_context(ContextScope.BOX, exec_path=None),
+    )
 
 
 
@@ -391,10 +521,13 @@ def _systemd_service(spec: ScheduleSpec, *, resolved: ResolvedCommand | None = N
     ``resolved`` is the install-time resolution of ``spec.command``; without one
     the documented :data:`REFERENCE_BIN_DIR` rendering is used. Either way the
     ``ExecStart`` is absolute — systemd never searches the invoking user's PATH
-    (WI-045). The unit also pins an explicit ``PATH`` (the resolved executable's
-    directory first, then the system directories) so a root-run unit resolves the
-    same component binaries as the operator (WI-038); without it the hourly
-    doctor sees a different estate than the human who installed the suite.
+    (WI-045). The unit also pins an explicit ``PATH`` of *only* the standard
+    system directories so a root-run unit resolves the same system-scoped estate
+    as the operator (WI-038); it does **not** prepend the directory the
+    installer resolved ``ExecStart`` from — that can hide a tampered / foreign
+    bin dir under root, so a non-system actor bin dir is refused at install time
+    (:func:`check_actor_system_scoped`) instead of merged into the PATH. The pin
+    renders before ``EnvironmentFile`` so ``suite.env`` can still override it.
     """
     effective = resolved or reference_command(spec)
     command = effective.exec_start
@@ -408,7 +541,7 @@ def _systemd_service(spec: ScheduleSpec, *, resolved: ResolvedCommand | None = N
         f"Type=oneshot\n"
         f"ExecStart={command}\n"
         + "".join(f"Environment={e}\n" for e in spec.environment)
-        + f"Environment={_unit_path_environment(effective.exec_path)}\n"
+        + f"Environment={_unit_system_path_environment()}\n"
         + "EnvironmentFile=-/etc/agent-suite/suite.env\n"
         "User=root\n"
         "\n"
@@ -625,6 +758,26 @@ _UNRESOLVED_HINT = (
 )
 
 
+def check_actor_system_scoped(resolved: ResolvedCommand) -> str | None:
+    """Return a refusal reason when the actor resolved the CLI from a non-system
+    bin directory, or ``None`` when it is system-scoped (WI-038).
+
+    The reversed WI-038 approach merged the resolved bin dir into the unit PATH;
+    this refuses it instead, so a root-run unit never searches a foreign /
+    user-writable directory. The remedy is the documented one: install the
+    component CLIs on a system PATH (:data:`SYSTEM_BIN_DIRS`).
+    """
+    bin_dir = Path(resolved.exec_path).parent
+    if _is_system_bin_dir(bin_dir):
+        return None
+    return (
+        f"resolved ExecStart {resolved.exec_path!r} from a non-system bin directory "
+        f"{bin_dir} — refusing to anchor a root-run unit on a foreign / "
+        f"user-writable dir (the unit pins only the system PATH). "
+        f"{_UNRESOLVED_HINT}"
+    )
+
+
 def install_schedules(
     *,
     os_target: OSTarget | None = None,
@@ -648,9 +801,18 @@ def install_schedules(
 
     On systemd an unresolvable command is fatal and nothing is written: a unit
     with a bare ``ExecStart`` is worse than no unit, because it reports success
-    and then fails only when the timer fires. On Windows the Task Scheduler does
-    resolve a task's program against the system PATH, so an unresolved command
-    degrades to the bare name and is recorded as such rather than refused.
+    and then fails only when the timer fires. On either OS a resolved command
+    whose bin directory is not system-scoped is likewise refused (WI-038,
+    reversed): the scheduled run resolves the estate from the process PATH, so an
+    actor that resolved the CLI from a foreign / user-writable dir is rejected
+    rather than having that dir trusted under root / the Task Scheduler. On
+    Windows an unresolved command otherwise degrades to the bare name and is
+    recorded as such.
+
+    Every result carries an ``invoking_context`` (WI-038) recording how the
+    install was invoked — the box (the machine the unit runs in, system-scoped)
+    vs the actor (who resolved the CLI) — so an operator can tell a root/cron
+    run from an operator run.
 
     ``dry_run`` resolves and verifies the executable — so it is a real preflight —
     and prints the files that would be written without acting.
@@ -689,6 +851,12 @@ def install_schedules(
                 continue
             resolved = reference_command(spec, os_target=target)
 
+        # WI-038: record HOW this install was invoked — the box (the machine the
+        # scheduled unit runs in, system-scoped) vs the actor (the process that
+        # resolved the CLI), so an operator can tell a root/cron run from an
+        # operator run.
+        ctx = invoking_context_for(resolved)
+
         # Pre-write gate: absolute, present, executable.
         reason = check_exec_start_runnable(resolved)
         if reason is not None and target is OSTarget.SYSTEMD:
@@ -698,9 +866,29 @@ def install_schedules(
                     status=InstallStatus.FAILED,
                     detail=f"{reason}. {_UNRESOLVED_HINT}",
                     exec_start=resolved.exec_start,
+                    invoking_context=ctx,
                 )
             )
             continue
+
+        # WI-038 (reversed): the scheduled run resolves the estate from the
+        # process PATH, so refuse an actor that resolved the CLI from a non-system
+        # bin dir rather than baking that dir into the unit PATH (systemd) or
+        # trusting it under the Task Scheduler (Windows). The refusal carries the
+        # invoking context so the operator can see the actor bin dir that tripped it.
+        scope_reason = check_actor_system_scoped(resolved)
+        if scope_reason is not None:
+            results.append(
+                ScheduleResult(
+                    kind=spec.kind,
+                    status=InstallStatus.FAILED,
+                    detail=scope_reason,
+                    exec_start=resolved.exec_start,
+                    invoking_context=ctx,
+                )
+            )
+            continue
+
         pre_write_checks = [] if reason is not None else ["exec_start_runnable"]
 
         files = generate_schedule_files(
@@ -716,6 +904,7 @@ def install_schedules(
                     detail="dry-run: files would be written (not acted)",
                     exec_start=resolved.exec_start,
                     verified=pre_write_checks,
+                    invoking_context=ctx,
                 )
             )
             continue
@@ -736,6 +925,7 @@ def install_schedules(
                         detail=f"failed to write {path}: {exc}",
                         exec_start=resolved.exec_start,
                         verified=pre_write_checks,
+                        invoking_context=ctx,
                     )
                 )
                 failed = True
@@ -762,6 +952,7 @@ def install_schedules(
                                 detail=f"systemctl failed: {result.stderr.strip()[:200]}",
                                 exec_start=resolved.exec_start,
                                 verified=verified,
+                                invoking_context=ctx,
                             )
                         )
                         failed = True
@@ -775,6 +966,7 @@ def install_schedules(
                             detail=f"systemctl error: {exc}",
                             exec_start=resolved.exec_start,
                             verified=verified,
+                            invoking_context=ctx,
                         )
                     )
                     failed = True
@@ -796,6 +988,7 @@ def install_schedules(
                         detail=f"unit written but not verified: {verify_failure}",
                         exec_start=resolved.exec_start,
                         verified=verified,
+                        invoking_context=ctx,
                     )
                 )
                 continue
@@ -808,6 +1001,7 @@ def install_schedules(
                 detail="installed and verified" if verified else "installed",
                 exec_start=resolved.exec_start,
                 verified=verified,
+                invoking_context=ctx,
             )
         )
 
@@ -925,6 +1119,14 @@ def format_schedule_report(report: ScheduleReport, action: str) -> str:
             lines.append(f"    ExecStart={r.exec_start}")
         if r.verified:
             lines.append(f"    verified: {', '.join(r.verified)}")
+        if r.invoking_context is not None:
+            actor = r.invoking_context.actor
+            box = r.invoking_context.box
+            actor_scope = "system" if actor.system_scoped else "NON-system"
+            lines.append(
+                f"    invoking context: actor={actor.bin_dir} ({actor_scope}), "
+                f"box={box.bin_dir} (system)"
+            )
         for f in r.files_written:
             lines.append(f"    {f}")
     return "\n".join(lines)

@@ -156,11 +156,14 @@ with the reason, and the command exits non-zero — writing a file is not the
 success condition. `ExecStart` is resolved to an absolute path at install time;
 see [install-linux.md §7](install-linux.md) for why, and for `--bin-dir` when the
 CLIs are not on a system PATH. Each generated unit also pins an explicit `PATH`
-(the resolved executable's directory first, then the standard system
-directories): systemd runs the unit as root with a stripped `PATH`, and without
-this the doctor that `alert-check` shells out to would resolve different
-component binaries than the operator sees — a different estate (WI-038). The pin
-renders before `EnvironmentFile`, so `suite.env` can still override it.
+of **only** the standard system directories: systemd runs the unit as root with a
+stripped `PATH`, and without this the doctor that `alert-check` shells out to
+would resolve different component binaries than the operator sees — a different
+estate (WI-038). The pin is the system directories only (not the directory the
+installer resolved `ExecStart` from) so a root-run unit never searches a foreign
+or user-writable bin dir; an install that resolves the CLI from a non-system bin
+dir is refused instead. The pin renders before `EnvironmentFile`, so `suite.env`
+can still override it.
 
 The schedules are:
 

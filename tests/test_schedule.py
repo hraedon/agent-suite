@@ -15,19 +15,24 @@ import pytest
 from agent_suite.schedule import (
     REFERENCE_BIN_DIR,
     SCHEDULES,
+    SYSTEM_BIN_DIRS,
+    ContextScope,
     InstallStatus,
     OSTarget,
     ResolvedCommand,
     ScheduleKind,
     ScheduleReport,
     ScheduleResult,
+    ScopeContext,
     _systemd_service,
     _systemd_timer,
     _windows_task_script,
+    check_actor_system_scoped,
     check_exec_start_runnable,
     format_schedule_report,
     generate_schedule_files,
     install_schedules,
+    invoking_context_for,
     reference_command,
     remove_schedules,
     resolve_command,
@@ -117,6 +122,17 @@ def _no_which(executable: str) -> str | None:
     return None
 
 
+def _treat_as_system_scoped(monkeypatch: pytest.MonkeyPatch, bindir: Path) -> None:
+    """Treat *bindir* as a system bin dir for this test (WI-038).
+
+    A real install resolves system-scoped; tests build executables in a private
+    tmp dir (they cannot write into /usr/local/bin in CI), so SYSTEM_BIN_DIRS is
+    patched to include the tmp dir. Without this the reversed WI-038 gate would
+    refuse the install as a non-system bin dir — which is exactly the behavior
+    the non-system refusal tests below assert separately."""
+    monkeypatch.setattr("agent_suite.schedule.SYSTEM_BIN_DIRS", (bindir,))
+
+
 # ---------------------------------------------------------------------------
 # File generation
 # ---------------------------------------------------------------------------
@@ -169,8 +185,9 @@ def test_generated_files_use_suite_env_not_hardcoded_config() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_install_dry_run_prints_files(tmp_path: Path) -> None:
+def test_install_dry_run_prints_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
     report = install_schedules(
         os_target=OSTarget.SYSTEMD,
         dry_run=True,
@@ -186,8 +203,15 @@ def test_install_dry_run_prints_files(tmp_path: Path) -> None:
         assert "dry-run" in r.detail
 
 
-def test_install_dry_run_windows(tmp_path: Path) -> None:
+def test_install_dry_run_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     bindir = _fake_bin_dir(tmp_path)
+    # WI-038 (reversed): a successful install is system-scoped on either OS.
+    # The test builds its executables in a private tmp dir (it cannot write into
+    # a real system bin dir in CI), so mark that dir system-scoped to exercise
+    # the success path; the non-system refusal is asserted separately.
+    _treat_as_system_scoped(monkeypatch, bindir)
     report = install_schedules(
         os_target=OSTarget.WINDOWS_TASK,
         dry_run=True,
@@ -205,10 +229,13 @@ def test_install_dry_run_windows(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_install_systemd_writes_files_and_enables(tmp_path: Path) -> None:
+def test_install_systemd_writes_files_and_enables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     unit_dir = tmp_path / "systemd"
     unit_dir.mkdir()
     bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
     report = install_schedules(
         os_target=OSTarget.SYSTEMD,
         dry_run=False,
@@ -225,10 +252,13 @@ def test_install_systemd_writes_files_and_enables(tmp_path: Path) -> None:
         assert (unit_dir / f"{spec.name}.timer").exists()
 
 
-def test_install_fails_on_systemctl_error(tmp_path: Path) -> None:
+def test_install_fails_on_systemctl_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     unit_dir = tmp_path / "systemd"
     unit_dir.mkdir()
     bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
     runner = StubRunner({
         ("systemctl", "daemon-reload"): _completed(returncode=1, stderr="failed"),
     })
@@ -406,7 +436,9 @@ def test_dry_run_is_a_real_preflight_not_a_print(tmp_path: Path) -> None:
     assert all(r.status is InstallStatus.FAILED for r in report.results)
 
 
-def test_install_fails_when_systemd_parses_a_different_execstart(tmp_path: Path) -> None:
+def test_install_fails_when_systemd_parses_a_different_execstart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Verification reads systemd's own parse, not the string we just wrote.
 
     Stub systemd into reporting the pre-fix bare name: install must refuse to
@@ -415,6 +447,7 @@ def test_install_fails_when_systemd_parses_a_different_execstart(tmp_path: Path)
     unit_dir = tmp_path / "systemd"
     unit_dir.mkdir()
     bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
     report = install_schedules(
         os_target=OSTarget.SYSTEMD,
         dry_run=False,
@@ -428,11 +461,14 @@ def test_install_fails_when_systemd_parses_a_different_execstart(tmp_path: Path)
     assert all("not verified" in r.detail for r in report.results)
 
 
-def test_install_fails_when_the_timer_did_not_arm(tmp_path: Path) -> None:
+def test_install_fails_when_the_timer_did_not_arm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`enable --now` returning 0 is not evidence the timer is running."""
     unit_dir = tmp_path / "systemd"
     unit_dir.mkdir()
     bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
     report = install_schedules(
         os_target=OSTarget.SYSTEMD,
         dry_run=False,
@@ -445,11 +481,14 @@ def test_install_fails_when_the_timer_did_not_arm(tmp_path: Path) -> None:
     assert all("not active" in r.detail for r in report.results)
 
 
-def test_install_reports_the_checks_that_actually_passed(tmp_path: Path) -> None:
+def test_install_reports_the_checks_that_actually_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """An INSTALLED result names its evidence; presence of a file is not evidence."""
     unit_dir = tmp_path / "systemd"
     unit_dir.mkdir()
     bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
     report = install_schedules(
         os_target=OSTarget.SYSTEMD,
         dry_run=False,
@@ -612,33 +651,128 @@ def _unit_path_value(unit: str) -> str:
     return line.removeprefix("Environment=PATH=")
 
 
-def test_doctor_alert_unit_pins_explicit_path_from_resolved_bin_dir() -> None:
-    """WI-038: the unit runs as root with systemd's stripped PATH, but the doctor
-    ``alert-check`` shells out to resolves component CLIs via the process PATH
-    (``shutil.which`` + subprocess). Without an explicit PATH the scheduled doctor
-    sees a different estate than the operator. The unit pins a PATH whose first
-    entry is the directory the installer resolved ``ExecStart`` from, so the
-    root-run doctor resolves the same binaries the operator installed."""
+_SYSTEM_PATH = ":".join(str(p) for p in SYSTEM_BIN_DIRS)
+
+
+def test_unit_pins_system_path_only_not_resolved_bin_dir() -> None:
+    """WI-038 (reversed): the unit pins *only* the system PATH. The previous
+    approach prepended the directory the installer resolved ``ExecStart`` from,
+    which can hide a tampered / foreign bin dir under a root-run unit. The unit
+    must not search the resolved bin dir — a non-system actor resolution is
+    refused at install time instead (see test_install_refuses_non_system_bin_dir)."""
     spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
-    resolved = ResolvedCommand("/opt/agent-suite/bin/agent-suite", "alert-check")
+    resolved_dir = "/opt/agent-suite/bin"
+    resolved = ResolvedCommand(f"{resolved_dir}/agent-suite", "alert-check")
     unit = _systemd_service(spec, resolved=resolved)
-    assert _unit_path_value(unit).split(":")[0] == "/opt/agent-suite/bin"
+    path = _unit_path_value(unit)
+    assert path == _SYSTEM_PATH
+    assert resolved_dir not in path.split(":")
+
+
+def test_unit_system_path_contains_reference_bin_dir() -> None:
+    """The pinned system PATH contains REFERENCE_BIN_DIR, so a reference copy
+    installed verbatim on a system-scoped host resolves the system component
+    CLIs (rather than pinning nothing useful)."""
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
+    path = _unit_path_value(_systemd_service(spec))
+    assert str(REFERENCE_BIN_DIR) in path.split(":")
+    assert path == _SYSTEM_PATH
 
 
 def test_unit_path_renders_before_environment_file() -> None:
-    """The pinned PATH is a unit-level default the operator's ``suite.env`` may
-    override, so it must render before ``EnvironmentFile`` (file-beats-unit)."""
+    """The pinned system PATH is a unit-level default the operator's ``suite.env``
+    may override, so it must render before ``EnvironmentFile`` (file-beats-unit)."""
     spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
     unit = _systemd_service(spec, resolved=ResolvedCommand("/opt/x/bin/agent-suite", ""))
     assert unit.index("Environment=PATH=") < unit.index("EnvironmentFile=")
 
 
-def test_reference_unit_path_first_entry_is_reference_bin_dir() -> None:
-    """The deploy/ reference rendering pins ``REFERENCE_BIN_DIR`` first, so a
-    reference copy installed verbatim on a system-scoped host resolves the system
-    component CLIs rather than nothing."""
-    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
-    assert _unit_path_value(_systemd_service(spec)).split(":")[0] == str(REFERENCE_BIN_DIR)
+def test_check_actor_system_scoped_refuses_non_system_dir(tmp_path: Path) -> None:
+    """An actor that resolved the CLI from a non-system bin dir is refused (WI-038,
+    reversed) rather than having that dir merged into the unit PATH."""
+    reason = check_actor_system_scoped(
+        ResolvedCommand(str(tmp_path / "agent-suite"), "alert-check")
+    )
+    assert reason is not None
+    assert "non-system bin directory" in reason
+
+
+def test_check_actor_system_scoped_accepts_system_dir() -> None:
+    """A system bin dir resolves cleanly (no refusal)."""
+    assert check_actor_system_scoped(ResolvedCommand("/usr/local/bin/agent-suite")) is None
+
+
+def test_invoking_context_box_vs_actor() -> None:
+    """The invoking context surfaces both scopes (WI-038): the box (the machine
+    the unit runs in, system-scoped) and the actor (who resolved the CLI). An
+    actor that resolved from a system dir agrees with the box; one that resolved
+    from a foreign dir is flagged non-system so an operator reading the result
+    can tell a root/cron run from an operator run."""
+    system_ctx = invoking_context_for(ResolvedCommand("/usr/local/bin/agent-suite"))
+    assert system_ctx.actor.system_scoped is True
+    assert system_ctx.box.system_scoped is True
+    assert system_ctx.box.scope is ContextScope.BOX
+    assert system_ctx.actor.scope is ContextScope.ACTOR
+    assert system_ctx.box.bin_dir == str(REFERENCE_BIN_DIR)
+    assert system_ctx.actor.bin_dir == "/usr/local/bin"
+
+    foreign_ctx = invoking_context_for(ResolvedCommand("/home/op/.local/bin/agent-suite"))
+    assert foreign_ctx.actor.system_scoped is False
+    assert foreign_ctx.box.system_scoped is True
+
+    assert system_ctx.to_dict()["actor"] == ScopeContext(
+        scope=ContextScope.ACTOR, bin_dir="/usr/local/bin", system_scoped=True
+    ).to_dict()
+
+
+def test_install_refuses_non_system_bin_dir_records_context(tmp_path: Path) -> None:
+    """WI-038 (reversed): an install that resolves the CLI from a non-system bin
+    dir is FAILED, writes nothing, and records the invoking context so the
+    operator can see the actor bin dir that tripped the refusal."""
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    bindir = _fake_bin_dir(tmp_path)  # a tmp dir — non-system by construction
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=False,
+        runner=_verifying_runner(bindir),
+        which=_no_which,
+        search_dirs=(bindir,),
+        unit_dir=unit_dir,
+    )
+    assert all(r.status is InstallStatus.FAILED for r in report.results)
+    assert all("non-system bin directory" in r.detail for r in report.results)
+    assert list(unit_dir.iterdir()) == []
+    for r in report.results:
+        assert r.invoking_context is not None
+        assert r.invoking_context.actor.system_scoped is False
+        assert r.invoking_context.box.system_scoped is True
+        assert r.to_dict()["invoking_context"] == r.invoking_context.to_dict()
+
+
+def test_install_records_invoking_context_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A successful system-scoped install records the invoking context with both
+    scopes system-scoped."""
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=True,
+        runner=StubRunner(),
+        which=_no_which,
+        search_dirs=(bindir,),
+    )
+    for r in report.results:
+        assert r.status is InstallStatus.INSTALLED, r.detail
+        ctx = r.invoking_context
+        assert ctx is not None
+        assert ctx.actor.system_scoped is True
+        assert ctx.box.system_scoped is True
+        assert ctx.actor.bin_dir == str(bindir)
 
 
 def test_deploy_reference_copies_match_generator_output():
