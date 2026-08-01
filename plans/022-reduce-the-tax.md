@@ -94,36 +94,70 @@ and WI-021 are drift between them. Under the mandate: **delete
 refuse-and-say-so, which is the principle already ratified for content
 (cairn WI-035) applied to state.
 
-### A3. Stop vendoring the spine pin
+### A3. Consolidate into one workspace — RATIFIED
 
-Four `SUITE.lock` copies of the umbrella's regista pin is why a version
-bump cost four PRs. Publish the umbrella lock as a consumable artifact;
-components read the pin rather than carrying a hand-synced copy. No
-back-compat shim needed.
+The deciding question was whether any component is meant to be
+independently published. **Owner's answer (2026-08-01): publication
+needs do not outrank ease of use or development — the suite's value as a
+portfolio artifact is stronger if the suite itself works well.** That
+removes the only argument for the current topology.
 
-### A4. Repo topology — the one genuinely open question
+**Measured coordination surface, today:**
 
-The strongest available argument: **agent-suite largely exists to manage
-the consequences of there being seven repos.** Lock generation, spine
-pinning, release manifests, cross-component doctors, bootstrap
-orchestration — a substantial fraction of the umbrella's purpose is
-coordination overhead that a single workspace would not create.
+| Machinery | Count |
+|---|---|
+| CI workflow files | 9 across 7 repos |
+| `SUITE.lock` files | 6, each a hand-synced copy of umbrella data |
+| `dev-install.py` / `suite_lock.py` copies | 4 repos × 2 |
+| Identifier-gate script copies | 7 |
+| CLI-conformance harness copies | 7 |
+| **Total coordination surface** | **~6,300 lines** |
 
-Consolidating is cheap now and expensive once anyone external depends on
-the current shape, so this is close to now-or-never. The deciding factor
-is one thing only the owner knows: **is any component intended to be
-independently published or open-sourced?** If yes, keep it separate. If
-no, it is paying repo overhead for an option nobody will exercise.
+Plus `agent_suite/lock.py` (996 lines) and `release_manifest.py` (737),
+whose central job is reconciling versions *between repositories*.
 
-Recommendation, pending that answer: merge `regista`, `agent-notes`,
-`agent-provenance` and `agent-suite` into one uv-workspace repo with
-independently versioned packages; keep `dossier` (a deployable service),
-`acb`, and `agent-wake` separate. That removes most of the tax while
-preserving the genuinely separable things. If A3 lands first and the
-remaining friction is tolerable, this can still be declined — but it
-should be declined deliberately, not by default.
+Most of that is six near-identical copies of the same three ideas. In a
+single uv workspace:
 
-### A5. Tracker admin plane
+- 9 workflows → 1 (plus agent-wake's, if it stays out per A5).
+- 6 `SUITE.lock` files → **0**. There is no spine to pin when regista is
+  in-tree; the lock's cross-repo revision pairing becomes vacuous. (The
+  artifact-era half — verifying installed wheel hashes against the
+  release manifest on a deployed host — is real and survives, so
+  `lock.py` shrinks rather than vanishing.)
+- `dev-install.py` / `suite_lock.py` → 0. "Develop against the lock" is
+  just "develop against the tree."
+- 7 identifier gates and 7 conformance harnesses → 1 each.
+- Cross-component changes become **one atomic PR** instead of N PRs with
+  merge-order constraints. Tonight's four-PR spine bump becomes a
+  one-line edit.
+- **This also subsumes the previous draft's "stop vendoring the spine
+  pin" item** — there is nothing left to vendor.
+
+**Scope:** one workspace repo containing `regista`,
+`agent-provenance`, `agent-notes`, `agent-suite`, `dossier` and `acb`
+as independently-versioned packages. `dossier` being a deployable
+service is not a reason to split — a monorepo builds a container from a
+subdirectory with a path filter. **`agent-wake` stays separate**, not
+for publication reasons but because A6 descopes it: keeping an
+experimental component out of the GA repo's CI is the point.
+
+**What agent-suite becomes.** A substantial part of the umbrella's
+purpose is coordinating repositories, and that purpose evaporates. What
+remains is genuinely valuable and should be stated as its new charter:
+the operator CLI — bootstrap, onboard/offboard, backup/restore/
+verify-restore, schedule/services, doctor aggregation, release
+manifests. It stops being "the thing that holds seven repos together"
+and becomes "the thing an operator runs."
+
+**Migration shape (one pass, no interim state):** `git subtree`-style
+imports preserving each component's history into `packages/<name>/`, one
+root `pyproject.toml` workspace, one CI with path filters, one
+identifier gate, one conformance harness; archive the old repos
+read-only with a pointer. Do it in a single change — a partially
+consolidated estate is worse than either endpoint.
+
+### A4. Tracker admin plane
 
 The gates deadlocked twice this week: nine items could not leave a false
 state because `adversarial_review` demanded a lineage fact the history
@@ -132,7 +166,7 @@ chain. Add a **signed admin-correction transition**, typed as a
 correction, recording actor, reason and the state it overrides. This
 adds a path; it removes no check.
 
-### A6. Descope agent-wake from the GA gate
+### A5. Descope agent-wake from the GA gate
 
 Roughly a quarter of the estate's open items, the youngest component,
 and not on the critical path for multi-user attested work. Mark it
@@ -175,10 +209,11 @@ available.
 ## Sequencing
 
 Part 0 first — it is a day's work and it deletes most of A1's
-complexity. A5 and B1 next, so the tracker stops accumulating false
+complexity. A4 and B1 next, so the tracker stops accumulating false
 state. B2 next, because it makes everything after it cheaper to review.
-Then A4 as a decision (not code), followed by A3, A2, A1. A6 is a scope
-call available immediately. B3–B5 fold into whatever touches them.
+A5 is a scope call available immediately. Then A3 (the consolidation) as
+one pass, and A2 and A1 land inside or just after it — both are far
+cheaper once there is a single tree to change atomically. B3–B5 fold into whatever touches them.
 
 ## The metric to watch
 
