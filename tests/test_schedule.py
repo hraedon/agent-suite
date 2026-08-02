@@ -565,7 +565,9 @@ def test_windows_task_action_separates_program_from_arguments() -> None:
 
 def test_reference_command_is_os_shaped() -> None:
     spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.CHAIN_INTEGRITY)
-    assert reference_command(spec).exec_path == str(REFERENCE_BIN_DIR / "cairn")
+    # POSIX-rendered on every host: the systemd reference is a POSIX artifact,
+    # so str(REFERENCE_BIN_DIR / ...) (backslashed on Windows) would be wrong.
+    assert reference_command(spec).exec_path == "/usr/local/bin/cairn"
     # Windows has no canonical install prefix (`pip install` uses whichever
     # Scripts/ the interpreter owns) and its scheduler does resolve against PATH.
     assert reference_command(spec, os_target=OSTarget.WINDOWS_TASK).exec_path == "cairn"
@@ -993,15 +995,17 @@ def test_deploy_reference_copies_match_generator_output():
 
     repo = Path(__file__).resolve().parents[1]
     for spec in SCHEDULES:
-        assert (repo / "deploy/systemd" / f"{spec.name}.service").read_text() == (
-            _systemd_service(spec)
-        ), spec.name
-        assert (repo / "deploy/systemd" / f"{spec.name}.timer").read_text() == (
-            _systemd_timer(spec)
-        ), spec.name
-        assert (repo / "deploy/windows" / f"{spec.name}.ps1").read_text() == (
-            _windows_task_script(spec)
-        ), spec.name
+        # encoding="utf-8": the default is the locale codepage on Windows
+        # (cp1252), which mangles the em-dash in the .ps1 header.
+        assert (repo / "deploy/systemd" / f"{spec.name}.service").read_text(
+            encoding="utf-8"
+        ) == _systemd_service(spec), spec.name
+        assert (repo / "deploy/systemd" / f"{spec.name}.timer").read_text(
+            encoding="utf-8"
+        ) == _systemd_timer(spec), spec.name
+        assert (repo / "deploy/windows" / f"{spec.name}.ps1").read_text(
+            encoding="utf-8"
+        ) == _windows_task_script(spec), spec.name
 
 
 # ---------------------------------------------------------------------------
