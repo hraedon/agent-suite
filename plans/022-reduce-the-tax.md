@@ -1090,16 +1090,52 @@ Tessera or immudb (transparency), Vault (secrets), AD (identity),
 hindsight (memory), Postgres, GitHub for Git/PR/CI. All narrow
 interfaces, none of them on the UI's join path.
 
-### The honest cost of this reversal
+### The honest cost — and the off-ramp that bounds it
 
-We own tracker UX forever: search, filtering, permissions, notifications,
-mobile, and the long tail of edge cases a mature tracker has absorbed.
-That is a real, recurring cost and it is the strongest argument for the
-position being withdrawn here. The mitigation is scope discipline — a
-tracker for a small team whose transitions are mostly performed by
-agents needs far less UX than one for a fifty-person org, and the moment
-it starts growing boards, swimlanes and comment threads, this decision
-should be revisited.
+We own tracker UX: search, filtering, permissions, notifications,
+mobile, and the long tail a mature tracker has absorbed. That is a real
+recurring cost and the strongest argument against this reversal.
+
+But it is **not** forever, and that changes the calculus. Owner
+clarification (2026-08-01): **Jira is already in use in the work
+organisation — what is unavailable is agentic integration with it, not
+Jira itself.** So the exit is not a hypothetical procurement, it is a
+system already running that people already know. If adoption grows to
+the point of needing boards, swimlanes, comment threads and mobile, the
+answer is to move coordination to Jira, not to reimplement it.
+
+That converts an open-ended liability into a bounded one, and it yields
+a design rule:
+
+**Build the tracker, but couple to it as thinly as if it were already
+external.** The attest-never-mirror rule from H3 was written for a
+third-party tracker; apply it to our own. The attestation service holds
+signed events that reference a work item by opaque ID plus the
+primitives no tracker has (claims with TTL/heartbeat, lineage-aware
+verdicts) — it does not reach into titles, statuses, assignees or
+comments. Then migrating coordination to Jira later means importing
+work items and re-pointing references, not rebuilding attestation.
+H3 stops being a rule about someone else's tracker and becomes our
+migration insurance.
+
+Two consequences worth stating:
+
+- **Keep coordination Jira-shaped.** Work items should map cleanly onto
+  Jira issues. Where the suite has no Jira analogue — signed
+  transitions, lineage gates, agent claims — that is the *attestation*
+  layer, which travels with us and is not part of the migration.
+  Anything else that has no Jira analogue deserves a hard question.
+- **The revisit trigger is now concrete**, not a vibe: boards,
+  swimlanes, comment threads, or a request for mobile. Any of those
+  means the tracker has outgrown its scope, and the response is the
+  Jira migration this rule was designed to keep cheap.
+
+Secondary note: the owner observes that OSS self-hosted alternatives
+remain thin, so a tracker that turns out well might justify being opened
+up as a group effort. That does not change the architecture — publication
+still does not outrank ease of use (A3) — but it raises the value of
+keeping the coordination layer clean and legible rather than
+idiosyncratic.
 
 **G0 is untouched by any of this.** Signing must still move to the actor
 boundary; that is a correctness defect regardless of which tools are
