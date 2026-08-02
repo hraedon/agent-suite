@@ -56,17 +56,37 @@ What this deletes from the design, permanently:
 - `actor_kind` becomes derivable from the principal kind instead of a
   separately-stored field that can contradict it.
 
-For the 54 tracker events: correct them in place as part of the cutover.
-They are individually inspectable.
+For the 54 stray tracker events: **do not correct them in place.** An
+earlier draft proposed exactly that, and the cross-lineage review
+(Sol, 2026-08-01) correctly refused it — rewriting signed history is a
+demonstration of the very operator-forgery problem this plan now
+addresses in D9. Append signed correction events, rebuild the derived
+view, or archive and reset those chains too.
 
 **This is the whole argument of the plan.** The identity model was
 retrofitted after data existed, and nearly all of that data is
 self-observation. Discarding it converts a permanent compatibility
 burden into a one-time export.
 
+**Freeze an archive verifier.** D1 deletes older envelope readers from
+live services, which would leave nothing able to validate the retained
+evidence — the exit criterion below would be unsatisfiable. Before the
+reset, build and tag a **frozen verifier artifact**: source,
+dependencies, schemas, keys, test vectors, and a reproducible container.
+Legacy handling is removed from live services, never from the only
+software that can read the archive.
+
+**Pre-truncation gate (all required; "the export command succeeded" is
+not one of them):** immutable database snapshot; deterministic bundles;
+verification by the production verifier *and* an independent
+implementation; a restore-and-verify drill on a different host;
+preservation of keys, revocation state, schemas, binaries and build
+inputs; externally anchored manifest hashes; then a cooling-off period
+before anything is deleted.
+
 **Exit:** the identity specification has no "legacy" section; a fresh
 `agent_provenance` chain begins under one grammar; the archived bundle
-verifies standalone.
+verifies standalone under the frozen verifier.
 
 ## Part A — Structural changes, now cheap under the mandate
 
@@ -80,10 +100,33 @@ else. Lineage capture (regista WI-214), delegation (WI-008) and witness
 enrollment (WI-238) become implementations of it rather than parallel
 designs.
 
-Still design for a **third** model: an IdP subject will eventually
-replace today's locally-minted one. But "designed for" now means a
-stable subject field and a documented re-issue path — not a live mapping
-table.
+**AD/LDAP is in scope, not hypothetical** (owner, 2026-08-01): this
+estate already runs AD. Entra may follow and is deferred; an AD-to-Entra
+path is desirable but not required.
+
+The cross-lineage review sharpened the model in a way that **amends the
+ratified WI-055 decision, and the owner should confirm it**: the
+envelope's actor subject should be an **immutable internal
+`principal_id`**, not `kind:subject` and not any directory attribute.
+The `kind:subject` grammar remains the human-facing addressing and
+display form; external identities attach as **typed,
+authority-qualified signed binding records** carrying `authority`,
+`subject_type`, an opaque binary-safe `subject_value`, a validity
+interval, and evidence. Rebinding is then a signed event, not a new
+envelope version.
+
+For AD, bind **`objectGUID` plus a stable forest/issuer identifier**.
+`sAMAccountName` and `userPrincipalName` are mutable; `distinguishedName`
+changes on rename or OU move; `objectSID` is domain-relative and
+reissued on domain migration (`sIDHistory` is transitional evidence, not
+identity). `objectGUID` survives rename, OU move and ordinary
+same-forest domain moves — but **not** cross-forest recreation, which is
+why issuer qualification and signed rebinding are mandatory rather than
+optional. For a later Entra move, bind the same internal principal to
+Entra's immutable tenant-qualified object ID; retain
+`msDS-ConsistencyGuid`/`onPremisesImmutableId` as migration evidence if
+AD Connect exposes it, but do not let today's envelope depend on a
+particular sync configuration.
 
 ### A2. Delete agent-notes' dual write path
 
@@ -150,28 +193,41 @@ verify-restore, schedule/services, doctor aggregation, release
 manifests. It stops being "the thing that holds seven repos together"
 and becomes "the thing an operator runs."
 
-**Migration shape (one pass, no interim state):** `git subtree`-style
-imports preserving each component's history into `packages/<name>/`, one
-root `pyproject.toml` workspace, one CI with path filters, one
-identifier gate, one conformance harness; archive the old repos
-read-only with a pointer. Do it in a single change — a partially
-consolidated estate is worse than either endpoint.
+**Migration shape:** `git subtree`-style imports preserving each
+component's history into `packages/<name>/`, one root `pyproject.toml`
+workspace, one CI with path filters, one identifier gate, one
+conformance harness; archive the old repos read-only with a pointer.
+
+*Atomic release does not mean one enormous PR* — an earlier draft
+conflated the two. Build ordered, individually reviewable commits on an
+integration branch, rehearse the deployment, then cut **one**
+incompatible release. What must be atomic is the release and the
+estate's end state, not the code review.
 
 ### A4. Tracker admin plane
 
 The gates deadlocked twice this week: nine items could not leave a false
 state because `adversarial_review` demanded a lineage fact the history
 lacked, and the only bypass would write a false assertion into a signed
-chain. Add a **signed admin-correction transition**, typed as a
-correction, recording actor, reason and the state it overrides. This
-adds a path; it removes no check.
+chain. Add a **signed admin-correction transition**, typed as a correction,
+recording actor, reason and the state it overrides. This adds a path; it
+removes no check.
+
+It is nonetheless a **privileged bypass** and must be built as one: a
+dedicated capability rather than ambient authority, an exact target
+event/state (never a broad "fix this item"), append-only semantics, a
+mandatory reason, and independent approval for integrity-sensitive
+transitions. A correction path that is easier to use than the gate it
+bypasses will become the default route.
 
 ### A5. Descope agent-wake from the GA gate
 
 Roughly a quarter of the estate's open items, the youngest component,
 and not on the critical path for multi-user attested work. Mark it
 experimental and non-GA-gating. Clearest single cost/benefit lever
-available.
+available. Constraint from the cross-lineage review: **notification
+delivery must never become part of attestation correctness** — if a
+missed wake can change what the chain asserts, the descope is unsafe.
 
 ## Part B — Mechanical fixes
 
@@ -179,7 +235,11 @@ available.
   a commit or PR reference that resolves. Eight regista items sat in
   review this week with no code anywhere; nothing detected it.
 - **B2. Baseline-diff CI gating.** Record main's failure set; a PR fails
-  only when it *adds* to it. Restores CI's information content.
+  only when it *adds* to it. Restores CI's information content —
+  **but must never baseline a security or integrity failure.** Only
+  explicitly classified legacy failures may be baselined, each with a
+  named owner and an expiry date, or the suite normalises broken gates,
+  which is worse than the noise it replaces (cross-lineage review).
 - **B3. Health checks name the action they performed.** A machine-
   readable `action_performed` field; a check that cannot name an
   executed action is definitionally an observation, and the conformance
@@ -209,10 +269,25 @@ the chain-opening event (WI-227). Shipped separately that is four
 breaking versions and four reader paths.
 
 Cut **one** new envelope version carrying all of them, and delete every
-older reader path rather than keeping compatibility branches. Part 0
-makes this nearly free: the corpus that would have forced back-compat is
-being archived anyway. This is the single clearest instance of the
-mandate — five migrations and their explainers collapse into one format.
+older reader path from live services (Part 0 keeps a frozen verifier for
+the archive). The corpus that would have forced back-compat is being
+archived anyway.
+
+**It must carry six distinguishable identity dimensions, or D8 forces a
+second envelope revision** (cross-lineage review, Sol): stable
+principal, agent instance, execution/session, delegating principal *and*
+delegation scope, signing key, and credential-issuance record. An
+envelope encoding only `kind:subject` + `key_id` cannot express
+per-agent authority later.
+
+**And it must carry the anchoring hooks D9 needs:** domain-separated
+chain commitments, explicit hash-algorithm identifiers, log/witness
+identifiers, and extensible receipt references. Omitting these
+guarantees another bundle-format change and possibly another envelope
+change — exactly what this item exists to prevent.
+
+Never place reusable Vault tokens or accessors in an envelope; sign a
+stable *issuance-record identifier* instead.
 
 ### D2. Project-prefixed work-item identifiers
 
@@ -238,14 +313,16 @@ Fold it in. Two DSNs become one, which also **collapses two of the four
 rollout units in the credential-migration plan into one** — a direct
 reduction in that plan's blast radius, not just its length.
 
-### D4. Squash regista's migration history to a baseline
+### D4. Collapse regista's migration history to a post-reset baseline
 
 Schema version 44 means a fresh install replays 44 migrations and CI
-carries the test surface for all of them. With the corpus reset, that
-history has no live consumer. Collapse it to a single baseline schema at
-v1. New installs run one migration; the migration test matrix collapses
-with it. This is only safe while nothing external depends on
-intermediate states — that window is now.
+carries the test surface for all of them. Collapse to a single baseline.
+**Do not renumber it "v1"** — that collides with real historical
+version 1 and makes every future conversation ambiguous; use a clearly
+identified post-reset baseline version, and retain the old migrations
+under an archival tag. Migration *count* alone is not operational debt;
+the test matrix and the replay path are. Exit is a proven
+current-schema restore, not a smaller number.
 
 ### D5. CLI contract v1, enforced atomically
 
@@ -271,19 +348,80 @@ reject non-string Vault values instead of coercing with `str()`, and add
 `store_material()`. Small blast radius, and the coercion bug is a latent
 repeat of WI-231.
 
+### D8. Per-agent credential isolation — PULLED IN
+
+An earlier draft deferred this to "when a second human appears." The
+owner rejected that and the cross-lineage review agreed, with the
+decisive reasoning: **waiting for a second human confuses human tenancy
+with agent isolation.** Several independently-acting security principals
+already exist on this host today. Host-wide AppRole sharing defeats
+actor-level attestation outright — an event names one agent while any
+process holding the shared credential could have performed it, which
+makes the suite's core claim unsupportable rather than merely weak.
+
+Minimum defensible implementation in this pass:
+
+- A distinct Vault entity per agent instance, with short-lived, narrowly
+  scoped tokens.
+- acb authenticates the host bootstrap identity, then mints
+  per-agent/session credentials from explicit capability policy.
+- An auditable issuance record binding `principal_id`,
+  `agent_instance_id`, `session_id`, credential lease/entity, and
+  delegated authority.
+- Agents cannot mint peers' credentials.
+- One agent is revocable without affecting the host or other agents.
+- Tests proving token A cannot exercise token B's capabilities.
+
+Cost estimate: 1–2 engineering weeks across acb provisioning, Vault
+policy layout, operator-CLI lifecycle, schema/events, migration and
+isolation tests — materially cheaper now, while D1, D7, identity,
+delegation and the consolidation are all already open.
+
+This also retires the transitional host-boundary profile and the
+"expires when a second human appears" clause in the credential-migration
+note, and collapses that note's unit structure further.
+
+### D9. Operator-forgery defense — PULLED IN, bounded
+
+The earlier deferral was half right and half wrong. Right: signatures
+controlled by one operator cannot prevent that operator fabricating
+history. Wrong: that this justifies doing nothing. **Independent
+anchoring provides meaningful post-publication rewrite detection now.**
+
+Minimum defensible implementation:
+
+- Periodically commit chain heads into a Merkle tree.
+- Submit checkpoints to an independently administered append-only
+  service (public transparency log or trusted timestamp authority).
+- Store signed checkpoint receipts and inclusion proofs in evidence
+  bundles.
+- Verification distinguishes `locally_valid`, `externally_anchored`, and
+  `anchored_before <time>` as separate states.
+- **State the limitation in the product, not just the plan:** this
+  detects rewriting *after* anchoring; it cannot prove pre-anchor events
+  were truthful.
+
+Cost estimate: ~1 engineering week. If no acceptable external service
+exists, ship the commitment and receipt *interfaces* now and anchor to
+owner-controlled offline media as an interim — but in that case **do not
+claim operator-forgery resistance**. The interfaces are what keep this
+out of a future envelope revision; the external service can arrive
+later.
+
 ### Explicitly NOT in scope, even now
 
 Being able to break things is not a reason to. These stay deferred with
 their existing rationale:
 
-- **Per-agent credential isolation (Plan 017).** The host-as-boundary
-  profile is ratified as transitional and expires when a second human
-  principal appears. Build it then, against a real requirement.
-- **Operator-forgery defense (WI-007).** Needs an external anchoring or
-  witness ecosystem to mean anything; today's partial mitigations are
-  the right posture.
-- **IdP integration.** No IdP exists yet. A1 must not *preclude* it;
-  building for it now would be speculative.
+- **Entra ID integration.** Deferred, but A1's binding-record design
+  must not preclude it — an AD-to-Entra path is desirable and, per the
+  owner, not a calamity if unreachable. AD/LDAP itself is *in* scope
+  (A1); it was previously excluded on the false premise that no
+  directory existed.
+- **Full workload identity** (SPIFFE-style attestation replacing the
+  AppRole bootstrap). D8 delivers per-agent isolation on top of the
+  existing bootstrap; replacing the bootstrap mechanism itself is a
+  separate, later change with its own trigger.
 - **Any rewrite of the signing scheme itself.** It works, it is
   reviewed, and nothing about the reset argues for touching it.
 
@@ -331,6 +469,20 @@ they break once, together. B3–B5 fold into whatever touches them.
 - **The archive is real.** Part 0 exports and verifies before it
   truncates. Discarding without a verified archive is not the same
   decision.
+
+## Review record
+
+Cross-lineage review by `openai/gpt-5.6-sol` (2026-08-01, run on
+mvmcc02) adjudicated the two contested deferrals in the owner's favour
+and corrected four things in the draft: rewriting the 54 stray events in
+place would have demonstrated the very forgery problem under discussion;
+deleting old readers would have left the archive unverifiable; "atomic
+release" was conflated with "one enormous PR"; and baseline-diff CI
+gating could normalise broken security gates. All are incorporated
+above. One item needs owner confirmation: A1 now proposes an immutable
+internal `principal_id` as the signed subject with `kind:subject` as the
+addressing form, which **amends** the previously ratified WI-055
+decision.
 
 ## The metric to watch
 
