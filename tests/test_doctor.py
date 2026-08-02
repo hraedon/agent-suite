@@ -133,12 +133,15 @@ def test_umbrella_shape_matches_contract() -> None:
     assert d["lock"]["matches"] is None  # no lock file in test env
 
 
-def test_doctor_records_invoking_context() -> None:
+def test_doctor_records_invoking_context(monkeypatch: pytest.MonkeyPatch) -> None:
     """DEFECT 2a: the doctor JSON carries an invoking context (uid/euid, how PATH
     was resolved, config sources) split into box (machine/host) and actor
     (invoking user), each with measured values — so a scheduled red is triageable
-    from doctor output. The box side is measured system-scoped; the actor side is
-    measured from this process."""
+    from doctor output. The box measurement is pinned here (runner SYSTEM_PATH
+    ownership varies; its honesty is asserted in test_schedule); this test covers
+    the plumbing into the doctor report. The actor side is measured from this
+    process."""
+    monkeypatch.setattr("agent_suite.schedule._box_system_scoped", lambda: True)
     outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
     report = _aggregate_safe(installed=_installed_all(), runner=_runner_for(outputs))
     assert report.invoking_context is not None

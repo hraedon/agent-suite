@@ -6,7 +6,9 @@ All tests use stubbed runners — no real systemd or Windows.
 from __future__ import annotations
 
 import shlex
+import stat
 import subprocess
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -139,6 +141,19 @@ def _treat_as_system_scoped(monkeypatch: pytest.MonkeyPatch, bindir: Path) -> No
     refuse the install as a non-system bin dir — which is exactly the behavior
     the non-system refusal tests below assert separately."""
     monkeypatch.setattr("agent_suite.schedule.SYSTEM_BIN_DIRS", (bindir,))
+
+
+def _treat_box_as_system_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the box-side scope measurement to True for this test (WI-038).
+
+    ``_box_system_scoped`` honestly measures ownership of the pinned SYSTEM_PATH
+    directories, and on GitHub-hosted runners ``/usr/local/bin`` (and friends)
+    are deliberately agent-writable — the measurement correctly reports False
+    there, which is the very hazard WI-038 exists to refuse. Tests that assert
+    the *plumbing* (the measured value reaches the context/report) pin the
+    measurement; the measurement itself is asserted separately by
+    test_box_scope_measurement_reports_user_writable_system_path."""
+    monkeypatch.setattr("agent_suite.schedule._box_system_scoped", lambda: True)
 
 
 # ---------------------------------------------------------------------------
@@ -714,18 +729,28 @@ def test_check_actor_system_scoped_accepts_system_dir() -> None:
 
 def test_opt_root_owned_dir_is_accepted_via_ownership_not_path_membership() -> None:
     """DEFECT 1: the scope predicate tests ownership/writability, not PATH
-    membership. ``/opt`` is root-owned (uid 0), mode 755, and NOT on the system
-    PATH allowlist — exactly the ``/opt/agent-suite`` venv layout
-    ``docs/install-linux.md`` §2/§7 prescribes. The literal-membership predicate
-    this replaces refused it; the ownership predicate accepts it. A CLI resolved
-    under a root-owned ``/opt`` directory anchors cleanly."""
+    membership. ``/opt`` is NOT on the system PATH allowlist, so whatever the
+    predicate answers for it is decided by ownership alone — exactly the
+    ``/opt/agent-suite`` venv layout ``docs/install-linux.md`` §2/§7 prescribes.
+    The expected verdict is computed independently from ``stat`` (root-owned and
+    not group/other-writable → accepted) rather than assumed, because hosts
+    differ: a real install box has a root-owned mode-755 ``/opt`` and is
+    accepted; a GitHub-hosted runner deliberately makes ``/opt`` agent-writable
+    and must be refused — the very hazard WI-038 exists for. Either verdict
+    proves the predicate is ownership, not membership; the literal-membership
+    predicate this replaces answered False for ``/opt`` unconditionally."""
     opt = Path("/opt")
     assert opt.exists(), "/opt must exist to demonstrate the docs layout"
-    assert opt.stat().st_uid == 0, "/opt must be root-owned to demonstrate the case"
     assert opt not in SYSTEM_BIN_DIRS  # acceptance is NOT path membership
-    assert is_system_scoped_bin_dir(opt) is True  # accepted via OWNERSHIP
-    # bin_dir of "/opt/agent-suite" is "/opt" (root-owned) → accepted
-    assert check_actor_system_scoped(ResolvedCommand("/opt/agent-suite")) is None
+    st = opt.stat()
+    system_owned = st.st_uid == 0 and not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    assert is_system_scoped_bin_dir(opt) is system_owned  # decided via OWNERSHIP
+    # bin_dir of "/opt/agent-suite" is "/opt" → accepted iff root-owned
+    reason = check_actor_system_scoped(ResolvedCommand("/opt/agent-suite"))
+    if system_owned:
+        assert reason is None
+    else:
+        assert reason is not None and "non-system bin directory" in reason
 
 
 def test_user_owned_local_bin_dir_is_refused(tmp_path: Path) -> None:
@@ -767,7 +792,7 @@ def test_documented_opt_bin_dir_install_works_when_system_scoped(
     ]
 
 
-def test_invoking_context_box_vs_actor() -> None:
+def test_invoking_context_box_vs_actor(monkeypatch: pytest.MonkeyPatch) -> None:
     """The invoking context surfaces both scopes (WI-038): the box (the machine
     the unit runs in, system-scoped) and the actor (who resolved the CLI). Both
     sides carry MEASURED values — system_scoped runs the probe / the pinned-path
@@ -775,7 +800,10 @@ def test_invoking_context_box_vs_actor() -> None:
     from the unit's User=root, and PATH provenance + config sources are recorded.
     An actor that resolved from a system dir agrees with the box; one that
     resolved from a foreign dir is flagged non-system so an operator reading the
-    result can tell a root/cron run from an operator run."""
+    result can tell a root/cron run from an operator run. The box measurement is
+    pinned (host SYSTEM_PATH ownership varies by runner); its honesty is covered
+    by test_box_scope_measurement_reports_user_writable_system_path."""
+    _treat_box_as_system_scoped(monkeypatch)
     system_ctx = invoking_context_for(
         ResolvedCommand("/usr/local/bin/agent-suite"),
         actor_uid=1000,
@@ -829,10 +857,13 @@ def test_invoking_context_box_vs_actor() -> None:
     ).to_dict()
 
 
-def test_build_invoking_context_measures_real_uid_when_not_injected() -> None:
+def test_build_invoking_context_measures_real_uid_when_not_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Without injected values the actor uid/euid/PATH are measured from the
     process, so the doctor (which does not know the schedule's resolved CLI) can
     build the same shape against its own invocation."""
+    _treat_box_as_system_scoped(monkeypatch)
     ctx = build_invoking_context(
         actor_bin_dir=REFERENCE_BIN_DIR,
         path_env=None,
@@ -842,10 +873,29 @@ def test_build_invoking_context_measures_real_uid_when_not_injected() -> None:
     assert ctx.box.system_scoped is True
 
 
-def test_install_refuses_non_system_bin_dir_records_context(tmp_path: Path) -> None:
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="box scope is ownership-measured on POSIX only"
+)
+def test_box_scope_measurement_reports_user_writable_system_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The box-side system_scoped is a real measurement, not an assertion: when
+    the pinned SYSTEM_PATH resolves to user-owned (agent-writable) directories —
+    as on GitHub-hosted runners, where this suite runs — it reports False. This
+    is what keeps the pinned value in the plumbing tests above honest."""
+    assert tmp_path.stat().st_uid != 0  # owned by the (non-root) test user
+    monkeypatch.setattr("agent_suite.schedule.SYSTEM_PATH", str(tmp_path))
+    ctx = build_invoking_context(actor_bin_dir=REFERENCE_BIN_DIR, path_env=None)
+    assert ctx.box.system_scoped is False
+
+
+def test_install_refuses_non_system_bin_dir_records_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """WI-038 (reversed): an install that resolves the CLI from a non-system bin
     dir is FAILED, writes nothing, and records the invoking context so the
     operator can see the actor bin dir that tripped the refusal."""
+    _treat_box_as_system_scoped(monkeypatch)
     unit_dir = tmp_path / "systemd"
     unit_dir.mkdir()
     bindir = _fake_bin_dir(tmp_path)  # a tmp dir — non-system by construction
@@ -876,6 +926,7 @@ def test_install_records_invoking_context_on_success(
     unit_dir.mkdir()
     bindir = _fake_bin_dir(tmp_path)
     _treat_as_system_scoped(monkeypatch, bindir)
+    _treat_box_as_system_scoped(monkeypatch)
     report = install_schedules(
         os_target=OSTarget.SYSTEMD,
         dry_run=True,
@@ -957,12 +1008,13 @@ def _fake_bins_in(bindir: Path) -> Path:
 
 
 def test_uid_helpers_return_none_under_windows(monkeypatch: pytest.MonkeyPatch) -> None:
-    """On Windows there is no uid concept. The helpers key off ``os.name``; this
-    patches it in isolation (no ``Path`` construction in the body, so Python
-    3.14's WindowsPath guard is not tripped) and confirms each returns ``None``."""
+    """On Windows there is no uid concept. The helpers key off ``sys.platform``
+    (the same guard mypy narrows on when type-checking the win32 platform, where
+    ``os.getuid``/``pwd`` do not exist); this patches it in isolation and
+    confirms each returns ``None``."""
     from agent_suite.schedule import _current_euid, _current_uid, _system_unit_uid
 
-    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr("sys.platform", "win32")
     assert _current_uid() is None
     assert _current_euid() is None
     assert _system_unit_uid() is None
