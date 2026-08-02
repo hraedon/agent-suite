@@ -190,8 +190,15 @@ cutover.
 - **G-2.** A cross-lineage review verdict verifies to a distinct
   workload instance, not merely a distinct agent name.
 - **G-3.** Undeclared lineage **lowers** assurance; it never satisfies
-  the cross-lineage gate. *(Current docs may state the opposite —
-  verify.)*
+  a distinctness requirement. *Verified 2026-08-02 (regista WI-239): the
+  two paths currently disagree.* `adversarial_review` is fail-closed and
+  correctly blocks an undeclared reviewer. But the human-gate escalation
+  uses `same_lineage()`, which treats `None` as **independent** — so an
+  undeclared-lineage reviewer who supplies `same_lineage_acknowledged`
+  passes the first gate and then never triggers the human requirement,
+  because unknown independence reads as proven independence. Fix:
+  `same_lineage()` returns three states — SAME, DISTINCT, UNKNOWN — and
+  UNKNOWN escalates exactly as SAME does.
 - **G-4.** Revoking one agent's credentials leaves other agents and the
   host unaffected, proven by test.
 - **G-5.** Every doctor check either names the action it performed or
@@ -245,4 +252,6 @@ cutover.
   operational cost on this estate.
 - **O-3.** Decide the workload-attestation mechanism for R-09 (Vault
   Agent, SPIFFE/SPIRE, or acb-issued short-lived credentials).
-- **O-4.** Confirm G-3 against current code.
+- ~~**O-4.** Confirm G-3 against current code.~~ **Closed 2026-08-02** —
+  regista WI-239 filed; the defect is real but narrower and more
+  composed than reported. See G-3.
