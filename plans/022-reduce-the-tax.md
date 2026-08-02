@@ -220,6 +220,57 @@ mandatory reason, and independent approval for integrity-sensitive
 transitions. A correction path that is easier to use than the gate it
 bypasses will become the default route.
 
+### A6. Work items live in regista only — the duplication above A2
+
+**This is the largest simplification available and we all missed it,
+including two rounds of review, because we were reasoning inside the
+existing component boundaries.**
+
+regista already has first-class work items: `_work_items.py`,
+`_work_items_api.py`, `_transition.py`, `_claims.py`. agent-notes
+implements a **second, parallel** work-item system — ~4,200 lines across
+`work_item_model.py` and `core/work_item/` — with its own Postgres
+tables, and then a convergence layer to keep the two in agreement:
+`regista_work_item_id` and `pending_sync` columns, a dedicated
+`810_regista_convergence.sql` migration, an outbox (551 lines), a
+projection (274 lines), and 38 references to the foreign id.
+
+A2 deletes the duplication *inside* agent-notes (`_native` vs
+`_regista`). This deletes the duplication *between* agent-notes and
+regista — the one that produced it. `pending_sync` is a column that
+exists solely because there are two truths.
+
+Look at how much of the current backlog is this one fact: WI-020
+(non-atomic close in agent-notes' own transaction), WI-021 (agent-notes'
+own fold resurrecting tombstoned items), BC-027 (change_log written on
+one path, not the other), WI-052 (`find --text` incomplete against
+agent-notes' own index), the dual identifier space that makes D2
+necessary, the second database that makes D3 necessary, and the review
+gate deadlocking because lineage lives in regista events while items
+live in agent-notes.
+
+**Decision: work items, transitions, claims and reviews live in regista
+and nowhere else.** agent-notes keeps what is genuinely its own —
+memories, breadcrumbs, links, vocabulary, workspaces/projects, the
+skills, and the CLI — and becomes a *client*, not a second system of
+record.
+
+Consequences, all reductions:
+
+- The outbox, projection, convergence migration and `pending_sync`
+  disappear. So does the sync-drift bug class, permanently.
+- **D3 becomes almost trivial** — most of what the `agent_notes`
+  database holds is the duplicate.
+- **D2 gets simpler**: one identifier space to renumber, not two that
+  must stay correlated.
+- A2 is subsumed: deleting `_native` is moot when neither path remains.
+- The gate deadlock's root cause is removed — items and their signed
+  events become the same records.
+
+Cost: this is the single biggest change in the plan, and it should be
+sequenced first among the code changes, because A2, D2 and D3 all shrink
+behind it. Doing it after them means doing parts of them twice.
+
 ### A5. Descope agent-wake from the GA gate
 
 Roughly a quarter of the estate's open items, the youngest component,
@@ -443,9 +494,10 @@ irreversible steps get explicit guards:
 Part 0 first — it is a day's work and it deletes most of A1's
 complexity. A4 and B1 next, so the tracker stops accumulating false
 state. B2 next, because it makes everything after it cheaper to review.
-A5 is a scope call available immediately. Then A3 (the consolidation) as
-one pass, and A2 and A1 land inside or just after it — both are far
-cheaper once there is a single tree to change atomically.
+A5 is a scope call available immediately. **A6 comes first among the
+code changes** — A2, D2 and D3 all shrink behind it, and doing them
+first means doing parts of them twice. Then A3 (the consolidation) as
+one pass, with A1 landing inside or just after it.
 
 Part D rides the same passes rather than forming its own phase: D2, D3
 and D4 belong to the consolidation change; D1 and D6 belong with A1's
@@ -469,6 +521,51 @@ they break once, together. B3–B5 fold into whatever touches them.
 - **The archive is real.** Part 0 exports and verifies before it
   truncates. Discarding without a verified archive is not the same
   decision.
+
+## Part E — Settled decisions revisited under explicit leave
+
+The owner granted explicit leave to reopen anything, including ratified
+decisions, on the grounds that anchoring to prior choices is itself a
+cost. Four, beyond A6:
+
+**E1. Drop the `kind:subject` grammar from the data model.** Once the
+signed subject is an immutable internal `principal_id` (A1, per Sol),
+the grammar is a *display and addressing* convention — so stop treating
+it as a contract. Keeping it as one means parsing at three layers,
+enforcement at enrollment and append, a prefix collision question, and
+the Azure Key Vault problem we already found (AKV secret names forbid
+`:`, so the grammar needs an escaping rule that exists only because the
+grammar exists). Instead: principals carry a `kind` field and a display
+name; the CLI may *render* `agent:foo` for humans; nothing parses it.
+This deletes the grammar-enforcement work from A1 rather than
+implementing it.
+
+**E2. Right-size the archive ceremony.** Sol's pre-truncation gate
+(independent verifier implementation, cross-host restore drill,
+externally anchored manifest hashes, cooling-off) is correct for
+production evidence — but Part 0's corpus is two months of the suite
+watching itself, already judged to have no downstream consumer. Applying
+production-evidence ceremony to it contradicts the judgement that
+justified discarding it. Proportionate gate: immutable database
+snapshot, deterministic export, verification by the frozen verifier,
+recorded checksums, cooling-off. Skip the independent reimplementation
+and the external anchoring *for this corpus*; those belong to D9 and to
+real evidence going forward.
+
+**E3. Consider deleting agent-wake rather than descoping it.** It has
+~24 open items, no consumer outside its own tests and one wake this
+session, and its function — notify a session or a human — is a webhook
+plus a queue. Descoping keeps a component alive that nobody depends on;
+deleting it and re-adding ~200 lines when a real requirement appears may
+be cheaper than carrying it. Owner's call, since it is his build.
+
+**E4. Do not manage this rewrite inside the thing being rewritten.**
+A6, D2 and D3 renumber identifiers, merge databases and move the
+work-item system — while the tracker is the coordination mechanism for
+doing so. Freeze the tracker for the duration and run the rewrite from a
+plain checklist in the repo, then re-enter tracked work once the new
+system of record is live. This is a bootstrapping hazard, not a process
+preference.
 
 ## Review record
 
