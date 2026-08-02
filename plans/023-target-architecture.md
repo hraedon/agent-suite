@@ -169,7 +169,7 @@ estate.
 
 | Step | Action | Exit condition |
 |---|---|---|
-| M1 | Freeze mutation-producing development. Snapshot and export the corpus; build the frozen verifier. **Do not truncate.** | Archive verifies under the frozen verifier; manifest with hashes recorded |
+| M1 | Freeze mutation-producing development. Snapshot and export the corpus; build the frozen verifier. **Do not truncate.** | **Partially met 2026-08-02** — see below |
 | M2 | Consolidate to one uv-workspace monorepo (six components; agent-wake deleted) | One CI, one identifier gate, one conformance harness; all suites at baseline |
 | M3 | **R-10 + R-09 together** — actor-boundary signing and per-agent credential isolation as one security boundary | No service can sign as another principal; one agent revocable alone; test proves token A cannot use token B's capability |
 | M4 | Adopt DSSE/in-toto and the transparency log; retire the bespoke transparency layer | Offline verification per R-21 passes; bespoke Merkle/witness code deleted |
@@ -180,6 +180,39 @@ estate.
 **M3 precedes M5 deliberately.** Resetting first would begin the
 "clean" corpus under server-forged signatures and require a second
 cutover.
+
+**M1 status (2026-08-02).** Executed: `/home/itadmin/estate-archive/`
+holds a 265,747-event full dump, an `agent_provenance` schema dump, a
+full-corpus bundle, and a frozen verifier built from the `v0.5.5` tag
+(25 exact pins, CPython 3.14.4, key *references* only — no private
+bytes). Reconstituted from scratch and re-verified: dump restores clean,
+`replay` reports `halted: 0` / `replayed_drift: 0`, all **261,105
+signatures verified**, and an independent SQL recomputation of the
+global chain found 0 breaks, 0 forks, 1 genesis.
+
+**M1 is NOT complete, and M5 is blocked on four things** (agent-suite
+WI-060, regista WI-240/241/242):
+
+1. **Bundle export produces bundles its own verifier refuses** — 803 MiB
+   against a 512 MB cap, exit 0, and no `--until-seq` to chunk with
+   (WI-240). Offline verification of the full corpus is therefore
+   currently impossible.
+2. **12,866 `agent_provenance` ed25519 events verify only against a key
+   registered in `agent_notes`** (WI-241). Signatures are sound; the
+   bundle ships the wrong key, so third-party offline verification of
+   that slice fails. Interacts with R-07/R-08 and should be decided with
+   the identity model, not patched.
+3. **Verifiability depends on one host's 0600 plaintext keyfile.** Lose
+   `~/.config/regista/keys.json` and 248,239 HMAC events are
+   unverifiable forever (WI-060). Plus: zero anchors, zero sealed
+   segments, no offsite copy, no cooling-off.
+4. **`replay` mutates the store it verifies**, and `Regista.__init__`
+   issues DDL on connect, so verification cannot run against a
+   read-only restore (WI-242) — which R-21 requires.
+
+This is the discipline working as designed: every one of these would
+have been discovered *after* the source data was destroyed had the reset
+run first.
 
 ---
 
