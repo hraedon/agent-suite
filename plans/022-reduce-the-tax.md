@@ -567,6 +567,97 @@ plain checklist in the repo, then re-enter tracked work once the new
 system of record is live. This is a bootstrapping hazard, not a process
 preference.
 
+## Part F — What agent-notes and agent-wake become
+
+Owner framing (2026-08-01): dossier was always meant to formalise the
+WI/BC concept for a team; agent-wake has the least to do and the most
+residual risk; and the open question is whether agent-notes earns its
+keep against a Confluence-equivalent knowledgebase complementing
+dossier, ideally with **personal agent memory alongside a formalised,
+sanitised group knowledgebase**.
+
+### The measurement
+
+| Thing | Rows | Machinery |
+|---|---|---|
+| work items (agent-notes) | 1,895 | duplicate of regista's (A6) |
+| memories | 544 | 1,811 lines: engine Protocol, capability + health enums, external `hindsight` adapter |
+| links | **18** | a subsystem, plus its own audit defects (WI-023) |
+
+544 memories do not need a pluggable multi-engine abstraction with an
+external service adapter. 18 links do not need a subsystem.
+
+### F1. The group knowledgebase mostly already exists — it is the repo
+
+Before building a Confluence-equivalent, notice what group knowledge is
+made of here: `plans/`, `docs/`, reflections, and the decision records
+now living in work items. That is version-controlled, reviewed by PR,
+and already attested. **What is missing is not a wiki — it is rendering
+and access for humans who do not read git.**
+
+Recommendation: dossier gains a *knowledge surface* that renders repo
+markdown plus regista decision records, with its existing project ACLs
+for access control. Do **not** build page hierarchies, WYSIWYG editing
+or comment threads; the suite's differentiator is attestation, not an
+editor, and a wiki is a large project containing none of it. If rich
+authoring is genuinely wanted later, integrate an existing wiki by
+attested reference rather than reimplementing one.
+
+### F2. Personal memory stays, but as a feature, not a component
+
+The owner's instinct is right and it maps onto a distinction the suite
+already makes: **group knowledge is reviewed, sanitised and shared;
+agent memory is unreviewed, per-actor, high-churn, and may contain
+secrets.** Those have different access control, retention and
+sanitisation needs, and conflating them is what makes a single
+"knowledgebase" unsatisfying for both.
+
+Keep memory, and simplify it hard: one per-principal store (in regista,
+alongside everything else) with embeddings and retrieval — no engine
+Protocol, no capability matrix, no external adapter until something
+concrete demands one. Because it is unreviewed and may hold secrets,
+memory inherits **cairn's content-encryption posture**: the same
+confidentiality argument, applied to a second content type.
+
+**The best part of this split is the boundary itself.** Promotion from
+personal memory to group knowledge is a review-and-sanitise step — which
+is precisely the kind of transition this suite exists to attest. It
+turns two vaguely-related stores into one pipeline with a signed
+promotion event, and it gives the knowledgebase provenance that a wiki
+cannot offer.
+
+### F3. agent-notes dissolves as a component
+
+After A6 (work items to regista), F1 (group knowledge to dossier) and
+F2 (memory as a regista-backed feature), what remains is a **CLI and a
+set of skills** — a client, not a service with a database. Keep the
+ergonomics, drop the component: no second store, no projection, no
+outbox, no doctor of its own, no independent version. Delete the links
+subsystem outright at 18 rows, or reduce it to a field.
+
+### F4. agent-wake: delete, absorb the useful part
+
+The owner's own reasoning is the strongest available: it depends on
+Claude Code **development-channel** functionality that is undocumented
+and may change or vanish without warning. Building notification
+infrastructure for an attestation suite on an unstable private interface
+is a standing liability, and this session's own test showed the
+green-doctor-zero-subscribers failure mode (agent-wake WI-007).
+
+Delete it. The genuinely useful part — deliver a message to a human, and
+queue it durably if nobody is listening — is a webhook plus a queue, and
+belongs in dossier or a small dossier helper where the human surface
+already lives. Re-add an adapter if and when the harness offers a
+supported channel. Constraint carried forward from A5: **notification
+delivery must never be part of attestation correctness.**
+
+### Net component count
+
+From seven to **four**: regista (event/state plane, work items,
+memory), cairn (capture), dossier (human surface: team WI/BC, knowledge,
+notifications), acb (credential broker) — plus the operator CLI and the
+agent-side CLI/skills as clients rather than components.
+
 ## Review record
 
 Cross-lineage review by `openai/gpt-5.6-sol` (2026-08-01, run on
