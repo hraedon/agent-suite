@@ -926,6 +926,92 @@ development is fine and the above stands) or *no cloud at all* (in which
 case Forgejo becomes the natural single answer for Git, issues and CI —
 and it happens to also be the tracker candidate).
 
+## Part I — The final target
+
+Owner ruling (2026-08-01): *no cloud* means **no new runtime SaaS**;
+GitHub stays; Forgejo only if it solves something GitHub does not.
+
+**Forgejo does not earn adoption.** Its issue tracker is less capable
+than GitHub's, and self-hosting is not needed when GitHub is already
+sanctioned. Adopting it would mean running new infrastructure to get
+less. Likewise, the self-hosted agent-aware trackers in H2 (Plane, It's
+a Plan, PlanDB, Huly) are allowed under the constraint but are **new
+infrastructure to operate** — GitHub Issues plus Projects costs zero
+additional runtime and already has custom fields, views, cross-repo
+projects, a good API, webhooks and mobile.
+
+**Coordination is therefore GitHub Issues + Projects.** This supersedes
+A6 and D2:
+
+- **A6 is superseded.** Work items do not move *into* regista; they move
+  into GitHub. regista holds signed events that *reference* an issue ID,
+  plus the agent primitives GitHub lacks — claims with TTL and
+  heartbeat, lineage-aware review verdicts. Per H3: **attest, never
+  mirror.** No titles, statuses or assignees in our store.
+- **D2 is unnecessary.** GitHub issue references (`owner/repo#123`) are
+  already globally unique, which was the entire point of prefixed
+  identifiers. The ~1,895 tracked items migrate by API; most are closed
+  or debris.
+
+### What is left
+
+| Layer | Answer | New runtime cost |
+|---|---|---|
+| Git, PRs, CI | GitHub | none (existing) |
+| Coordination / tracker | GitHub Issues + Projects | none (existing) |
+| Identity | AD (Entra later) | none (existing) |
+| Secrets | Vault | none (existing) |
+| State store | Postgres | none (existing) |
+| Agent memory | hindsight | none (existing, works) |
+| Transparency log | **Tessera or immudb, self-hosted** | one small binary |
+| Evidence capture | **build: collector** (cairn) | — |
+| Attestation + agent primitives | **build: attestation service** (regista, reduced) | — |
+| Agent workflow surface | **keep: CLI + skills** (agent-notes, reduced) | client, not a service |
+| Evidence view | **keep: minimal** (dossier, reduced) | fold into the service |
+| Credential injection | acb, only where Vault Agent/workload identity cannot | narrow |
+
+**Two deployables we build, one binary we adopt, everything else already
+running.**
+
+### What gets deleted
+
+- **agent-wake** entirely (F4).
+- **regista's transparency layer**: bespoke Merkle, the singleton global
+  chain, witness delivery, RFC 3161 batching, archive segmentation, the
+  bespoke bundle format (G1) — replaced by DSSE/in-toto plus a local log.
+- **regista's server-side signing** (G0) — moves to the actor boundary
+  in the collector. This is the correctness fix, not a simplification.
+- **dossier's tracker half**: board, issue editing, assignment,
+  comments, roadmap (G2).
+- **agent-notes' work-item store**, outbox, projection, `pending_sync`,
+  convergence migration, and the 18-row link subsystem.
+- **The second database** (D3), and the cross-repo coordination
+  machinery once consolidated (A3).
+
+### What survives, and why it is the point
+
+cairn's harness interception, completeness and degradation detection,
+content encryption and normalisation; the mapping of **human delegation
+→ agent session → tool actions → commits and reviews**; the
+cross-lineage review policy and the skills that make agents follow a
+process. None of that is served by GitHub, by any tracker in H2, or by
+SLSA/in-toto — which cover artifact *production*, not interactive agent
+sessions, omitted-hook detection, or human delegation.
+
+That is the product. Everything above it is adopted; everything below it
+was scaffolding.
+
+### Sequencing under this target
+
+The reset (Part 0) and consolidation (A3) still come first — they are
+prerequisites regardless of what survives. Then, in order: move signing
+to the actor boundary (G0, the correctness fix); stand up the local
+transparency log and switch to DSSE/in-toto (G1, replacing D6 and much
+of D9); migrate coordination to GitHub Issues and delete the tracker
+halves (I/G2); then per-agent isolation (D8) against the reduced
+surface. A1's identity work shrinks to AD binding plus delegation,
+because the tracker no longer owns identity at all.
+
 ## Review record
 
 Cross-lineage review by `openai/gpt-5.6-sol` (2026-08-01, run on
