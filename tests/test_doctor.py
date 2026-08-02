@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -156,7 +157,10 @@ def test_doctor_records_invoking_context(monkeypatch: pytest.MonkeyPatch) -> Non
         assert {"scope", "bin_dir", "system_scoped", "uid", "euid",
                 "path_provenance", "config_sources"} <= set(side)
     assert box["system_scoped"] is True  # measured via the pinned-path ownership check
-    assert isinstance(actor["uid"], int)  # measured from this POSIX process
+    if sys.platform == "win32":
+        assert actor["uid"] is None  # no uid concept on Windows — None by design
+    else:
+        assert isinstance(actor["uid"], int)  # measured from this POSIX process
     assert isinstance(actor["path_provenance"], str) and actor["path_provenance"]
     assert isinstance(actor["config_sources"], list)
     assert box["path_provenance"].startswith("systemd-unit:")

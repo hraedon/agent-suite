@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -717,6 +718,10 @@ def test_binding_rejects_an_invalid_principal_id(tmp_path) -> None:
     assert "principal_id" not in json.loads(users.read_text())[0]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX file-mode semantics; chmod is a no-op on Windows",
+)
 def test_binding_preserves_file_mode_and_other_entries(tmp_path) -> None:
     """The users file carries password hashes; do not widen or narrow its mode."""
     import os

@@ -10,7 +10,7 @@ import stat
 import subprocess
 import sys
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -325,7 +325,9 @@ def test_every_generated_execstart_is_an_absolute_path() -> None:
             )
             value = exec_line.removeprefix("ExecStart=")
             program = shlex.split(value)[0]
-            assert Path(program).is_absolute(), (
+            # PurePosixPath: the unit is a POSIX artifact whatever the host, so
+            # the property must hold under POSIX path semantics (DEFECT 3).
+            assert PurePosixPath(program).is_absolute(), (
                 f"{spec.name}: ExecStart={value!r} is not an absolute path — systemd "
                 f"will fail it 203/EXEC on any host whose CLIs are not on systemd's "
                 f"own fixed search path"
@@ -343,10 +345,14 @@ def test_shipped_reference_units_have_absolute_existing_prefix() -> None:
         unit = (repo / "deploy/systemd" / f"{spec.name}.service").read_text()
         exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
         program = shlex.split(exec_line.removeprefix("ExecStart="))[0]
-        assert Path(program).is_absolute(), f"{spec.name}: {exec_line}"
-        assert Path(program).parent == REFERENCE_BIN_DIR, (
-            f"{spec.name}: reference copy uses {Path(program).parent}, not the documented "
-            f"{REFERENCE_BIN_DIR}"
+        # PurePosixPath / as_posix: the unit file is a POSIX artifact; assert
+        # its properties under POSIX semantics on every host OS (DEFECT 3).
+        assert PurePosixPath(program).is_absolute(), f"{spec.name}: {exec_line}"
+        assert PurePosixPath(program).parent == PurePosixPath(
+            REFERENCE_BIN_DIR.as_posix()
+        ), (
+            f"{spec.name}: reference copy uses {PurePosixPath(program).parent}, not the "
+            f"documented {REFERENCE_BIN_DIR.as_posix()}"
         )
 
 
@@ -357,7 +363,7 @@ def test_reference_bin_dir_is_on_systemd_fixed_search_path() -> None:
     systemd's fixed ExecStart path, ~/.local/bin is not — that asymmetry is the
     whole defect.
     """
-    assert str(REFERENCE_BIN_DIR) in (
+    assert REFERENCE_BIN_DIR.as_posix() in (
         "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
     )
 
@@ -381,6 +387,10 @@ def test_resolve_command_returns_none_rather_than_a_bare_name() -> None:
     assert resolve_command("definitely-not-a-real-cli x", which=_no_which) is None
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="exec-bit semantics are POSIX; the systemd install path never runs on Windows",
+)
 def test_check_exec_start_runnable_rejects_bare_and_missing(tmp_path: Path) -> None:
     bare = check_exec_start_runnable(ResolvedCommand("cairn", "integrity"))
     assert bare is not None and "not absolute" in bare
@@ -421,6 +431,10 @@ def test_install_refuses_to_write_a_unit_it_cannot_resolve(tmp_path: Path) -> No
     assert list(unit_dir.iterdir()) == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the executable bit does not exist on Windows; resolution cannot refuse on it",
+)
 def test_install_refuses_a_candidate_that_is_present_but_not_executable(
     tmp_path: Path,
 ) -> None:
@@ -527,7 +541,10 @@ def test_install_reports_the_checks_that_actually_passed(
             "systemd_execstart_runnable",
             "timer_active",
         ]
-        assert Path(shlex.split(result.exec_start)[0]).is_absolute()
+        if sys.platform != "win32":
+            # shlex is POSIX-shell quoting; a host tmp path on Windows would be
+            # mangled by its backslashes. The POSIX lane asserts the property.
+            assert Path(shlex.split(result.exec_start)[0]).is_absolute()
         assert result.to_dict()["verified"] == result.verified
 
 
@@ -700,7 +717,7 @@ def test_unit_system_path_contains_reference_bin_dir() -> None:
     POSIX literal — never re-derived from host-flavored Path objects."""
     spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
     path = _unit_path_value(_systemd_service(spec))
-    assert str(REFERENCE_BIN_DIR) in path.split(":")
+    assert REFERENCE_BIN_DIR.as_posix() in path.split(":")
     assert path == SYSTEM_PATH
 
 
@@ -727,6 +744,11 @@ def test_check_actor_system_scoped_accepts_system_dir() -> None:
     assert check_actor_system_scoped(ResolvedCommand("/usr/local/bin/agent-suite")) is None
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="/opt and uid-0 ownership are POSIX; win32 scope uses the profile "
+    "check, covered by the _mock_windows tests",
+)
 def test_opt_root_owned_dir_is_accepted_via_ownership_not_path_membership() -> None:
     """DEFECT 1: the scope predicate tests ownership/writability, not PATH
     membership. ``/opt`` is NOT on the system PATH allowlist, so whatever the
@@ -753,6 +775,11 @@ def test_opt_root_owned_dir_is_accepted_via_ownership_not_path_membership() -> N
         assert reason is not None and "non-system bin directory" in reason
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="st_uid ownership is POSIX; the win32 refusal (profile-relative) is "
+    "covered by the _mock_windows scope tests",
+)
 def test_user_owned_local_bin_dir_is_refused(tmp_path: Path) -> None:
     """DEFECT 1: a user-writable / user-owned bin dir (~/.local/bin, a uv-tool
     user dir, a pytest tmp_path) is refused — the privilege-escalation shape
@@ -792,6 +819,11 @@ def test_documented_opt_bin_dir_install_works_when_system_scoped(
     ]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="asserts the POSIX shape end-to-end: uid 0 from the passwd database, "
+    "systemd-unit PATH provenance, /usr/local/bin membership",
+)
 def test_invoking_context_box_vs_actor(monkeypatch: pytest.MonkeyPatch) -> None:
     """The invoking context surfaces both scopes (WI-038): the box (the machine
     the unit runs in, system-scoped) and the actor (who resolved the CLI). Both
@@ -868,7 +900,10 @@ def test_build_invoking_context_measures_real_uid_when_not_injected(
         actor_bin_dir=REFERENCE_BIN_DIR,
         path_env=None,
     )
-    assert ctx.actor.uid is not None  # measured from this process
+    if sys.platform == "win32":
+        assert ctx.actor.uid is None  # no uid concept — None by design
+    else:
+        assert ctx.actor.uid is not None  # measured from this process
     assert ctx.actor.system_scoped is True
     assert ctx.box.system_scoped is True
 

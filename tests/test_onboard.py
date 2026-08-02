@@ -957,8 +957,10 @@ def test_the_argv_regista_actually_accepts() -> None:
     # --project is declared on regista's top-level parser: before the subcommand.
     assert argv[:verb] == ("regista", "--project", "qual_linux")
     assert argv[verb : verb + 2] == ("spec", "sign")
-    # The spec file is a positional, immediately after the verb.
-    assert argv[verb + 2] == "/srv/proj/spec.yaml"
+    # The spec file is a positional, immediately after the verb. Host-flavored:
+    # the argv hands the path to the local regista CLI, so on Windows it is
+    # correctly backslashed — pin the position and value, not the flavor.
+    assert argv[verb + 2] == str(Path("/srv/proj/spec.yaml"))
     # Both required options are supplied.
     assert argv[argv.index("--schema-version") + 1] == "1"
     assert argv[argv.index("--actor-id") + 1] == "suite-service"
