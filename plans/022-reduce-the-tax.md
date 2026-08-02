@@ -838,6 +838,94 @@ against the code, since this session observed the gate correctly
 refusing on an undeclared *author* — the doc may describe the
 *reviewer* side, in which case the two directions disagree.
 
+## Part H — The constraints, and what they change
+
+Owner constraints (2026-08-01): **no cloud dependencies, cost must be
+low.** Origin story: when the estate first needed to scale coordination
+to a team, nothing handled that layer — *"everyone seems to just use
+GitHub and approach it that way."*
+
+### H1. Half of G2's answer is unavailable, and half survives
+
+Linear is SaaS-only. Jira Cloud is cloud. Jira Data Center is neither
+cheap nor a comfortable self-host. Public Rekor is a cloud dependency.
+So "adopt Jira or Linear, submit to Rekor" fails the constraints as
+literally stated.
+
+What survives: **self-hosted, low-cost transparency logs exist** —
+Tessera (tile-based, writes to a filesystem or MinIO) and immudb (single
+binary). The G1 verdict is unchanged: stop building bespoke Merkle,
+witness and bundle machinery, emit DSSE/in-toto, and submit digests to a
+**locally-hosted** log. No cloud required.
+
+### H2. The original finding has partly expired
+
+It was accurate when made. It is less accurate now — a category of
+self-hosted, agent-aware trackers has appeared:
+
+| Tool | Relevance |
+|---|---|
+| **It's a Plan** | self-hosted, AGPL-3.0, AI agents built in, MCP + REST + webhooks |
+| **PlanDB** (Agent-Field) | explicitly *"the issue tracker your AI agents are missing… for your Claude Code"* |
+| **Plane** (CE) | self-hosted, positions as PM "for teams and AI agents" |
+| **Huly** | self-hostable, two-way GitHub Issues/Projects sync |
+| **Forgejo** | self-hosted forge with issues; the estate already runs Git |
+
+All are self-hostable and free or near-free, so the constraints do not
+rescue building our own tracker — they change *which* product to adopt.
+**These should be evaluated before any further investment in dossier's
+tracker half.**
+
+But note precisely what none of them do: signed transitions bound to a
+cryptographic actor, cross-lineage review gates, or provenance linkage
+to captured sessions. They solve **coordination**. They do not solve
+**attestation** — which remains this suite's genuine and still-unserved
+contribution.
+
+### H3. The trap in fork B, and the rule that avoids it
+
+Adopting an external tracker re-creates the exact problem A6 just
+deleted: two systems of record and a sync layer between them.
+`pending_sync` would come back wearing a different name.
+
+**Rule: attest, never mirror.** The attestation service holds *no copy*
+of work-item state — no title, status, assignee or description. It holds
+signed events that *reference* an external issue ID as an opaque
+identifier, plus the agent-operational primitives the tracker genuinely
+lacks (claims with TTL and heartbeat, lineage-aware review verdicts).
+Rendering joins the two at read time; nothing reconciles them at write
+time. If a design ever needs a "sync" or a "pending" flag, it has
+violated this rule.
+
+### H4. Revised target under the constraints
+
+- **Coordination:** adopt one self-hosted tracker (evaluate Plane CE,
+  It's a Plan, Forgejo, Huly). Humans get boards, search, comments,
+  notifications and mobile without us building them.
+- **Attestation and agent primitives:** the two deployables from G4 —
+  evidence collector (signing **at the actor boundary**, per G0) and
+  attestation/verifier service — with claims/leases and gates, emitting
+  DSSE/in-toto to a self-hosted Tessera or immudb.
+- **Capture:** cairn, unchanged; it is the differentiator.
+- **Agent workflow surface:** the skills, as clients of the tracker plus
+  the attestation service.
+- **Evidence view:** a minimal dossier surface, or a panel inside the
+  adopted tracker.
+- **Credentials:** Vault plus acb only where scoped injection is not
+  otherwise obtainable.
+
+Same two custom deployables as G4, now with an explicitly on-prem,
+low-cost substrate — and no tracker of our own to maintain.
+
+### H5. Note on the existing GitHub dependency
+
+The estate currently depends on GitHub for hosting, CI and PR review,
+which is already a cloud dependency. Worth deciding explicitly whether
+"no cloud" means *no new SaaS at runtime* (in which case GitHub-for-
+development is fine and the above stands) or *no cloud at all* (in which
+case Forgejo becomes the natural single answer for Git, issues and CI —
+and it happens to also be the tracker candidate).
+
 ## Review record
 
 Cross-lineage review by `openai/gpt-5.6-sol` (2026-08-01, run on
