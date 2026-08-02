@@ -471,12 +471,16 @@ def is_system_scoped_bin_dir(
 
 def _current_uid() -> int | None:
     """The invoking process's real uid (POSIX), or ``None`` (no uid on Windows)."""
-    return os.getuid() if os.name == "posix" else None
+    if sys.platform == "win32":
+        return None
+    return os.getuid()
 
 
 def _current_euid() -> int | None:
     """The invoking process's effective uid (POSIX), or ``None`` on Windows."""
-    return os.geteuid() if os.name == "posix" else None
+    if sys.platform == "win32":
+        return None
+    return os.geteuid()
 
 
 def _system_unit_uid() -> int | None:
@@ -485,7 +489,7 @@ def _system_unit_uid() -> int | None:
     Measured (resolved via the password database) rather than hardcoded, so the
     box's identity is a real lookup. ``None`` on Windows (no uid concept).
     """
-    if os.name != "posix":
+    if sys.platform == "win32":
         return None
     try:
         import pwd
