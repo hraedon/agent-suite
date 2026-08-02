@@ -576,64 +576,91 @@ keep against a Confluence-equivalent knowledgebase complementing
 dossier, ideally with **personal agent memory alongside a formalised,
 sanitised group knowledgebase**.
 
-### The measurement
+### The measurement — and a correction
 
-| Thing | Rows | Machinery |
+An earlier draft of this section argued that 544 memories did not
+justify 1,811 lines of engine machinery. **That was measuring the wrong
+thing, and the owner's history corrected it.** Evidence from the
+archived predecessor projects on mvmcc02:
+
+| Project | Markdown artifacts | Notes |
 |---|---|---|
-| work items (agent-notes) | 1,895 | duplicate of regista's (A6) |
-| memories | 544 | 1,811 lines: engine Protocol, capability + health enums, external `hindsight` adapter |
-| links | **18** | a subsystem, plus its own audit defects (WI-023) |
+| `software-factory` (sf1) | 954 | file-based |
+| `software-factory-2` (sf2) | 708 | 284 breadcrumbs, 102 debate, 26 catalog, 19 reflections |
 
-544 memories do not need a pluggable multi-engine abstraction with an
-external service adapter. 18 links do not need a subsystem.
+Breadcrumb numbering in sf2 reaches 202+. A *single* large project
+accumulated 700–950 artifacts; the current estate spans ~25 projects.
+544 memories is a young estate, not a steady state — the real target is
+five figures. Static text files and sqlite genuinely failed at that
+scale, which is why hindsight was adopted. And hindsight is not
+speculative machinery: it is **live and healthy today** (v0.8.4 at
+`hindsight-api.k8s.hraedon.com`, the active engine, health 200).
+
+So: **keep the database, keep the embeddings, keep hindsight, and keep
+the engine boundary** — a Protocol with two real implementations and a
+deployed external service is a boundary, not over-abstraction. Do not
+rebuild it on pgvector; that would be churn against something that
+works, which is exactly what this plan exists to avoid.
+
+The 18-row link subsystem is still not carrying its weight, and A6's
+work-item duplication is still duplication — that argument was about two
+systems of record, not about scale, and it stands.
 
 ### F1. The group knowledgebase mostly already exists — it is the repo
 
-Before building a Confluence-equivalent, notice what group knowledge is
-made of here: `plans/`, `docs/`, reflections, and the decision records
-now living in work items. That is version-controlled, reviewed by PR,
-and already attested. **What is missing is not a wiki — it is rendering
-and access for humans who do not read git.**
+sf2 *strengthens* this rather than undercutting it: its knowledge lived
+as 708 markdown files in the repo — `plans/`, `breadcrumbs/`,
+`reflections/`, `debate/`, `catalog/` — which is the same shape the
+current estate has. The failure was never the format; it was that
+nothing indexed, searched, or enforced anything across it.
 
-Recommendation: dossier gains a *knowledge surface* that renders repo
-markdown plus regista decision records, with its existing project ACLs
-for access control. Do **not** build page hierarchies, WYSIWYG editing
-or comment threads; the suite's differentiator is attestation, not an
-editor, and a wiki is a large project containing none of it. If rich
-authoring is genuinely wanted later, integrate an existing wiki by
-attested reference rather than reimplementing one.
+Recommendation unchanged: dossier gains a *knowledge surface* rendering
+repo markdown plus regista decision records, with its existing project
+ACLs. Do not build page hierarchies, WYSIWYG editing or comment threads
+— the differentiator is attestation, not an editor. Integrate an
+existing wiki by attested reference if rich authoring is ever wanted.
 
-### F2. Personal memory stays, but as a feature, not a component
+### F2. Personal memory and group knowledge are different tiers
 
-The owner's instinct is right and it maps onto a distinction the suite
-already makes: **group knowledge is reviewed, sanitised and shared;
-agent memory is unreviewed, per-actor, high-churn, and may contain
-secrets.** Those have different access control, retention and
-sanitisation needs, and conflating them is what makes a single
-"knowledgebase" unsatisfying for both.
+The owner's instinct holds and maps onto a distinction the suite already
+makes: **group knowledge is reviewed, sanitised and shared; agent memory
+is unreviewed, per-actor, high-churn, and may contain secrets.**
+Different access control, retention and sanitisation — conflating them
+is why one undifferentiated knowledgebase would satisfy neither.
 
-Keep memory, and simplify it hard: one per-principal store (in regista,
-alongside everything else) with embeddings and retrieval — no engine
-Protocol, no capability matrix, no external adapter until something
-concrete demands one. Because it is unreviewed and may hold secrets,
-memory inherits **cairn's content-encryption posture**: the same
-confidentiality argument, applied to a second content type.
+Memory keeps its current substrate (hindsight, per the correction
+above), gains **per-principal scoping**, and inherits **cairn's
+content-encryption posture**, since it is unreviewed and may hold
+secrets — the same confidentiality argument applied to a second content
+type.
 
-**The best part of this split is the boundary itself.** Promotion from
-personal memory to group knowledge is a review-and-sanitise step — which
-is precisely the kind of transition this suite exists to attest. It
-turns two vaguely-related stores into one pipeline with a signed
-promotion event, and it gives the knowledgebase provenance that a wiki
-cannot offer.
+**The boundary is the valuable part.** Promotion from personal memory to
+group knowledge is a review-and-sanitise step — exactly the kind of
+transition this suite exists to attest. It turns two loosely-related
+stores into one pipeline with a signed promotion event, and gives the
+knowledgebase provenance a wiki cannot offer.
 
-### F3. agent-notes dissolves as a component
+### F3. agent-notes' charter is workflow conformance, not storage
 
-After A6 (work items to regista), F1 (group knowledge to dossier) and
-F2 (memory as a regista-backed feature), what remains is a **CLI and a
-set of skills** — a client, not a service with a database. Keep the
-ergonomics, drop the component: no second store, no projection, no
-outbox, no doctor of its own, no independent version. Delete the links
-subsystem outright at 18 rows, or reduce it to a field.
+The second correction. The owner's history is explicit: *"agents were
+very inconsistent about following workflows (thus agent-notes and
+Dossier)."* An earlier draft treated the CLI and skills as the residue
+left after removing the store. That is backwards — **the skills are the
+product; the store was incidental.**
+
+This session is the evidence: eight installed skills plus the review
+gates are the mechanised answer to the sf1/sf2 workflow inconsistency,
+and those gates fired correctly against their own maintainer repeatedly.
+sf2 accumulated 284 loose breadcrumb files precisely because nothing
+made the right path easier than the ad-hoc one.
+
+So agent-notes remains a component with a sharpened charter: **the
+agent-facing workflow surface** — skills, validators, and the CLI that
+make the process followable and the shortcuts hard — backed by regista
+for work items (A6) and hindsight for memory. What it stops being is a
+*second system of record*: no duplicate work-item tables, no outbox, no
+projection, no `pending_sync`. Delete the 18-row link subsystem or
+reduce it to a field.
 
 ### F4. agent-wake: delete, absorb the useful part
 
@@ -653,10 +680,15 @@ delivery must never be part of attestation correctness.**
 
 ### Net component count
 
-From seven to **four**: regista (event/state plane, work items,
-memory), cairn (capture), dossier (human surface: team WI/BC, knowledge,
-notifications), acb (credential broker) — plus the operator CLI and the
-agent-side CLI/skills as clients rather than components.
+From seven to **five**: regista (event/state plane, work items,
+memory-of-record), cairn (capture), dossier (human surface: team WI/BC,
+knowledge, notifications), acb (credential broker), and agent-notes as
+the agent-facing workflow surface — plus the operator CLI as a client.
+hindsight remains an external dependency, not a suite component.
+
+That is one more than the earlier draft claimed, because the workflow
+surface earns its place on the evidence: it is the answer to the failure
+mode that produced this whole suite.
 
 ## Review record
 
