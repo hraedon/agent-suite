@@ -1,6 +1,11 @@
 # Plan 022 — Reduce the tax; reset what only costs
 
-**Status: DRAFT** (2026-08-01, for owner review; revised the same day
+**Status: DECISION RECORD** (superseded as an executable plan by Plan
+023, per the executability verdict in Part K). This document is retained
+for its reasoning and its rejected alternatives; **it is not the
+specification to build from.**
+
+**Original status: DRAFT** (2026-08-01, for owner review; revised the same day
 after the owner ratified a clean-slate mandate — *"if it makes sense to
 temporarily suspend correctness to arrive more painlessly at a good end
 state, that is acceptable… I would rather come out of this with
@@ -1140,6 +1145,71 @@ idiosyncratic.
 **G0 is untouched by any of this.** Signing must still move to the actor
 boundary; that is a correctness defect regardless of which tools are
 adopted.
+
+## Part K — Final review: rewrite this, and one finding that outranks it
+
+### K1. Executability — rewrite
+
+Verdict: *"A 1,100-line plan containing live reversals and restored
+supersessions is a decision history, not an executable specification.
+Engineers cannot reliably distinguish normative requirements from
+abandoned branches."*
+
+Sections that must survive into Plan 023: scope, goals, non-goals and
+explicit invariants; the final target architecture and trust boundaries;
+canonical data/event schemas and ownership boundaries; the ordered
+migration plan including freeze/snapshot and compatibility windows; the
+security model (per-principal credential isolation, signing
+responsibilities, verification, key rotation and revocation); external
+integration contracts, especially GitHub issue linkage and evidence
+ingestion; acceptance criteria, operational readiness gates, rollback
+and failure recovery; and a short decision record of *consequential*
+rejected alternatives only.
+
+Discarded: deliberative chronology, repeated argument, superseded
+carve-outs, the contradictory versions of A6 and D2, the withdrawn
+tracker design, and any prose that does not change implementation or
+acceptance criteria. Every requirement gets a stable ID; every work item
+traces to one requirement and one verification method.
+
+### K2. The assumption all three of us shared
+
+**"An agent is a stable, independently attributable security
+principal." It is not.**
+
+A signature made with an agent-labelled credential proves that *some
+process obtained that credential* — not that a particular model
+authored, understood, or intended the claim. The orchestrator, the tool
+runner, a prompt-injected workload, a delegated subagent, an
+administrator, or a compromised host all act through the same boundary.
+**Per-agent keys improve containment; they do not establish
+authorship.**
+
+This outranks G0. G0 said the server signs for everyone, so move signing
+to the actor boundary. K2 says that even at the actor boundary, a
+credential proves possession, not authorship — so the suite's central
+claim needs restructuring, not just relocation.
+
+The principal model must be built on **workload instances and
+authorization chains, not agent names.** Every claim binds:
+
+- the human or service authority that initiated it;
+- orchestrator identity and isolated execution identity;
+- model and version, policy, prompt/input digest, tool-call and evidence
+  digests, and the delegated-child chain;
+- short-lived hardware- or workload-attested credentials;
+- an **explicit distinction between authorship, authorization,
+  execution, observation, and log ordering** — five different things the
+  current model collapses into one signature.
+
+*"Without that, the estate may produce cryptographically valid
+provenance that answers only 'which credential was used,' while
+presenting it as 'which agent is accountable.'"*
+
+That is the observe-versus-verify defect the suite has spent a month
+hunting, found in its own foundational claim. It reshapes A1 (identity)
+and D1 (envelope) more than any other finding in this document, and it
+was invisible while three reviewers agreed with each other.
 
 ## Review record
 
