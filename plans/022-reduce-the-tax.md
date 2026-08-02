@@ -690,6 +690,154 @@ That is one more than the earlier draft claimed, because the workflow
 surface earns its place on the evidence: it is the answer to the failure
 mode that produced this whole suite.
 
+## Part G — Foundations review: the premise is partly wrong
+
+The owner asked whether regista is a good fit, whether dossier beats
+adopting Linear/Jira, and whether prior art has obviated the suite. A
+second cross-lineage review (`openai/gpt-5.6-sol`, 2026-08-01) answered
+all three unfavourably, and one of its findings invalidates a claim this
+whole suite rests on.
+
+### G0. The non-repudiation claim is structurally hollow today
+
+`_events.py` resolves the actor's signing key from the server's own
+keyset and signs on their behalf:
+`key_set.resolve_signing_key(actor_id, …)` → `sign_event(…,
+key=key_entry.secret)`. **Verified directly.**
+
+Any process holding the keyset can sign as any principal. The signature
+therefore attests *"this regista installation asserts actor X did this,"*
+not *"actor X did this."* That is attribution by assertion, not
+non-repudiation — and it means per-actor Ed25519 keys, the principal
+binding work (WI-223), and the cross-lineage review gate all inherit the
+same ceiling: they verify a key matches a principal, never that the
+principal controlled the key.
+
+**Consequences that outrank most of this plan:** D8 (per-agent
+credential isolation) is necessary but *not sufficient* — the private
+key must never reach a shared server process at all. Signing has to move
+to the actor/harness boundary, which is where cairn already sits. Until
+it does, no amount of gate work raises the ceiling.
+
+### G1. regista: keep the semantics, delete the transparency layer
+
+Two systems, not one. Work-state needs atomic transitions, claims, role
+checks, projections — Postgres is right for that. Transparency needs
+globally consistent append-only commitments, inclusion and consistency
+proofs, independent checkpoints, witness policy and durable verification
+formats — and regista is rebuilding that badly:
+
+- The global chain is a **serialised singleton row**, not a transparency
+  tree (`migrations/030_global_event_chain.sql`): an append bottleneck
+  that supplies no efficient inclusion or consistency proofs.
+- Witness delivery, RFC 3161 batching, archive segmentation, key
+  lifecycle and bundle chaining reproduce parts of Rekor, Tessera and
+  Sigstore bundles.
+- The estate's *own* holistic review already caught a Merkle root
+  covering UUIDs rather than event content — precisely the failure mode
+  bespoke transparency invites.
+
+**Do not extend the witnesses, anchoring, Merkle code or bespoke key
+protocol.** This overturns D6 and much of D9 as written: rather than
+shipping our own bundle-format-v3 and checkpoint machinery, emit
+**DSSE / in-toto statements** (the ITE-6 envelope Sigstore and SLSA
+already use) and submit digests to Rekor v2, a private Tessera log, or
+immudb. That also makes the evidence verifiable by third-party tooling
+instead of only by our verifier — a stronger claim than anything bespoke
+can make, and directly relevant to the portfolio goal.
+
+### G2. dossier: do not build a tracker
+
+Verdict: adopt Jira or Linear for coordination; the suite attests work
+referencing external issue IDs. Jira already has workflow validators,
+post-functions, custom fields, permissions, search, notifications and
+mobile; a completion validator can *require* a valid attestation
+receipt. Agent claims become lease records in the attestation service.
+
+What that loses, stated honestly: tracker transitions become vendor
+audit events rather than principal-signed events; state and receipt are
+separate transactions; an administrator can reconfigure the workflow.
+Mitigation is to sign **the facts that matter** — delegation, work
+start, source commit, tool-session digest, review result, approval,
+release — and never claim the tracker's own history is non-repudiable.
+
+Retain dossier as a small evidence viewer or Jira panel. Delete the
+board, issue editing, assignment, comments and the tracker roadmap.
+
+### G3. Prior art has mostly caught up
+
+Delete or replace: regista's Merkle/global-chain/witness/timestamp/
+bundle machinery (Rekor v2 or Tessera; note Trillian is no longer the
+greenfield choice and AWS ended QLDB in 2025); custom key lifecycle as
+the primary identity system (AD/Entra OIDC, OAuth token exchange for
+delegation, KMS/HSM signing, SPIFFE/SPIRE for workload identity — with
+an explicit human→agent delegation attestation, since SPIFFE identifies
+workloads, not intent); cairn's bespoke vocabulary where OpenTelemetry
+GenAI/MCP conventions apply; agent-notes' second work store; dossier as
+a tracker.
+
+Keep, because nothing off-the-shelf covers it: cairn's harness
+interception, completeness and degradation detection, content
+encryption and normalisation; the mapping of **human delegation → agent
+session → tool actions → commits/reviews** (SLSA and in-toto cover
+artifact *production*, not interactive agent sessions, omitted-hook
+detection, or human delegation); agent-notes' skills and the
+cross-lineage review policy, as clients; acb only where it provides
+scoped injection that Vault Agent, workload identity or MCP OAuth
+cannot.
+
+External context worth recording: EU AI Act Article 12 lifecycle
+event-recording obligations for high-risk systems reach applicability
+this month, and auditability has become a procurement question for
+enterprise AI coding tools — so the *problem* is real and growing even
+where our *implementation* should be replaced by adopted infrastructure.
+
+### G4. The honest target: two deployables, not five
+
+1. **Agent evidence collector** — harness adapters, AD/OIDC delegation,
+   Vault/KMS-backed signing **at the actor boundary**, OTel GenAI
+   export, encrypted content capture, omission/degradation markers,
+   commit and tool digests.
+2. **Attestation / verifier service** — Postgres for semantic index and
+   claim leases; DSSE/in-toto statements; a Rekor v2 / Tessera / immudb
+   client; offline bundle verification; a minimal evidence viewer.
+
+Adopt: Jira or Linear, AD/Entra, Vault, an OTel backend, Git hosting,
+gitsign, an existing transparency log.
+
+Against that, the five-component target still carries accidental
+complexity in separate human and agent faces, duplicated work stores,
+bespoke deployment orchestration, custom key custody, custom
+transparency, and cross-repository compatibility machinery.
+
+### G5. Where the review may be underweighting local constraints
+
+Not everything here is settled, and three constraints deserve the
+owner's judgement before adoption:
+
+- **Sensitivity vs SaaS.** A more sensitive environment may forbid
+  Jira Cloud or Linear entirely, and may forbid the *public* Rekor.
+  Self-hosted trackers and a private Tessera log both exist; the
+  argument survives, but "adopt" may mean "self-host something else,"
+  which changes the cost.
+- **Portfolio value.** A focused two-component system conforming to
+  in-toto/DSSE and Rekor is arguably a *better* artifact than a large
+  bespoke estate — but that is a judgement about audience, not
+  engineering, and it is the owner's to make.
+- **Sunk work.** Much of regista's semantics, cairn's capture and the
+  skills survive this verdict intact. What is condemned is the
+  transparency layer, the tracker, and the second work store — not the
+  suite's idea.
+
+### G6. One more security finding from the same review
+
+Treating undeclared model lineage as *independent* is fail-open, not
+conservative (`regista/docs/review-assurance.md`). Unknown lineage must
+**lower** assurance, not satisfy the cross-lineage gate. Worth verifying
+against the code, since this session observed the gate correctly
+refusing on an undeclared *author* — the doc may describe the
+*reviewer* side, in which case the two directions disagree.
+
 ## Review record
 
 Cross-lineage review by `openai/gpt-5.6-sol` (2026-08-01, run on
