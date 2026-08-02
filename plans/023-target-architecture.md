@@ -170,7 +170,7 @@ estate.
 | Step | Action | Exit condition |
 |---|---|---|
 | M1 | Freeze mutation-producing development. Snapshot and export the corpus; build the frozen verifier. **Do not truncate.** | **Partially met 2026-08-02** — see below |
-| M2 | Consolidate to one uv-workspace monorepo (six components; agent-wake deleted) | One CI, one identifier gate, one conformance harness; all suites at baseline |
+| M2 | Consolidate to one uv-workspace monorepo (six components; agent-wake deleted) | **Rehearsed and proven 2026-08-02** — see below |
 | M3 | **R-10 + R-09 together** — actor-boundary signing and per-agent credential isolation as one security boundary | No service can sign as another principal; one agent revocable alone; test proves token A cannot use token B's capability |
 | M4 | Adopt DSSE/in-toto and the transparency log; retire the bespoke transparency layer | Offline verification per R-21 passes; bespoke Merkle/witness code deleted |
 | M5 | Reset the `agent_provenance` corpus under the new model | First event of the new chain satisfies R-08 and R-10 |
@@ -180,6 +180,37 @@ estate.
 **M3 precedes M5 deliberately.** Resetting first would begin the
 "clean" corpus under server-forged signatures and require a second
 cutover.
+
+**M2 status (2026-08-02).** Rehearsed end-to-end in a scratch tree
+(agent-suite WI-061; procedure at `monorepo-rehearsal/PROCEDURE.md`,
+~35 min to repeat). `git filter-repo --to-subdirectory-filter` gives
+**exact `git log`/`--follow` parity with standalone on all six
+packages**; `git subtree` was rejected on measurement, not preference —
+it reduces per-file history to a single graft commit. Workspace
+resolves, all wheels build, every force-include and the `__file__`-
+relative release-board lookup survive, and five of six suites match
+their standalone baselines exactly.
+
+**Measured collapse: 9,510 → 2,175 hand-maintained lines (−77%)**
+(17,967 → 5,268 including generated lockfiles).
+
+The finding that settles the duplication argument: consolidating the
+conformance meta-guard revealed **acb's copy carried two fixes the other
+four never received**, and adopting any majority copy would have shipped
+a gate that *fails open* — the exact failure that guard exists to
+prevent. Six diverging copies with the correct one in the minority is
+the cost made concrete.
+
+**M2's blocking decision is SHA rewriting.** filter-repo rewrites all
+942 SHAs, and this estate *stores* SHAs — `SUITE.lock` revisions,
+release manifests, and cairn provenance attestations. Browsable
+per-file history and stable SHAs are mutually exclusive. Recommendation:
+take the rewrite. §9 already keeps the old repositories read-only, so
+they remain the resolution target for historical SHAs and existing
+attestations stay verifiable against the archive; record an old→new
+mapping as a signed record; update live SHA references at cutover; and
+teach any tooling that assumes "resolve this SHA in the current repo"
+about the archive. Four smaller decisions are listed in WI-061.
 
 **M1 status (2026-08-02).** Executed: `/home/itadmin/estate-archive/`
 holds a 265,747-event full dump, an `agent_provenance` schema dump, a
