@@ -652,7 +652,9 @@ def reference_command(
     name, arguments = _split(spec.command)
     match os_target:
         case OSTarget.SYSTEMD:
-            return ResolvedCommand(str(REFERENCE_BIN_DIR / name), arguments)
+            # as_posix: the systemd rendering is a POSIX artifact whatever the
+            # host; str() of a WindowsPath would backslash the ExecStart.
+            return ResolvedCommand((REFERENCE_BIN_DIR / name).as_posix(), arguments)
         case OSTarget.WINDOWS_TASK:
             return ResolvedCommand(name, arguments)
         case other:
