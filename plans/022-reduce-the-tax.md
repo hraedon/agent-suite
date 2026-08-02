@@ -1012,6 +1012,99 @@ halves (I/G2); then per-agent isolation (D8) against the reduced
 surface. A1's identity work shrinks to AD binding plus delegation,
 because the tracker no longer owns identity at all.
 
+## Part J — Correction: carve out narrow things, not join-heavy ones
+
+Owner objection (2026-08-01): *"I would prefer to have a better product,
+but if we're going to burn a lot of effort on the suite for an
+experience worse than a grab bag of tools, I don't know that that is a
+good use of effort. We still need a UI layer for cairn, and every carve
+out makes the devolution more expensive and less coherent."*
+
+**This is right, and Parts G2 and I applied the buy-don't-build rule on
+the wrong axis.**
+
+### The flaw in the carve-out logic
+
+Every individual carve-out was locally rational and the aggregate is
+not. Push coordination to GitHub, transparency to Tessera, memory to
+hindsight, identity to AD, secrets to Vault, and what remains is glue
+between five other people's tools. Two costs follow:
+
+- **Build cost is one-time; integration cost is recurring.** Each
+  boundary is a join to maintain, a failure mode to correlate, an auth
+  bridge, and a third-party format that can move under us.
+- **Coherence is the product.** The evidence view has to answer one
+  question — *who did this work, under whose delegation, in which
+  session, producing which commits, reviewed by whom, and here is the
+  proof.* If those facts live in four systems, the UI reconciles four
+  APIs on every page, forever.
+
+### The better principle
+
+**Carve out what is narrow, deep and dangerous to build. Build what is
+wide, shallow and join-heavy.**
+
+- *Narrow, deep, dangerous* — a cryptographic transparency log, secret
+  custody, directory identity, vector search. Small interfaces, severe
+  consequences for getting the internals wrong, and almost nothing to
+  join. **Buy.**
+- *Wide, shallow, join-heavy* — work state, evidence presentation,
+  capture. Large surface, unremarkable internals, and every field is
+  something the UI must correlate with something else. **Build**, because
+  buying relocates the complexity into integration and makes it
+  permanent.
+
+Judged against that, the transparency-log carve-out (G1) is exactly
+right: submit a digest, get a receipt, verify inclusion — a tiny
+interface guarding an area where our own bespoke attempt already shipped
+a Merkle root over UUIDs. The tracker carve-out (G2, Part I) is exactly
+wrong: it is the widest join surface we have, and GitHub cannot sign
+anything, so we would still need our own attested events beside it.
+
+### The UI settles it
+
+A cairn evidence UI has to be built regardless — nothing off the shelf
+renders captured agent sessions bound to delegation and review. Once
+that UI exists, the marginal cost of it also showing work items is
+small. The marginal cost of it joining every view to the GitHub API is
+not, and it never stops being paid.
+
+### Reversals
+
+- **G2 and Part I's tracker verdict are withdrawn.** Coordination stays
+  in the suite. GitHub remains for Git, PRs and CI — not as the system
+  of work record.
+- **A6 is restored**: work items, transitions, claims and reviews live
+  in regista, and agent-notes stops being a second store. The
+  attest-never-mirror rule (H3) still applies — to any *future* external
+  tracker, not to our own store.
+- **D2 is restored**: with no `owner/repo#123` to borrow, project-
+  prefixed identifiers are needed again.
+- **dossier survives as the UI** — evidence *and* work items, one query,
+  one story. Keep it deliberately minimal and agent-first; do not chase
+  Linear's feature set.
+
+### What is still bought
+
+Tessera or immudb (transparency), Vault (secrets), AD (identity),
+hindsight (memory), Postgres, GitHub for Git/PR/CI. All narrow
+interfaces, none of them on the UI's join path.
+
+### The honest cost of this reversal
+
+We own tracker UX forever: search, filtering, permissions, notifications,
+mobile, and the long tail of edge cases a mature tracker has absorbed.
+That is a real, recurring cost and it is the strongest argument for the
+position being withdrawn here. The mitigation is scope discipline — a
+tracker for a small team whose transitions are mostly performed by
+agents needs far less UX than one for a fifty-person org, and the moment
+it starts growing boards, swimlanes and comment threads, this decision
+should be revisited.
+
+**G0 is untouched by any of this.** Signing must still move to the actor
+boundary; that is a correctness defect regardless of which tools are
+adopted.
+
 ## Review record
 
 Cross-lineage review by `openai/gpt-5.6-sol` (2026-08-01, run on
