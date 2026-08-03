@@ -224,8 +224,11 @@ def _sibling_has_method(package: str, class_name: str, method_name: str) -> bool
 def _sibling_module_file_exists(
     checkout_name: str, module_path: str, src_prefix: str = "src"
 ) -> bool:
-    """Check if /projects/<checkout>/<src_prefix>/<module_path> exists.
+    """Check if ``<siblings root>/<checkout>/<src_prefix>/<module_path>`` exists.
 
+    The siblings root is ``SIBLINGS_ROOT`` (env-steerable, WI-058); it is
+    ``/projects`` unless ``SUITE_WORKSPACE_ROOT`` or the back-compat
+    ``AGENT_SUITE_SIBLINGS_ROOT`` overrides it.
     ``src_prefix`` defaults to ``"src"``; agent-wake uses ``"daemon/src"``.
     """
     return (SIBLINGS_ROOT / checkout_name / src_prefix / module_path).exists()
@@ -234,7 +237,7 @@ def _sibling_module_file_exists(
 def _sibling_test_exists(
     checkout_name: str, test_name: str, tests_subdir: str = "tests"
 ) -> bool:
-    """Check if /projects/<checkout>/<tests_subdir>/<test_name> exists.
+    """Check if ``<siblings root>/<checkout>/<tests_subdir>/<test_name>`` exists.
 
     ``tests_subdir`` defaults to ``"tests"``; agent-wake uses ``"daemon/tests"``.
     """

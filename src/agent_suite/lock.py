@@ -327,10 +327,13 @@ def resolve_workspace_root(default: Path) -> Path:
     """
     # Precedence rationale: SUITE_WORKSPACE_ROOT is the documented canonical
     # variable, so when an operator sets it the probes must follow it — that is
-    # the drift WI-058 fixes. CI sets ONLY AGENT_SUITE_SIBLINGS_ROOT (never
-    # SUITE_WORKSPACE_ROOT), so CI behaviour is unchanged: the alias still
-    # resolves. If an operator ever sets both to different values, the canonical
-    # variable wins — the alias is the back-compat path, not an override.
+    # the drift WI-058 fixes. Probe-side CI sets ONLY AGENT_SUITE_SIBLINGS_ROOT
+    # (never SUITE_WORKSPACE_ROOT), so those CI invocations resolve exactly as
+    # before via the alias. (One release-path step — release.yml's `inventory`
+    # — newly honors the alias through _default_search_roots; a deliberate,
+    # beneficial change recorded in the WI-058 commit, not a regression.) If an
+    # operator ever sets both to different values, the canonical variable wins
+    # — the alias is the back-compat path, not an override.
     for var in ("SUITE_WORKSPACE_ROOT", "AGENT_SUITE_SIBLINGS_ROOT"):
         raw = os.environ.get(var)
         if raw and raw.strip():

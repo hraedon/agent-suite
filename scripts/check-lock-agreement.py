@@ -14,7 +14,9 @@ members listed in the umbrella ``[components]`` table.
 Members without a lock or without a ``[spine]`` (e.g. agent-wake) are reported
 ``n/a`` — informational, not a failure (unless ``--strict`` and the member is
 in the umbrella ``[components]`` table). Exit code: 0 when no member disagrees,
-1 on any failure.
+1 on any failure, 2 when the check cannot run (no umbrella ``SUITE.lock``, or
+the resolved siblings root holds no member lock to check — a check that found
+nothing is not a pass).
 
 Usage:
     AGENT_SUITE_SIBLINGS_ROOT=/tmp/siblings python3 scripts/check-lock-agreement.py
