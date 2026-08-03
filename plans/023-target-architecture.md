@@ -97,7 +97,7 @@ are recorded by the service, separately, and verified separately.
 
 ## 4. Components
 
-Five, of which two are substantial.
+Six, of which two are substantial.
 
 | # | Component | Charter |
 |---|---|---|
@@ -106,12 +106,18 @@ Five, of which two are substantial.
 | C3 | **Evidence + coordination UI** (dossier, reduced) | one surface joining evidence to work items; deliberately minimal |
 | C4 | **Agent workflow surface** (agent-notes, reduced) | CLI and skills that make the process followable; a client, not a service |
 | C5 | **Credential broker** (acb) | scoped, short-lived credential issuance where Vault Agent or workload identity cannot provide it |
+| C6 | **Operator CLI** (agent-suite, reduced) | bootstrap, onboard/offboard, backup/restore/verify-restore, schedule/services, doctor aggregation, release manifests. Its repo-coordination purpose (locks, spine pins, cross-repo release reconciliation) evaporates with consolidation; what survives is "the thing an operator runs", not "the thing that holds seven repos together" (ratified in Plan 022 §A3) |
 
 **Adopted, not built:** Postgres, Vault, AD, GitHub (Git/PR/CI),
 hindsight (memory), and a self-hosted transparency log (Tessera or
 immudb).
 
-**Deleted:** agent-wake; regista's bespoke transparency layer (Merkle,
+**Deleted:** agent-wake — *with one operational caveat: agent-wake is
+not dormant; it runs the live wake channel on mvmcc03 today (systemd
+user unit, signed local callbacks). Deleting the component requires
+absorbing or explicitly retiring that channel first; decommissioning
+must not silently kill the estate's only wake path* —; regista's
+bespoke transparency layer (Merkle,
 singleton global chain, witness delivery, RFC 3161 batching, archive
 segmentation, bespoke bundle format); regista's server-side signing;
 agent-notes' work-item store, outbox, projection, `pending_sync`,
@@ -207,10 +213,27 @@ release manifests, and cairn provenance attestations. Browsable
 per-file history and stable SHAs are mutually exclusive. Recommendation:
 take the rewrite. §9 already keeps the old repositories read-only, so
 they remain the resolution target for historical SHAs and existing
-attestations stay verifiable against the archive; record an old→new
-mapping as a signed record; update live SHA references at cutover; and
-teach any tooling that assumes "resolve this SHA in the current repo"
-about the archive. Four smaller decisions are listed in WI-061.
+attestations stay verifiable against the archive. The three mitigations
+are filed work items with verification methods, and **all three block
+the M2 cutover** (not the rehearsal): a signed old→new SHA map covering
+all 942 rewritten commits (agent-suite **WI-062**); a live-reference
+sweep that leaves zero unclassified SHA citations at cutover
+(**WI-063**); and archive-aware SHA resolution in every tool that
+assumes "resolve this SHA in the current repo", failing closed on
+unknown SHAs (**WI-064**). Four smaller decisions are listed in WI-061.
+
+**In-flight work at the M2 boundary.** This plan does not orphan the
+work already in motion. The **0.5.5/RC3 release train finishes first**
+in the current topology: regista 0.5.5 is on PyPI, all consumer spine
+pins are advanced and every main is green (2026-08-02); what remains is
+the owner-gated release-board rc.3 declaration and tag. RC3 is the last
+multi-repo release — it becomes the frozen "before" state M2 consolidates,
+and its release manifest is a named test article for WI-064's archive
+resolution. **Plan 020 lanes C (platform qualification) and F
+(operations and multi-user lifecycle) transfer to the post-M2 estate**:
+both qualify *what ships to an operator*, and re-running them against
+the consolidated tree is strictly less work than running them twice.
+All other Plan 020 lanes are landed or subsumed by this plan's steps.
 
 **M1 status (2026-08-02).** Executed: `/home/itadmin/estate-archive/`
 holds a 265,747-event full dump, an `agent_provenance` schema dump, a
@@ -235,8 +258,12 @@ WI-060, regista WI-240/241/242):
    the identity model, not patched.
 3. **Verifiability depends on one host's 0600 plaintext keyfile.** Lose
    `~/.config/regista/keys.json` and 248,239 HMAC events are
-   unverifiable forever (WI-060). Plus: zero anchors, zero sealed
-   segments, no offsite copy, no cooling-off.
+   unverifiable forever (WI-060). *Escrow leg closed 2026-08-02:
+   two-leg escrow (Vault KV object + GPG ciphertext on a second host,
+   passphrase held only in Vault), restore proven off-host by
+   decrypt-and-parse with byte-identical sha256.* Still open on WI-060:
+   zero anchors, zero sealed segments, no offsite **archive** copy, no
+   cooling-off, and both escrow legs share Vault as a dependency.
 4. **`replay` mutates the store it verifies**, and `Regista.__init__`
    issues DDL on connect, so verification cannot run against a
    read-only restore (WI-242) — which R-21 requires.
