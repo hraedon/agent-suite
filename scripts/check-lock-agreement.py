@@ -14,21 +14,26 @@ members listed in the umbrella ``[components]`` table.
 Members without a lock or without a ``[spine]`` (e.g. agent-wake) are reported
 ``n/a`` — informational, not a failure (unless ``--strict`` and the member is
 in the umbrella ``[components]`` table). Exit code: 0 when no member disagrees,
-1 on any failure.
+1 on any failure, 2 when the check cannot run (no umbrella ``SUITE.lock``, or
+the resolved siblings root holds no member lock to check — a check that found
+nothing is not a pass).
 
 Usage:
     AGENT_SUITE_SIBLINGS_ROOT=/tmp/siblings python3 scripts/check-lock-agreement.py
     AGENT_SUITE_SIBLINGS_ROOT=/tmp/siblings python3 scripts/check-lock-agreement.py --strict
+
+``SUITE_WORKSPACE_ROOT`` is the canonical spelling (precedence over the
+``AGENT_SUITE_SIBLINGS_ROOT`` alias); both forms are accepted here.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import tomllib
 from pathlib import Path
 
+from agent_suite.lock import resolve_workspace_root
 from agent_suite.lock_agreement import (
     check_all,
     format_report,
@@ -56,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     umbrella_text = umbrella_path.read_text(encoding="utf-8")
 
-    siblings_root = Path(os.environ.get("AGENT_SUITE_SIBLINGS_ROOT", "/tmp/siblings"))
+    siblings_root = resolve_workspace_root(Path("/tmp/siblings"))
 
     umbrella = tomllib.loads(umbrella_text)
     member_locks: dict[str, str | None] = {}
@@ -67,6 +72,20 @@ def main(argv: list[str] | None = None) -> int:
         member_locks[member] = (
             sibling_lock.read_text(encoding="utf-8") if sibling_lock.is_file() else None
         )
+
+    # A check that found nothing to check is not a pass (honest health). With
+    # WI-058 the root can be steered by either workspace-root env var; if the
+    # resolved root holds no member checkouts, say so loudly instead of
+    # reporting every member n/a and exiting green.
+    if member_locks and all(lock_text is None for lock_text in member_locks.values()):
+        print(
+            "check-lock-agreement: no member SUITE.lock found under "
+            f"{siblings_root} — nothing was checked (set SUITE_WORKSPACE_ROOT "
+            "or AGENT_SUITE_SIBLINGS_ROOT to the directory holding the "
+            "sibling checkouts).",
+            file=sys.stderr,
+        )
+        return 2
 
     results = check_all(umbrella_text, member_locks, strict=args.strict)
     version, revision = umbrella_regista_pin(umbrella_text)

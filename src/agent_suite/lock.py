@@ -315,6 +315,32 @@ _PROVIDER_DESCRIBE_CMD: tuple[str, ...] = (
 )
 
 
+def resolve_workspace_root(default: Path) -> Path:
+    """Resolve the workspace root that holds the suite's sibling checkouts (WI-058).
+
+    Two env vars name this root. ``SUITE_WORKSPACE_ROOT`` is the canonical one
+    (it is what ``agent-suite lock`` has always read); ``AGENT_SUITE_SIBLINGS_ROOT``
+    is the older probe-side spelling, kept as a back-compat alias.
+    Precedence: ``SUITE_WORKSPACE_ROOT`` > ``AGENT_SUITE_SIBLINGS_ROOT`` > ``default``.
+    Whitespace-only values are treated as unset. The result is ``expanduser()``-ed
+    and ``resolve()``-d so it is absolute on every OS (the M-5 contract).
+    """
+    # Precedence rationale: SUITE_WORKSPACE_ROOT is the documented canonical
+    # variable, so when an operator sets it the probes must follow it — that is
+    # the drift WI-058 fixes. Probe-side CI sets ONLY AGENT_SUITE_SIBLINGS_ROOT
+    # (never SUITE_WORKSPACE_ROOT), so those CI invocations resolve exactly as
+    # before via the alias. (One release-path step — release.yml's `inventory`
+    # — newly honors the alias through _default_search_roots; a deliberate,
+    # beneficial change recorded in the WI-058 commit, not a regression.) If an
+    # operator ever sets both to different values, the canonical variable wins
+    # — the alias is the back-compat path, not an override.
+    for var in ("SUITE_WORKSPACE_ROOT", "AGENT_SUITE_SIBLINGS_ROOT"):
+        raw = os.environ.get(var)
+        if raw and raw.strip():
+            return Path(raw).expanduser().resolve()
+    return Path(default).expanduser().resolve()
+
+
 def _default_search_roots() -> tuple[Path, ...]:
     """Resolve the default search roots for component source checkouts.
 
@@ -324,16 +350,13 @@ def _default_search_roots() -> tuple[Path, ...]:
     absolute-only: ``/projects`` (the canonical POSIX workspace root). On
     Windows, ``/projects`` is drive-relative — we resolve it against the
     current drive so the path is genuinely absolute and ``is_absolute()``
-    holds cross-platform. An operator may override the roots entirely by
-    setting ``SUITE_WORKSPACE_ROOT`` to a single absolute path; that one root
-    replaces the defaults (useful in CI or non-standard layouts).
+    holds cross-platform. An operator may override the roots entirely via
+    :func:`resolve_workspace_root` (consulted env vars in precedence order:
+    ``SUITE_WORKSPACE_ROOT`` canonical, ``AGENT_SUITE_SIBLINGS_ROOT`` back-compat
+    alias, then ``/projects``); that one root replaces the defaults (useful in CI
+    or non-standard layouts).
     """
-    env_root = os.environ.get("SUITE_WORKSPACE_ROOT")
-    if env_root and env_root.strip():
-        return (Path(env_root).expanduser().resolve(),)
-    # Path("/projects").resolve() is /projects on POSIX and <current_drive>:\projects
-    # on Windows — both are absolute, which is the contract callers rely on.
-    return (Path("/projects").resolve(),)
+    return (resolve_workspace_root(Path("/projects")),)
 
 
 def read_candidate_revisions(
@@ -358,7 +381,9 @@ def read_candidate_revisions(
     non-checkout directories all return ``None`` for that component.
 
     ``search_roots`` defaults to :func:`_default_search_roots` (absolute-only;
-    overridable via ``SUITE_WORKSPACE_ROOT``). Pass an explicit tuple from
+    overridable via ``SUITE_WORKSPACE_ROOT``, with the back-compat alias
+    ``AGENT_SUITE_SIBLINGS_ROOT`` consulted when the canonical var is unset —
+    see :func:`resolve_workspace_root`). Pass an explicit tuple from
     tests to avoid touching the real workspace.
     """
     roots = search_roots if search_roots is not None else _default_search_roots()

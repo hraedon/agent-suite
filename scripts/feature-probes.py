@@ -67,9 +67,31 @@ _STRUCTURAL_STATUS_DISCLAIMER = (
     "data/release-board.json; each row's release-stage label is the "
     "`release_status` field."
 )
-SIBLINGS_ROOT = Path(
-    os.environ.get("AGENT_SUITE_SIBLINGS_ROOT", "/projects")
-)
+try:
+    from agent_suite.lock import resolve_workspace_root
+except ImportError:  # pragma: no cover - bare-checkout fallback (WI-058)
+    resolve_workspace_root = None
+
+
+def _siblings_root() -> Path:
+    """Resolve the sibling-checkout root (WI-058).
+
+    Delegates to ``agent_suite.lock.resolve_workspace_root`` (canonical
+    ``SUITE_WORKSPACE_ROOT`` > back-compat ``AGENT_SUITE_SIBLINGS_ROOT`` >
+    ``/projects``) when the umbrella package is importable. The documented
+    bare-checkout invocation (``python3 scripts/feature-probes.py``) must keep
+    working when it is not, so fall back to the pre-WI-058 env read.
+    """
+    if resolve_workspace_root is not None:
+        return resolve_workspace_root(Path("/projects"))
+    for var in ("SUITE_WORKSPACE_ROOT", "AGENT_SUITE_SIBLINGS_ROOT"):
+        raw = os.environ.get(var)
+        if raw and raw.strip():
+            return Path(raw).expanduser().resolve()
+    return Path("/projects").expanduser().resolve()
+
+
+SIBLINGS_ROOT = _siblings_root()
 
 
 class ProbeResult(Enum):
@@ -202,8 +224,11 @@ def _sibling_has_method(package: str, class_name: str, method_name: str) -> bool
 def _sibling_module_file_exists(
     checkout_name: str, module_path: str, src_prefix: str = "src"
 ) -> bool:
-    """Check if /projects/<checkout>/<src_prefix>/<module_path> exists.
+    """Check if ``<siblings root>/<checkout>/<src_prefix>/<module_path>`` exists.
 
+    The siblings root is ``SIBLINGS_ROOT`` (env-steerable, WI-058); it is
+    ``/projects`` unless ``SUITE_WORKSPACE_ROOT`` or the back-compat
+    ``AGENT_SUITE_SIBLINGS_ROOT`` overrides it.
     ``src_prefix`` defaults to ``"src"``; agent-wake uses ``"daemon/src"``.
     """
     return (SIBLINGS_ROOT / checkout_name / src_prefix / module_path).exists()
@@ -212,7 +237,7 @@ def _sibling_module_file_exists(
 def _sibling_test_exists(
     checkout_name: str, test_name: str, tests_subdir: str = "tests"
 ) -> bool:
-    """Check if /projects/<checkout>/<tests_subdir>/<test_name> exists.
+    """Check if ``<siblings root>/<checkout>/<tests_subdir>/<test_name>`` exists.
 
     ``tests_subdir`` defaults to ``"tests"``; agent-wake uses ``"daemon/tests"``.
     """
