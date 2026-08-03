@@ -331,6 +331,17 @@ counts only when `principal_binding_verified` is true. regista omits the count
 when the check did not run, precisely so a consumer cannot read "not checked" as
 "none found" (WI-051).
 
+### Develop-against-lock gate (WI-057)
+
+A green lock must also be one its siblings can actually develop against. The
+``feature-probes`` job therefore runs a spine-symbol gate
+(``scripts/check-spine-symbols.py``) after installing the locked regista: it
+AST-scans each checked-out sibling's test files for ``regista`` imports and
+fails the job if any imported symbol is absent from the locked spine release.
+This catches the failure class where a sibling's tests import a symbol that
+exists on regista's ``main`` but not in the pinned release — the class that
+red-mains a sibling independent of any PR's own delta.
+
 ## 6. Honest boundaries
 
 - agent-suite proves the components *interoperate and deploy*; it does **not**
