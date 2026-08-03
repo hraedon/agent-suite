@@ -26,7 +26,7 @@ revision = "fea9765647602d732dd30925c0e7d45a84488ecb"
 [components.agent-wake]
 repo = "hraedon/agent-wake"
 version = "0.1.0"
-revision = "12d6b52092599a801ceaee5ecdfc04d0655f9055"
+revision = "377e8dd6642d79c39853666eebb68a35e7180714"
 
 [components.dossier]
 repo = "hraedon/dossier"
@@ -43,3 +43,4 @@ provider_name = "hindsight"
 protocol_version = "1.0"
 deployment_mode = "remote"
 support_level = "supported"
+
