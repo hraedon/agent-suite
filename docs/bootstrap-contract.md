@@ -337,10 +337,15 @@ A green lock must also be one its siblings can actually develop against. The
 ``feature-probes`` job therefore runs a spine-symbol gate
 (``scripts/check-spine-symbols.py``) after installing the locked regista: it
 AST-scans each checked-out sibling's test files for ``regista`` imports and
-fails the job if any imported symbol is absent from the locked spine release.
-This catches the failure class where a sibling's tests import a symbol that
-exists on regista's ``main`` but not in the pinned release — the class that
-red-mains a sibling independent of any PR's own delta.
+fails the job if any imported symbol is confirmed absent from the locked spine
+release (a submodule that cannot be introspected is reported *unverified* and
+fails only under ``--strict``; umbrella-listed siblings with no checkout are
+reported ``[gone]`` and also fail only under ``--strict``). This catches the
+failure class where a sibling's tests import a symbol that exists on regista's
+``main`` but not in the pinned release — the class that red-mains a sibling
+independent of any PR's own delta. The scan is static over test files: dynamic
+imports (``importlib``, ``__import__``, ``exec``) are invisible to it by
+construction, and runtime (non-test) imports are out of scope.
 
 ## 6. Honest boundaries
 

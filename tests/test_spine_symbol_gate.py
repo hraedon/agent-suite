@@ -62,6 +62,22 @@ def test_collect_regista_imports_extracts_all_shapes(tmp_path: Path) -> None:
     ]
 
 
+def test_collect_regista_imports_marks_star_imports(tmp_path: Path) -> None:
+    # A star import names no specific symbol: it is collected with star=True
+    # and name=None so it can be reported but never flagged missing.
+    f = _write(tmp_path, "test_star.py", "from regista import *\n")
+    imports = collect_regista_imports(f)
+    assert imports == [
+        SpineImport(module="regista", name=None, lineno=1, path=f, star=True)
+    ]
+
+
+def test_collect_regista_imports_star_prefix_boundary(tmp_path: Path) -> None:
+    # Packages whose name merely starts with "regista" must not be collected.
+    f = _write(tmp_path, "test_prefix.py", "import registafoo\nfrom regista_ import x\n")
+    assert collect_regista_imports(f) == []
+
+
 def test_collect_regista_imports_ignores_non_regista_and_relative(
     tmp_path: Path,
 ) -> None:
@@ -134,8 +150,23 @@ def test_classify_all_four_shapes() -> None:
     ) is ImportKind.FROM_MODULE
 
 
+def test_classify_star_import_is_package() -> None:
+    # Star imports classify as PACKAGE (always satisfiable): they name no
+    # specific symbol, so they can never reference an absent one.
+    assert (
+        _classify(SpineImport("regista", None, 1, Path("t.py"), star=True))
+        is ImportKind.PACKAGE
+    )
+
+
 def test_missing_symbols_plain_package_always_ok() -> None:
     imp = SpineImport("regista", None, 1, Path("t.py"))
+    result = missing_symbols(set(), {}, [imp])
+    assert result == GateResult(missing=[], unverified=[])
+
+
+def test_missing_symbols_star_import_never_missing() -> None:
+    imp = SpineImport("regista", None, 1, Path("t.py"), star=True)
     result = missing_symbols(set(), {}, [imp])
     assert result == GateResult(missing=[], unverified=[])
 
@@ -198,6 +229,7 @@ def test_missing_symbols_mixed_batch_counts() -> None:
         SpineImport("regista._types", "ActorKind", 4, Path("t.py")),  # present
         SpineImport("regista._types", "Nope", 5, Path("t.py")),  # missing
         SpineImport("regista.unseen", "X", 6, Path("t.py")),  # unverified
+        SpineImport("regista", None, 7, Path("t.py"), star=True),  # star — ok
     ]
     result = missing_symbols(
         {"Event"}, {"regista._types": {"ActorKind"}}, imports

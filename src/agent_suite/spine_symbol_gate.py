@@ -48,17 +48,23 @@ class SpineImport:
     ``name`` is ``None`` for plain ``import regista`` / ``import regista.foo``
     (the whole module is the target); for ``from`` imports it is the imported
     symbol. ``module`` is the dotted module path (``regista`` or
-    ``regista.foo``).
+    ``regista.foo``). ``star`` marks ``from regista import *`` — collected for
+    evidence but never classifiable as missing (it names no specific symbol).
     """
 
     module: str
     name: str | None
     lineno: int
     path: Path
+    star: bool = False
 
 
 def _classify(imp: SpineImport) -> ImportKind:
     """Map an import's ``module``/``name`` onto its :class:`ImportKind`."""
+    if imp.star:
+        # A star import names no specific symbol; it is satisfiable whenever
+        # the package itself is, which the wrapper guarantees before resolving.
+        return ImportKind.PACKAGE
     if imp.name is None:
         return ImportKind.PACKAGE if imp.module == SPINE_PACKAGE else ImportKind.MODULE
     return (
@@ -73,7 +79,12 @@ def collect_regista_imports(test_file: Path) -> list[SpineImport]:
 
     Returns ``[]`` (without raising) on a syntax error, a read error, or a
     decoding error — a malformed test file is not this gate's concern. Relative
-    imports (``from . import x``) and non-regista imports are skipped.
+    imports (``from . import x``) and non-regista imports are skipped. Star
+    imports (``from regista import *``) are collected with ``star=True``; they
+    name no specific symbol, so :func:`missing_symbols` never fails them.
+    Dynamic imports (``importlib.import_module``, ``__import__``, ``exec``) are
+    invisible to an AST scan by construction — a documented limitation: this
+    gate covers the static-import failure class, not deliberate evasion.
     """
     try:
         source = test_file.read_text(encoding="utf-8")
@@ -100,24 +111,17 @@ def collect_regista_imports(test_file: Path) -> list[SpineImport]:
             # regista imports; node.module may be None for `from . import x`.
             if node.level and node.level > 0:
                 continue
-            if node.module == SPINE_PACKAGE:
+            if node.module == SPINE_PACKAGE or node.module.startswith(
+                f"{SPINE_PACKAGE}."
+            ):
                 for alias in node.names:
                     imports.append(
                         SpineImport(
                             module=node.module,
-                            name=alias.name,
+                            name=None if alias.name == "*" else alias.name,
                             lineno=node.lineno,
                             path=test_file,
-                        )
-                    )
-            elif node.module.startswith(f"{SPINE_PACKAGE}."):
-                for alias in node.names:
-                    imports.append(
-                        SpineImport(
-                            module=node.module,
-                            name=alias.name,
-                            lineno=node.lineno,
-                            path=test_file,
+                            star=alias.name == "*",
                         )
                     )
     return imports
@@ -172,6 +176,10 @@ def missing_symbols(
       submodule that exports ``name``. If ``regista.x`` could not be
       introspected at all, the import is unverified (benefit of the doubt)
       rather than missing.
+
+    Star imports are classified as :attr:`ImportKind.PACKAGE` and therefore
+    always satisfiable: ``from regista import *`` names no specific symbol, so
+    it cannot reference one that is absent.
     """
     missing: list[SpineImport] = []
     unverified: list[SpineImport] = []
@@ -179,7 +187,8 @@ def missing_symbols(
         kind = _classify(imp)
         match kind:
             case ImportKind.PACKAGE:
-                # `import regista` — always satisfiable when the package exists.
+                # `import regista` (and star imports) — always satisfiable
+                # once the package exists.
                 continue
             case ImportKind.MODULE:
                 # `import regista.x` — satisfiable iff regista.x is an importable

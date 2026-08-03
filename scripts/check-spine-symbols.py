@@ -17,15 +17,26 @@ each against the installed regista. Exit code:
 
     0 — every imported symbol is present in the locked spine (or there is
         nothing to check: no sibling checkouts, or none import regista).
-    1 — at least one imported symbol is MISSING from the locked spine, OR
-        (with ``--strict``) at least one import was UNVERIFIED.
+    1 — at least one imported symbol is MISSING from the locked spine; with
+        ``--strict``, also when at least one import was UNVERIFIED or at
+        least one umbrella-listed sibling has no checkout under the root.
     2 — the installed regista (the locked spine) could not be imported, so
         the gate cannot run — an environment problem, not a gate failure.
 
 With ``--strict``, an import whose submodule could not be introspected
 (UNVERIFIED) is also treated as a failure; without it, unverified imports are
 reported but not fatal, to avoid false positives from submodules that fail to
-import for environmental reasons.
+import for environmental reasons. Umbrella-listed siblings with no checkout
+are always reported (``[gone]``) so the gate can never silently skip a
+component; they fail only under ``--strict`` so partial local checkouts stay
+usable.
+
+Limitations (by construction): the scan is static AST over *test* files.
+Dynamic imports (``importlib.import_module``, ``__import__``, ``exec``) are
+invisible to it, and runtime (non-test) imports are out of scope — the gate
+targets the WI-057 failure class (sibling tests drifting ahead of the locked
+spine), which test-file scanning covers because a sibling's tests import its
+runtime surface.
 
 Usage:
     AGENT_SUITE_SIBLINGS_ROOT=/tmp/siblings python3 scripts/check-spine-symbols.py
@@ -42,13 +53,12 @@ import tomllib
 from pathlib import Path
 
 from agent_suite.spine_symbol_gate import (
+    SPINE_PACKAGE,
     SpineImport,
     collect_regista_imports,
     missing_symbols,
     sibling_test_files,
 )
-
-SPINE_PACKAGE = "regista"
 
 
 def _format_finding(imp: SpineImport) -> str:
@@ -89,14 +99,18 @@ def main(argv: list[str] | None = None) -> int:
     # reads AGENT_SUITE_SIBLINGS_ROOT, matching the other sibling scanners.
     siblings_root = Path(os.environ.get("AGENT_SUITE_SIBLINGS_ROOT", "/tmp/siblings"))
 
-    # Collect regista imports per checked-out sibling.
+    # Collect regista imports per checked-out sibling. Umbrella-listed members
+    # with no checkout are reported as [gone] — the gate must never silently
+    # skip a component (adversarial review WI-057 R1); --strict fails on them.
     per_sibling: dict[str, list[SpineImport]] = {}
     info_no_tests: list[str] = []
+    missing_checkouts: list[str] = []
     for member in sorted(components):
         if member == SPINE_PACKAGE:
             continue
         member_root = siblings_root / member
         if not member_root.is_dir():
+            missing_checkouts.append(member)
             continue
         test_files = sibling_test_files(member_root)
         if not test_files:
@@ -115,10 +129,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"siblings root: {siblings_root}")
     print("")
 
+    for member in missing_checkouts:
+        print(f"  [gone] {member:<28} (listed in SUITE.lock, no checkout)")
     for member in info_no_tests:
         print(f"  [n/a ] {member:<28} (no tests directory)")
 
     if not per_sibling:
+        if missing_checkouts and args.strict:
+            print("")
+            print(
+                "FAILURE: umbrella-listed siblings have no checkout under the "
+                "siblings root; nothing could be checked."
+            )
+            return 1
         print("no sibling checkouts present; nothing to check.")
         return 0
 
@@ -127,6 +150,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [ok  ] {member:<28} (no regista imports)")
         print("")
         print("no regista imports found in any sibling's tests; nothing to check.")
+        if missing_checkouts and args.strict:
+            print(
+                "FAILURE: umbrella-listed siblings have no checkout under the "
+                "siblings root."
+            )
+            return 1
         return 0
 
     # Imports to resolve — the locked spine must be importable. importlib (rather
@@ -144,11 +173,15 @@ def main(argv: list[str] | None = None) -> int:
     top_exports: set[str] = set(dir(spine))
 
     # Introspect only the submodules actually referenced by the imports, so we
-    # never import the world. A referenced submodule that fails to import is
-    # simply absent from submodule_attrs; missing_symbols treats that as
-    # MISSING (or UNVERIFIED for ``from regista.x import name``).
+    # never import the world. A referenced submodule that fails to import (or
+    # raises at import time, e.g. a missing optional dependency) is simply
+    # absent from submodule_attrs; missing_symbols treats that as MISSING (or
+    # UNVERIFIED for ``from regista.x import name``). Names already satisfied
+    # as top-level exports need no submodule probe.
     candidate_submodules: set[str] = set()
     for imp in all_imports:
+        if imp.star:
+            continue
         if imp.name is None:
             # `import regista` references nothing; `import regista.x` does.
             if imp.module.startswith(f"{SPINE_PACKAGE}."):
@@ -156,32 +189,46 @@ def main(argv: list[str] | None = None) -> int:
         elif imp.module.startswith(f"{SPINE_PACKAGE}."):
             # `from regista.x import name`.
             candidate_submodules.add(imp.module)
-        elif imp.module == SPINE_PACKAGE:
+        elif imp.module == SPINE_PACKAGE and imp.name not in top_exports:
             # `from regista import name` — name may itself be a submodule.
             candidate_submodules.add(f"{SPINE_PACKAGE}.{imp.name}")
 
     submodule_attrs: dict[str, set[str]] = {}
+    submodule_objs: dict[str, object] = {}
     for mod in sorted(candidate_submodules):
         try:
             submodule = importlib.import_module(mod)
-        except ImportError:
+        except Exception:
             continue
         submodule_attrs[mod] = set(dir(submodule))
+        submodule_objs[mod] = submodule
+
+    def _actually_missing(imp: SpineImport) -> bool:
+        # hasattr is the final authority (it is what from-import binding does):
+        # it also resolves PEP 562 lazy attributes that dir() does not list, so
+        # a future lazy-export in the spine cannot false-positive this gate.
+        if imp.name is None:
+            return True
+        if imp.module == SPINE_PACKAGE:
+            return not hasattr(spine, imp.name)
+        target = submodule_objs.get(imp.module)
+        return not (target is not None and hasattr(target, imp.name))
 
     # Resolve per sibling and report.
     exit_code = 0
     for member in sorted(per_sibling):
         imports = per_sibling[member]
         result = missing_symbols(top_exports, submodule_attrs, imports)
+        missing = [imp for imp in result.missing if _actually_missing(imp)]
         marks: list[str] = []
-        if result.missing:
-            marks.append(f"{len(result.missing)} missing")
+        if missing:
+            marks.append(f"{len(missing)} missing")
         if result.unverified:
             marks.append(f"{len(result.unverified)} unverified")
-        if result.missing:
+        if missing:
             status = "FAIL"
         elif result.unverified:
-            status = "?   "
+            status = "unv "
         else:
             status = "ok  "
         summary = ", ".join(marks) if marks else "all present"
@@ -189,18 +236,22 @@ def main(argv: list[str] | None = None) -> int:
             f"  [{status}] {member:<28} "
             f"({len(imports)} imports scanned; {summary})"
         )
-        for imp in result.missing:
+        for imp in missing:
             print(_format_finding(imp))
-        if result.missing:
+        if missing:
             exit_code = 1
         elif args.strict and result.unverified:
             exit_code = 1
 
+    if missing_checkouts and args.strict:
+        exit_code = 1
+
     print("")
     if exit_code == 1:
         print(
-            "FAILURE: at least one symbol imported by sibling tests is absent "
-            "from the locked spine release."
+            "FAILURE: the develop-against-lock gate found imports the locked "
+            "spine release does not satisfy (missing symbols, or --strict "
+            "failures: unverified imports / missing sibling checkouts)."
         )
     else:
         print("all regista imports are satisfied by the locked spine release.")
