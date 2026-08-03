@@ -8,6 +8,7 @@ resolution-markers = [
 
 [[package]]
 name = "agent-suite"
+version = "0.0.1"
 source = { editable = "." }
 
 [package.optional-dependencies]
@@ -38,22 +39,20 @@ windows-full = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-suite", extras = ["azure"], marker = "extra == 'windows-full'" },
+    { name = "agent-suite", extras = ["windows"], marker = "extra == 'windows-full'" },
     { name = "azure-identity", marker = "extra == 'azure'" },
-    { name = "azure-identity", marker = "extra == 'windows-full'" },
     { name = "azure-keyvault-secrets", marker = "extra == 'azure'" },
-    { name = "azure-keyvault-secrets", marker = "extra == 'windows-full'" },
     { name = "build", marker = "extra == 'dev'" },
     { name = "hatchling", marker = "extra == 'dev'" },
     { name = "hvac", marker = "extra == 'vault'" },
     { name = "mypy", marker = "extra == 'dev'" },
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'azure'" },
-    { name = "pyjwt", extras = ["crypto"], marker = "extra == 'windows-full'" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pywin32", marker = "sys_platform == 'win32' and extra == 'windows'" },
-    { name = "pywin32", marker = "sys_platform == 'win32' and extra == 'windows-full'" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16,<1" },
 ]
-provides-extras = ["azure", "dev", "vault", "windows", "windows-full"]
+provides-extras = ["dev", "vault", "azure", "windows", "windows-full"]
 
 [[package]]
 name = "ast-serialize"
