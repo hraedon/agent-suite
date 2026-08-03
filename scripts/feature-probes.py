@@ -35,6 +35,7 @@ import argparse
 import importlib
 import importlib.metadata
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -44,8 +45,6 @@ from enum import Enum
 from pathlib import Path
 from types import ModuleType
 from typing import Any, assert_never
-
-from agent_suite.lock import resolve_workspace_root
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = REPO_ROOT / "data" / "v1-feature-matrix.json"
@@ -68,7 +67,31 @@ _STRUCTURAL_STATUS_DISCLAIMER = (
     "data/release-board.json; each row's release-stage label is the "
     "`release_status` field."
 )
-SIBLINGS_ROOT = resolve_workspace_root(Path("/projects"))
+try:
+    from agent_suite.lock import resolve_workspace_root
+except ImportError:  # pragma: no cover - bare-checkout fallback (WI-058)
+    resolve_workspace_root = None
+
+
+def _siblings_root() -> Path:
+    """Resolve the sibling-checkout root (WI-058).
+
+    Delegates to ``agent_suite.lock.resolve_workspace_root`` (canonical
+    ``SUITE_WORKSPACE_ROOT`` > back-compat ``AGENT_SUITE_SIBLINGS_ROOT`` >
+    ``/projects``) when the umbrella package is importable. The documented
+    bare-checkout invocation (``python3 scripts/feature-probes.py``) must keep
+    working when it is not, so fall back to the pre-WI-058 env read.
+    """
+    if resolve_workspace_root is not None:
+        return resolve_workspace_root(Path("/projects"))
+    for var in ("SUITE_WORKSPACE_ROOT", "AGENT_SUITE_SIBLINGS_ROOT"):
+        raw = os.environ.get(var)
+        if raw and raw.strip():
+            return Path(raw).expanduser().resolve()
+    return Path("/projects").expanduser().resolve()
+
+
+SIBLINGS_ROOT = _siblings_root()
 
 
 class ProbeResult(Enum):

@@ -309,9 +309,12 @@ checkouts present (or pin revisions by hand) so the SHA is captured.
 checkouts is named by ``SUITE_WORKSPACE_ROOT`` (canonical, what ``agent-suite
 lock`` has always read). The older probe-side spelling
 ``AGENT_SUITE_SIBLINGS_ROOT`` is a back-compat alias consulted only when the
-canonical var is unset; precedence is canonical > alias > ``/projects``. Both
-spellings resolve through one implementation (:func:`agent_suite.lock.resolve_workspace_root`),
-so the lock and the probes can never drift on which root they use.
+canonical var is unset; precedence is canonical > alias > the caller's default
+(``/projects`` for ``lock`` and ``feature-probes``; ``/tmp/siblings`` for
+``check-lock-agreement``). All three resolve through one implementation
+(:func:`agent_suite.lock.resolve_workspace_root`), so whichever var is set
+resolves identically everywhere; with neither set, the per-caller defaults
+still differ by design (a CI-layout check is not a workspace probe).
 
 ## 5. The interop test (what makes a lock "green")
 

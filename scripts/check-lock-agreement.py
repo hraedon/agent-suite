@@ -71,6 +71,20 @@ def main(argv: list[str] | None = None) -> int:
             sibling_lock.read_text(encoding="utf-8") if sibling_lock.is_file() else None
         )
 
+    # A check that found nothing to check is not a pass (honest health). With
+    # WI-058 the root can be steered by either workspace-root env var; if the
+    # resolved root holds no member checkouts, say so loudly instead of
+    # reporting every member n/a and exiting green.
+    if member_locks and all(lock_text is None for lock_text in member_locks.values()):
+        print(
+            "check-lock-agreement: no member SUITE.lock found under "
+            f"{siblings_root} — nothing was checked (set SUITE_WORKSPACE_ROOT "
+            "or AGENT_SUITE_SIBLINGS_ROOT to the directory holding the "
+            "sibling checkouts).",
+            file=sys.stderr,
+        )
+        return 2
+
     results = check_all(umbrella_text, member_locks, strict=args.strict)
     version, revision = umbrella_regista_pin(umbrella_text)
     print(format_report(results, version, revision))

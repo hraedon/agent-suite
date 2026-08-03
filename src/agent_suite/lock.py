@@ -320,7 +320,7 @@ def resolve_workspace_root(default: Path) -> Path:
 
     Two env vars name this root. ``SUITE_WORKSPACE_ROOT`` is the canonical one
     (it is what ``agent-suite lock`` has always read); ``AGENT_SUITE_SIBLINGS_ROOT``
-    is the older probe-side spelling, kept as a back-compat alias for one release.
+    is the older probe-side spelling, kept as a back-compat alias.
     Precedence: ``SUITE_WORKSPACE_ROOT`` > ``AGENT_SUITE_SIBLINGS_ROOT`` > ``default``.
     Whitespace-only values are treated as unset. The result is ``expanduser()``-ed
     and ``resolve()``-d so it is absolute on every OS (the M-5 contract).
@@ -378,7 +378,9 @@ def read_candidate_revisions(
     non-checkout directories all return ``None`` for that component.
 
     ``search_roots`` defaults to :func:`_default_search_roots` (absolute-only;
-    overridable via ``SUITE_WORKSPACE_ROOT``). Pass an explicit tuple from
+    overridable via ``SUITE_WORKSPACE_ROOT``, with the back-compat alias
+    ``AGENT_SUITE_SIBLINGS_ROOT`` consulted when the canonical var is unset —
+    see :func:`resolve_workspace_root`). Pass an explicit tuple from
     tests to avoid touching the real workspace.
     """
     roots = search_roots if search_roots is not None else _default_search_roots()
