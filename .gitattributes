@@ -1,0 +1,5 @@
+# systemd reads LF-only unit files, and test_deploy_reference_copies_match_
+# generator_output byte-compares them against the generator's \n output — so
+# the reference copies must check out as LF on every host, including the
+# Windows CI runner whose git defaults to core.autocrlf=true.
+deploy/systemd/* text eol=lf

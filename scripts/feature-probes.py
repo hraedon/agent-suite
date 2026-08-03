@@ -219,21 +219,45 @@ def _sibling_test_exists(
     return (SIBLINGS_ROOT / checkout_name / tests_subdir / test_name).exists()
 
 
+# `<cli> --help` output is immutable within a process, yet the probes shell out
+# to it many times over a matrix build — five subcommands per CLI, across several
+# probes per sibling. That redundant subprocess cost (each spawn is ~0.5s, and a
+# cold full probe run is ~7s) is what made the feature-matrix suite slow (WI-008).
+# Cache the help text per CLI so each is spawned once per process; the subcommand
+# membership test still runs on every call, so probe semantics are unchanged.
+# ``None`` records a CLI whose help could not be read (absent or errored), which
+# is likewise stable within a process.
+_CLI_HELP_CACHE: dict[str, str | None] = {}
+
+
+def _cli_help_text(cli_name: str) -> str | None:
+    """Return ``<cli_name> --help`` stdout, cached per process.
+
+    ``None`` means the CLI is absent or its help could not be read.
+    """
+    if cli_name in _CLI_HELP_CACHE:
+        return _CLI_HELP_CACHE[cli_name]
+    text: str | None = None
+    if shutil.which(cli_name):
+        try:
+            result = subprocess.run(
+                (cli_name, "--help"),
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            text = result.stdout
+        except Exception:
+            text = None
+    _CLI_HELP_CACHE[cli_name] = text
+    return text
+
+
 def _sibling_cli_has_subcommand(cli_name: str, subcommand: str) -> bool:
     """Shell out to <cli_name> --help and check the subcommand appears."""
-    if not shutil.which(cli_name):
-        return False
-    try:
-        result = subprocess.run(
-            (cli_name, "--help"),
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        return subcommand in result.stdout
-    except Exception:
-        return False
+    help_text = _cli_help_text(cli_name)
+    return help_text is not None and subcommand in help_text
 
 
 def _sibling_route_exists(checkout_name: str, module_name: str, route_path: str) -> bool:

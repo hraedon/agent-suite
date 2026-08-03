@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -29,6 +30,7 @@ def _aggregate_safe(
     lock_path: Path | None = None,
     shared_endpoints: dict[str, str] | None = None,
     remote_checker: Callable[[str], RemoteHealthResult] | None = None,
+    invoking_context: object | None = None,
 ) -> SuiteReport:
     """Call aggregate() with lock-drift stubbed so tests don't shell out."""
     if lock_path is None:
@@ -44,6 +46,7 @@ def _aggregate_safe(
         remote_checker=remote_checker,
         memory_provider_checks=False,
         codex_health_checks=False,
+        invoking_context=invoking_context,  # type: ignore[arg-type]
     )
 
 
@@ -120,13 +123,71 @@ def test_umbrella_shape_matches_contract() -> None:
     outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
     report = _aggregate_safe(installed=_installed_all(), runner=_runner_for(outputs))
     d = report.to_dict()
-    assert set(d) == {"suite_ok", "components", "lock", "duration_ms"}
+    assert set(d) == {
+        "suite_ok", "components", "lock", "invoking_context", "duration_ms",
+    }
     comp = d["components"][0]
     assert {
         "component", "tier", "status", "ok", "version",
         "detail", "regista", "checks", "duration_ms",
     } <= set(comp)
     assert d["lock"]["matches"] is None  # no lock file in test env
+
+
+def test_doctor_records_invoking_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DEFECT 2a: the doctor JSON carries an invoking context (uid/euid, how PATH
+    was resolved, config sources) split into box (machine/host) and actor
+    (invoking user), each with measured values — so a scheduled red is triageable
+    from doctor output. The box measurement is pinned here (runner SYSTEM_PATH
+    ownership varies; its honesty is asserted in test_schedule); this test covers
+    the plumbing into the doctor report. The actor side is measured from this
+    process."""
+    monkeypatch.setattr("agent_suite.schedule._box_system_scoped", lambda: True)
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = _aggregate_safe(installed=_installed_all(), runner=_runner_for(outputs))
+    assert report.invoking_context is not None
+    d = report.to_dict()["invoking_context"]
+    assert isinstance(d, dict)
+    actor = d["actor"]
+    box = d["box"]
+    assert actor["scope"] == "actor"
+    assert box["scope"] == "box"
+    # Both sides carry measured values, not the two-field tautology.
+    for side in (actor, box):
+        assert {"scope", "bin_dir", "system_scoped", "uid", "euid",
+                "path_provenance", "config_sources"} <= set(side)
+    assert box["system_scoped"] is True  # measured via the pinned-path ownership check
+    if sys.platform == "win32":
+        assert actor["uid"] is None  # no uid concept on Windows — None by design
+    else:
+        assert isinstance(actor["uid"], int)  # measured from this POSIX process
+    assert isinstance(actor["path_provenance"], str) and actor["path_provenance"]
+    assert isinstance(actor["config_sources"], list)
+    assert box["path_provenance"].startswith("systemd-unit:")
+
+
+def test_doctor_invoking_context_is_injectable() -> None:
+    """The invoking context is injectable so a caller (or test) can pin it."""
+    from agent_suite.schedule import ContextScope, InvokingContext, ScopeContext
+
+    fixed = InvokingContext(
+        actor=ScopeContext(
+            scope=ContextScope.ACTOR, bin_dir="/opt/agent-suite/bin",
+            system_scoped=True, uid=0, euid=0, path_provenance="/usr/local/bin",
+            config_sources=(),
+        ),
+        box=ScopeContext(
+            scope=ContextScope.BOX, bin_dir="/usr/local/bin", system_scoped=True,
+            uid=0, euid=None, path_provenance="systemd-unit:/usr/local/bin",
+            config_sources=("/etc/agent-suite/suite.env",),
+        ),
+    )
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = _aggregate_safe(
+        installed=_installed_all(), runner=_runner_for(outputs), invoking_context=fixed
+    )
+    assert report.invoking_context is fixed
+    assert report.to_dict()["invoking_context"]["actor"]["bin_dir"] == "/opt/agent-suite/bin"
 
 
 def test_version_and_regista_pass_through() -> None:

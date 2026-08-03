@@ -136,16 +136,21 @@ JSON results use this shape; a human form may accompany it:
 - `no_op: true` is valid only for an already-installed or already-absent
   idempotent state. A parsed but unwired adapter is never a no-op success.
 
-Exit codes:
+Exit codes (aligned with CLI contract v1 §2 — `cli-contract.md`; dry-run is
+success, ratified 2026-07-20 / WI-021):
 
 | Code | Meaning |
 |------|---------|
-| 0 | Installed success, including an idempotent installed no-op; degraded only with an explicit permitting policy |
+| 0 | Installed success, including an idempotent installed no-op and a successful `--dry-run`; degraded only with an explicit permitting policy |
 | 1 | Failed, unsupported, or degraded without a permitting policy |
-| 2 | Supported dry-run completed without action |
+| 2 | Usage error (argparse default: unknown harness, missing required flag) |
 
-An unsupported dry-run exits 1: unsupported takes precedence over the
-informational dry-run state.
+A `--dry-run` that successfully computes and prints its plan exits 0: it ran
+correctly and acted on nothing, which is the contract for 0. "Nothing was
+applied" is carried by the result's `actions` / `no_op` output and by the flag
+the caller passed, never by a distinct exit code. A dry-run that fails to
+compute its plan is an ordinary error and exits 1; an unsupported dry-run exits
+1 because unsupported takes precedence over the informational dry-run state.
 
 ## 5. Validation
 

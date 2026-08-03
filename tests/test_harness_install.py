@@ -202,6 +202,66 @@ def test_structured_result_must_match_invoked_tool_and_harness(
     assert "mismatch" in evaluation.detail
 
 
+def test_successful_dry_run_is_success_exit_0_per_ratified_contract() -> None:
+    """CLI contract v1 §2 (ratified 2026-07-20, WI-021): a ``--dry-run`` that
+    computes and prints its plan exits 0. The suite evaluates a child's
+    contract-shaped dry-run (exit 0 + JSON plan) as success — "nothing was
+    applied" rides in the output, never in a distinct exit code."""
+    evaluation = evaluate_install_harness_result(
+        returncode=0,
+        stdout=json.dumps(
+            {
+                "tool": "agent-notes",
+                "harness": "codex",
+                "status": "installed",
+                "actions": [
+                    {
+                        "kind": "install_plugin",
+                        "path": "agent-notes",
+                        "detail": "would register component plugin",
+                    }
+                ],
+                "no_op": False,
+            }
+        ),
+        stderr="",
+        expected_tool="agent-notes",
+        expected_harness=HarnessTarget.CODEX,
+        require_structured=True,
+    )
+
+    assert evaluation.ok is True
+    assert evaluation.status is HarnessInstallStatus.INSTALLED
+
+
+def test_dry_run_nonzero_exit_is_never_success() -> None:
+    """The pre-ratification convention returned exit 2 for a completed dry-run.
+    Under the ratified contract a successful dry-run exits 0, so any non-zero
+    exit on the dry-run path is an ordinary failure and must fail closed — the
+    suite never maps a non-zero dry-run to success."""
+    evaluation = evaluate_install_harness_result(
+        returncode=2,
+        stdout=json.dumps(
+            {
+                "tool": "agent-notes",
+                "harness": "codex",
+                "status": "installed",
+                "actions": [],
+                "no_op": False,
+            }
+        ),
+        stderr="dry-run completed without action",
+        expected_tool="agent-notes",
+        expected_harness=HarnessTarget.CODEX,
+        require_structured=True,
+    )
+
+    # Load-bearing contract assertion: a non-zero dry-run is never success.
+    assert evaluation.ok is False
+    assert evaluation.no_op is False
+    assert "exited 2" in evaluation.detail
+
+
 def test_concrete_invocation_rejects_duplicate_matching_records() -> None:
     record = {
         "tool": "cairn",
