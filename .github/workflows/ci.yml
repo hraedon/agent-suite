@@ -56,10 +56,10 @@ jobs:
         run: uv run pytest tests/test_architecture.py -q
 
       - name: Lint (ruff)
-        run: uv run ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check_publication_plumbing.py scripts/check-lock-agreement.py
+        run: uv run ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check_publication_plumbing.py scripts/check-lock-agreement.py scripts/check-spine-symbols.py
 
       - name: Type check (mypy)
-        run: uv run mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py scripts/check_publication_plumbing.py
+        run: uv run mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py scripts/check_publication_plumbing.py scripts/check-spine-symbols.py
 
       - name: Run tests
         run: uv run pytest --tb=short -q
@@ -309,6 +309,18 @@ jobs:
       - name: Install agent-capability-broker
         run: uv pip install /tmp/siblings/agent-capability-broker
 
+      # Develop-against-lock gate (WI-057): a sibling's test files must not
+      # import symbols absent from the locked spine release. Runs after the
+      # locked regista is installed (above) so `import regista` resolves to
+      # the locked spine — that is the whole authority of the check. Not
+      # --strict for now: --strict also fails on UNVERIFIED imports (submodules
+      # that could not be introspected), which can false-positive. Re-enable
+      # --strict here once the estate is comfortable with it.
+      - name: Develop-against-lock gate (spine symbol check)
+        env:
+          AGENT_SUITE_SIBLINGS_ROOT: /tmp/siblings
+        run: uv run python scripts/check-spine-symbols.py
+
       # agent-wake has no importable package (package=None in the probe
       # revision sources); only its source checkout is needed for the
       # source-based and CLI-based probes. It was cloned above.
@@ -346,10 +358,10 @@ jobs:
         run: uv run python scripts/validate-contracts.py --check
 
       - name: Lint (ruff)
-        run: uv run ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check_publication_plumbing.py scripts/check-lock-agreement.py
+        run: uv run ruff check src tests scripts/plan-index.py scripts/feature-matrix.py scripts/validate-contracts.py scripts/feature-probes.py scripts/check_committed_identifiers.py scripts/check_publication_plumbing.py scripts/check-lock-agreement.py scripts/check-spine-symbols.py
 
       - name: Type check (mypy)
-        run: uv run mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py scripts/check_publication_plumbing.py
+        run: uv run mypy --strict src scripts/feature-matrix.py scripts/validate-contracts.py scripts/check_publication_plumbing.py scripts/check-spine-symbols.py
 
       - name: Run tests
         run: uv run pytest --tb=short -q
