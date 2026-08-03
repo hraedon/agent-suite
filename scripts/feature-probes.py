@@ -35,7 +35,6 @@ import argparse
 import importlib
 import importlib.metadata
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -45,6 +44,8 @@ from enum import Enum
 from pathlib import Path
 from types import ModuleType
 from typing import Any, assert_never
+
+from agent_suite.lock import resolve_workspace_root
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = REPO_ROOT / "data" / "v1-feature-matrix.json"
@@ -67,9 +68,7 @@ _STRUCTURAL_STATUS_DISCLAIMER = (
     "data/release-board.json; each row's release-stage label is the "
     "`release_status` field."
 )
-SIBLINGS_ROOT = Path(
-    os.environ.get("AGENT_SUITE_SIBLINGS_ROOT", "/projects")
-)
+SIBLINGS_ROOT = resolve_workspace_root(Path("/projects"))
 
 
 class ProbeResult(Enum):

@@ -19,16 +19,19 @@ in the umbrella ``[components]`` table). Exit code: 0 when no member disagrees,
 Usage:
     AGENT_SUITE_SIBLINGS_ROOT=/tmp/siblings python3 scripts/check-lock-agreement.py
     AGENT_SUITE_SIBLINGS_ROOT=/tmp/siblings python3 scripts/check-lock-agreement.py --strict
+
+``SUITE_WORKSPACE_ROOT`` is the canonical spelling (precedence over the
+``AGENT_SUITE_SIBLINGS_ROOT`` alias); both forms are accepted here.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import tomllib
 from pathlib import Path
 
+from agent_suite.lock import resolve_workspace_root
 from agent_suite.lock_agreement import (
     check_all,
     format_report,
@@ -56,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     umbrella_text = umbrella_path.read_text(encoding="utf-8")
 
-    siblings_root = Path(os.environ.get("AGENT_SUITE_SIBLINGS_ROOT", "/tmp/siblings"))
+    siblings_root = resolve_workspace_root(Path("/tmp/siblings"))
 
     umbrella = tomllib.loads(umbrella_text)
     member_locks: dict[str, str | None] = {}
