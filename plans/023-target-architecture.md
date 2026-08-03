@@ -1,6 +1,14 @@
 # Plan 023 — Target architecture
 
-**Status: DRAFT for owner ratification** (2026-08-02).
+**Status: RATIFIED** (2026-08-03). Owner authorization, recorded
+verbatim: *"I am pausing all other work on the agent-suite, so once you
+consolidate and review what's on mvmcc02 you are welcome to begin plan
+023 with any modifications you choose to add"* — with the qualifier
+that *"expanded scope [is] potentially permissible if it serves a
+genuine learning goal."* The modifications taken under that authority
+are §12. One act stays owner-gated: the RC3 release-board declaration
+and tag (a release declaration is an authorization record; an agent
+must not sign it as the owner).
 
 This is the **specification to build from**. Plan 022 is the decision
 record behind it — read it for *why*, never for *what*. Where the two
@@ -30,6 +38,18 @@ requires.
 **Environment constraints.** No new runtime SaaS. Low cost. Self-hosted
 Postgres, Vault, and AD already exist. GitHub is sanctioned for Git,
 PRs, and CI. Entra may follow AD; the design must not preclude it.
+
+**R-23 — Scope expands only toward learning.** This estate is a lab;
+its purpose includes what building it teaches. An expansion beyond the
+minimal design is permissible when it (a) names a genuine learning
+objective the minimal path would not exercise, (b) preserves R-01..R-06
+untouched, and (c) carries an explicit evaluation or sunset criterion
+so it cannot silently become load-bearing scope creep. Commodity
+feature surface — boards, comments, notifications, rich search — is
+exactly the expansion that teaches nothing; R-17/R-18 therefore stand
+unrelaxed. The learning-permissible direction is depth in the evidence
+and identity layers (transparency-log operation, workload attestation,
+verification tooling), not breadth in the coordination layer.
 
 ---
 
@@ -281,15 +301,13 @@ run first.
 - **G-2.** A cross-lineage review verdict verifies to a distinct
   workload instance, not merely a distinct agent name.
 - **G-3.** Undeclared lineage **lowers** assurance; it never satisfies
-  a distinctness requirement. *Verified 2026-08-02 (regista WI-239): the
-  two paths currently disagree.* `adversarial_review` is fail-closed and
-  correctly blocks an undeclared reviewer. But the human-gate escalation
-  uses `same_lineage()`, which treats `None` as **independent** — so an
-  undeclared-lineage reviewer who supplies `same_lineage_acknowledged`
-  passes the first gate and then never triggers the human requirement,
-  because unknown independence reads as proven independence. Fix:
-  `same_lineage()` returns three states — SAME, DISTINCT, UNKNOWN — and
-  UNKNOWN escalates exactly as SAME does.
+  a distinctness requirement. *Fixed and verified 2026-08-03: regista
+  PR #25 (f4fe6f8, WI-239) landed the prescribed three-state
+  `LineageRelation` — SAME / DISTINCT / UNKNOWN — with UNKNOWN
+  escalating exactly as SAME does in both the adversarial-review and
+  human-gate paths.* (History: found 2026-08-02 — the human-gate
+  escalation read `None` lineage as proven independence while
+  `adversarial_review` was already fail-closed.)
 - **G-4.** Revoking one agent's credentials leaves other agents and the
   host unaffected, proven by test.
 - **G-5.** Every doctor check either names the action it performed or
@@ -339,10 +357,93 @@ run first.
 
 - **O-1.** Design the R-08 predicate set concretely: field-level schema
   for each of the five facts, and what evidence backs each.
-- **O-2.** Choose the transparency log (Tessera vs immudb) against
-  operational cost on this estate.
-- **O-3.** Decide the workload-attestation mechanism for R-09 (Vault
-  Agent, SPIFFE/SPIRE, or acb-issued short-lived credentials).
+- ~~**O-2.** Choose the transparency log (Tessera vs immudb).~~
+  **Decided 2026-08-03 (direction; see §12): Tessera**, subject to a
+  bounded operational spike at M4 entry. Rationale under R-23: Tessera
+  is a true tile-based transparency log (Trillian's successor) whose
+  artifacts verify with standard checkpoint/inclusion-proof tooling and
+  whose POSIX storage backend fits this estate; operating one teaches
+  CT-style log semantics that transfer. immudb is an immutable database
+  with product-specific verification — less operational surface, but
+  also less to learn and a proof format nothing else speaks. R-05
+  intact: adopted, not implemented. Spike exit criterion: a Tessera
+  instance on this estate holding real statement digests, an inclusion
+  proof verified offline by an independent client, and measured
+  steady-state cost; if the cost is disproportionate, fall back to
+  immudb *before* M4 work begins.
+- ~~**O-3.** Decide the workload-attestation mechanism for R-09.~~
+  **Decided 2026-08-03 (see §12): two-phase.** M3 ships on acb-issued
+  short-lived credentials — the broker exists, is reviewed, and the
+  security boundary must not wait on new infrastructure. SPIFFE/SPIRE
+  is deferred to learning lane L-1 (§12) and may *replace* acb issuance
+  post-M4 only if its workload attestation proves materially stronger
+  binding at acceptable operational cost on a two-node estate.
 - ~~**O-4.** Confirm G-3 against current code.~~ **Closed 2026-08-02** —
   regista WI-239 filed; the defect is real but narrower and more
-  composed than reported. See G-3.
+  composed than reported. **Fixed 2026-08-03** (regista #25). See G-3.
+
+---
+
+## 12. The 2026-08-03 reevaluation — ratification and learning-scope decisions
+
+Recorded when the owner ratified the plan with delegated modification
+authority and the R-23 qualifier. Changes made under that authority:
+
+**R-23 added (§1).** The scope test is now explicit: depth in evidence
+and identity layers is expandable for learning; breadth in the
+coordination layer is not. The tracker scope cap (R-17) and revisit
+triggers (R-18) were reconsidered under the expanded-scope permission
+and deliberately retained — commodity tracker features are the
+canonical expansion that serves no learning goal.
+
+**Learning lane L-1 — SPIFFE/SPIRE workload attestation (post-M4,
+optional).** Learning objective: workload identity as practiced beyond
+this estate (SVID issuance, node/workload attestors, federation).
+Evaluation criterion: a spike issuing SVIDs to two real workloads
+(capture harness, review runner) and binding one R-08 execution fact to
+an SVID; adopt into C5's issuance path only if the binding is
+demonstrably stronger than acb's and the SPIRE server's operational
+cost fits the estate. Sunset: if not adopted within one milestone of
+completing M4, the lane closes with a written verdict either way.
+
+**WI-061 decisions D2–D5** (D1, SHA rewriting, was decided in §7):
+
+- **D2 — SUITE.lock survives; the develop-against-lock apparatus does
+  not.** SUITE.lock remains the published-release pinning record
+  (release manifests and RC verification need it after consolidation).
+  `dev-install.py`, `suite_lock.py`'s sibling-checkout pairing, and the
+  develop-against-lock CI apparatus retire at M2 cutover — the
+  workspace makes cross-repo drift structurally impossible. The
+  WI-057 spine-symbol gate (merged 2026-08-03, PR #16) is deliberate
+  interim protection: its value window is now→cutover, and it retires
+  with the apparatus it guards. Expected and accepted.
+- **D3 — the 54 shape-asserting tests, by group at M2 execution:**
+  publication_plumbing (27) and identifier-gate (16) are rewritten to
+  the workspace shape (the invariants they check survive; the layout
+  they assert does not); develop_against_lock (9) is deleted with its
+  apparatus; matrix/artifact sibling-probe tests (6) are rewritten
+  against the workspace probe source. The ~20 previously
+  ImportError-skipped agent-suite tests that the shared venv un-skips
+  are a win: the two failures get filed, including the genuine cairn
+  defect the consolidation surfaced.
+- **D4 — one `FORBIDDEN_IDENTIFIERS` secret.** The six per-repo copies
+  merge at cutover. The gate fails closed, so a botched rename reddens
+  everything loudly rather than silently passing anything — acceptable,
+  and the failure mode is the safe one.
+- **D5 — torch stays out of the default developer sync.** agent-notes'
+  ~5 GB embedding stack moves behind an optional dependency group;
+  features degrade explicitly when absent and doctor reports the
+  absence as an observation (R-01). No developer pays 5 GB to work on
+  an unrelated package.
+
+**Execution begins with M1 completion**, because M1 gates the only
+one-way door: regista WI-240 (chunked, capped bundle export — an
+export its own verifier refuses must fail, not exit 0), WI-242
+(verification must run against a read-only restore: replay stops
+mutating, connect stops issuing DDL), WI-060 residuals (anchors,
+offsite archive copy, cooling-off; both escrow legs currently share
+Vault as a dependency), and WI-241 (cross-schema key scoping — decided
+together with the O-1 identity predicates, not patched ad hoc, per the
+item's own analysis). M2 cutover work (WI-062/063/064) follows; RC3
+finishes first in the current topology and its declaration remains the
+owner's signature.
