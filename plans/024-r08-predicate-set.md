@@ -1,11 +1,13 @@
 # Plan 024 — The R-08 predicate set
 
-**Status: DRAFT for owner ratification, revision 4** (2026-08-03; r1 reviewed
-NEEDS-CHANGES by cross-lineage design review — 7 majors, 15 mediums,
-all addressed below). Closes Plan 023 **O-1** when ratified; O-1 is
-required before M3, so this document gates M3. It also records the
-**WI-241 decision** (key-registry scoping), which Plan 023 deferred to
-the identity model deliberately.
+**Status: RATIFIED** (2026-08-04; owner approval in-session on the
+independent SOUND verdict). Review history: four cross-lineage design
+review rounds (opus) — r1 NEEDS-CHANGES (7 majors, 15 mediums), r2/r3
+NEEDS-CHANGES on residuals, r4 **SOUND** — plus an independent owner-side
+pass confirming traceability to Plan 023. Ratification closes Plan 023
+**O-1** (required before M3, so this document gates M3). It also records
+the **WI-241 decision** (key-registry scoping), which Plan 023 deferred
+to the identity model deliberately.
 
 Everything here traces to Plan 023: the five facts are R-08's rows; the
 wire format is R-19–R-22; the trust model is R-07/R-09/R-10/R-11; the
@@ -57,9 +59,11 @@ may treat it otherwise.
 
 ## 2. Common conventions
 
-- **Principals** use the WI-055 ratified grammar: `human:<id>`,
-  `agent:<id>`, `service:<id>` — stable opaque subject, never a login
-  or display name. `key:*` is not a principal. `actor_id`,
+- **Principals** use the WI-055-ratified grammar (decision ratified
+  2026-08-01; the item stays open because *enforcement is not yet
+  live* — enroll/append strictness lands per project at cutover):
+  `human:<id>`, `agent:<id>`, `service:<id>` — stable opaque subject,
+  never a login or display name. `key:*` is not a principal. `actor_id`,
   `actor_kind`, and `on_behalf_of` remain independent dimensions;
   disagreement is an explicit conflict state
   (`principal_kind_conflict`), never silently resolved — and per

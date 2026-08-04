@@ -355,8 +355,12 @@ run first.
 
 ## 11. Open — required before M3
 
-- **O-1.** Design the R-08 predicate set concretely: field-level schema
-  for each of the five facts, and what evidence backs each.
+- ~~**O-1.** Design the R-08 predicate set concretely: field-level schema
+  for each of the five facts, and what evidence backs each.~~
+  **Closed 2026-08-04 — Plan 024 ratified** (`plans/024-r08-predicate-set.md`;
+  four-round cross-lineage design review, SOUND at r4, owner approval
+  in-session). Plan 024 also records the WI-241 key-registry decision
+  and a 17-row M3/M4 gap register, R-10 first.
 - ~~**O-2.** Choose the transparency log (Tessera vs immudb).~~
   **Decided 2026-08-03 (direction; see §12): Tessera**, subject to a
   bounded operational spike at M4 entry. Rationale under R-23: Tessera
