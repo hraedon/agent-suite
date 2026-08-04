@@ -1,6 +1,6 @@
 # Plan 024 — The R-08 predicate set
 
-**Status: DRAFT for review, revision 2** (2026-08-03; r1 reviewed
+**Status: DRAFT for review, revision 3** (2026-08-03; r1 reviewed
 NEEDS-CHANGES by cross-lineage design review — 7 majors, 15 mediums,
 all addressed below). Closes Plan 023 **O-1** when ratified; O-1 is
 required before M3, so this document gates M3. It also records the
@@ -121,8 +121,8 @@ cover the composition's `integrated_at` (§4), not a signer clock.
 | `workload_instance` | (§2) | host probed; `instance_id` declared → attested at M3; harness see §3.4 | host + session-scoped `instance_id` MISSING (M3, cairn) |
 | `orchestrator` | `{name, version}` | probed at session attestation only | harness identity; distinct from the model |
 | `credential_binding` | `{issuer, credential_id, issued_at, expires_at}` | attested | MISSING today — M3: acb-issued short-lived credential id (never the secret); L-1 may later swap in SVID identity, same shape (O-3 two-phase). **This is the only field that makes execution more than a self-description** — see §4's pre-M3 honesty note |
-| `session_id` | UUID | measured | harness `session_id`; UUIDv5-coerced by the bridge *when non-UUID* (generic `NAMESPACE_URL`) |
-| `parent_instance` | `{instance_id, session_id}` \| null | measured | subagent linkage exists per call and per start/stop window; main-loop parentage lands with `instance_id` |
+| `session_id` | UUID | **probed** (r2 R-5) | harness-supplied, UUIDv5-coerced by the bridge *when non-UUID* (generic `NAMESPACE_URL`) — not recomputable from captured bytes, so not `measured`; the predicate records `session_id_basis: native\|derived` |
+| `parent_instance` | `{instance_id, session_id}` \| null | **probed** (r2 R-5) | subagent linkage exists per call and per start/stop window (harness-supplied identifiers); main-loop parentage lands with `instance_id` |
 | `window` | `{start, end}` | declared | start = session attestation. **There is no end marker today**: `SessionEnd` emits nothing and `Stop` fires per turn, so `end` is "last Stop observed" — recorded as exactly that, `end_basis: "last_stop"`, until a real end event exists (r1 MED-14) |
 
 **Does not claim:** what the workload produced (authorship) or that the
@@ -209,12 +209,26 @@ sharing a subject." A valid composition additionally requires:
    fails rule 2 on receipt ordering.
 3. **Lineage**: per §3.3 — UNKNOWN anywhere fails distinctness.
 
-**A review verdict (G-2)** is: an `authorship` predicate over the
-verdict document, an `execution` predicate, an `authorization`
-predicate, composed under the binding rule, each with an `ordering`
-receipt. G-2 requires **both** lineage distinctness and
-workload-instance distinctness, both fields present, UNKNOWN
-escalating (G-3).
+**A review verdict (G-2) is TWO compositions, not one (r2 R-1).** The
+**authored-work composition** (the work under review: its authorship,
+execution, authorization predicates, internally bound by rules 1–3)
+and the **review composition** (the verdict document: its authorship,
+execution, authorization predicates, likewise internally bound). Each
+is internally *same*-instance by rule 1; G-2's distinctness is
+evaluated **across the two compositions**: the review's
+`model.lineage` must be DISTINCT from the authored work's, and the
+review's `workload_instance` must differ from the authored work's.
+Both compositions must be present — absent or unpopulated
+authored-work predicates yield UNKNOWN, which fails (§3.3, G-3). A
+distinctness requirement evaluated inside a single composition is
+vacuous by construction and is not G-2.
+
+**Freshness rules are inert until M4 (r2 R-2), stated once:** every
+freshness and expiry rule in this document is evaluated against
+`integrated_at`, and `integrated_at` exists only when the ordering
+predicate does (M4). Until then, rule 2 and §3.1's delegation-window
+check are specified but non-executable; no pre-M4 consumer may claim
+to have enforced them.
 
 **What G-2 proves before and after M3 (r1 MAJ-2), stated plainly:**
 pre-M3, `model.lineage` is a permanent self-declaration and
@@ -289,6 +303,17 @@ about history, not a derivable fact, and it must never satisfy
 signature *binding* — historical events keep binding to their exact
 recorded identities.
 
+**The manifest's own trust anchor lives outside the archive (r2
+R-3).** An archive-resident manifest key would reproduce the WI-209
+threat one level up: whoever can rewrite the archive re-signs the
+manifest and swaps the key bytes, and a negative test catches only an
+*inconsistent* forgery, not a consistent one. The asserter's key
+fingerprint is therefore published/escrowed **out of band** (the
+WI-060 escrow channel; WI-209's `--trusted-fingerprints` input is the
+natural verification shape), and A-4 verifies the manifest signature
+against that out-of-band pin, never against material the archive
+itself supplies.
+
 **Explicitly rejected:** re-registering the existing key into
 `agent_provenance` retroactively (rewrites history's shape); shipping
 foreign-schema keys in bundles silently (the current failure, made
@@ -304,7 +329,7 @@ in this document (r1 MED-17).
 | gap | owner | milestone |
 |---|---|---|
 | **R-10 actor-boundary signing** ("the first correctness fix", Plan 023) | regista (C2) | M3, first |
-| anchored enrollment timeline (WI-209) + estate-scoped key registry | regista (C2) | M3 |
+| anchored enrollment timeline (WI-209) + estate-scoped key registry — **precondition: anchors deployed** (r2 R-4): the estate has ZERO anchors today (open WI-060 residual), and an unanchored enrollment timeline is operator-asserted, no stronger than the registry it replaces | regista (C2) + WI-060 anchors | M3 |
 | `credential_binding` issuance + logging | acb | M3 |
 | host + session-scoped `instance_id` (main loop) in capture | cairn | M3 |
 | `model.{id,lineage,provider}` supplied per session | harness launch env → cairn | M3 |
@@ -344,10 +369,12 @@ improves.
   verifying offline with the live service stopped. `ordering/v1` is
   explicitly deferred to M4 — no stand-in is modeled, and the dry run
   records its absence rather than simulating a receipt.
-- **A-3.** G-2 dry run: one real cross-lineage review verdict composes
-  per §4; a deliberately same-lineage pair is rejected; **and an
-  UNKNOWN-lineage pair is rejected** — the case that actually occurred
-  in production (r1 minor).
+- **A-3** (rescoped, r2 R-2 — ordering deferred exactly as in A-2).
+  G-2 dry run over the four pre-M4 predicate types: one real
+  cross-lineage review composes per §4's two-composition framing
+  (freshness legs recorded as deferred, not simulated); a deliberately
+  same-lineage pair is rejected; **and an UNKNOWN-lineage pair is
+  rejected** — the case that actually occurred in production.
 - **A-4** (rebuilt, r1 MAJ-5). WI-241 interim manifest: for a pinned
   snapshot sequence range, the archive's ed25519 slice verifies
   offline using only archive contents — key bytes from the manifest,
