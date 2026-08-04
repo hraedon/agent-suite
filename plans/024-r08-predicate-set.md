@@ -1,6 +1,6 @@
 # Plan 024 — The R-08 predicate set
 
-**Status: DRAFT for review, revision 3** (2026-08-03; r1 reviewed
+**Status: DRAFT for owner ratification, revision 4** (2026-08-03; r1 reviewed
 NEEDS-CHANGES by cross-lineage design review — 7 majors, 15 mediums,
 all addressed below). Closes Plan 023 **O-1** when ratified; O-1 is
 required before M3, so this document gates M3. It also records the
@@ -215,13 +215,16 @@ execution, authorization predicates, internally bound by rules 1–3)
 and the **review composition** (the verdict document: its authorship,
 execution, authorization predicates, likewise internally bound). Each
 is internally *same*-instance by rule 1; G-2's distinctness is
-evaluated **across the two compositions**: the review's
-`model.lineage` must be DISTINCT from the authored work's, and the
-review's `workload_instance` must differ from the authored work's.
-Both compositions must be present — absent or unpopulated
-authored-work predicates yield UNKNOWN, which fails (§3.3, G-3). A
-distinctness requirement evaluated inside a single composition is
-vacuous by construction and is not G-2.
+evaluated **across the compositions**. Work authored across several
+sessions yields several authored-work compositions (rule 1 binds each
+to one session), so the quantifier matters (r3 D-2): the review's
+`model.lineage` and `workload_instance` must be distinct from those of
+**every** authored-work composition, and the authored-work set must be
+complete for the work under review — partial presentation is not
+compliance. Absent or unpopulated authored-work predicates yield
+UNKNOWN, which fails (§3.3, G-3). A distinctness requirement evaluated
+inside a single composition is vacuous by construction and is not
+G-2.
 
 **Freshness rules are inert until M4 (r2 R-2), stated once:** every
 freshness and expiry rule in this document is evaluated against
@@ -232,9 +235,11 @@ to have enforced them.
 
 **What G-2 proves before and after M3 (r1 MAJ-2), stated plainly:**
 pre-M3, `model.lineage` is a permanent self-declaration and
-`instance_id` is self-minted, so a G-2 composition is a **composition
-of declarations** — internally consistent, honestly graded, and
-forgeable by a single actor willing to declare falsely. It becomes
+`instance_id` is self-minted, so the G-2 compositions are
+**compositions of declarations** — honestly graded, and forgeable by a
+single actor willing to declare falsely, *including by producing both
+compositions itself*, since nothing pre-M3 binds a session to an
+independent identity. It becomes
 independence *evidence* only when `credential_binding` is
 broker-attested (M3) and the instance identity is bound to that
 credential; the per-leaf grading rule (§1) makes this legible —
@@ -375,12 +380,15 @@ improves.
   (freshness legs recorded as deferred, not simulated); a deliberately
   same-lineage pair is rejected; **and an UNKNOWN-lineage pair is
   rejected** — the case that actually occurred in production.
-- **A-4** (rebuilt, r1 MAJ-5). WI-241 interim manifest: for a pinned
-  snapshot sequence range, the archive's ed25519 slice verifies
-  offline using only archive contents — key bytes from the manifest,
-  binding checked against recorded identities, manifest signature and
-  asserter checked. Test includes a negative: a manifest entry with a
-  wrong public key fails the slice.
+- **A-4** (rebuilt, r1 MAJ-5; aligned with §5's out-of-band pin, r3
+  D-1). WI-241 interim manifest: for a pinned snapshot sequence range,
+  the archive's ed25519 slice verifies offline using archive contents
+  **plus the out-of-band asserter pin** (§5) — key bytes from the
+  manifest, binding checked against recorded identities, manifest
+  signature checked against the pinned fingerprint, never against
+  material the archive itself supplies. Two negatives: a manifest
+  entry with a wrong public key fails the slice, and a manifest
+  consistently re-signed by a non-pinned key fails outright.
 
 ---
 
