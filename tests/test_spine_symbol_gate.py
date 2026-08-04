@@ -159,6 +159,17 @@ def test_classify_star_import_is_package() -> None:
     )
 
 
+def test_classify_from_module_star_import_is_module() -> None:
+    # A star import from a SUBMODULE (`from regista.foo import *`) still
+    # requires regista.foo to be an importable submodule in the locked spine,
+    # so it must classify as MODULE — otherwise the gate passes while the
+    # sibling test fails (narrow fail-open). See WI-066.
+    assert (
+        _classify(SpineImport("regista.foo", None, 1, Path("t.py"), star=True))
+        is ImportKind.MODULE
+    )
+
+
 def test_missing_symbols_plain_package_always_ok() -> None:
     imp = SpineImport("regista", None, 1, Path("t.py"))
     result = missing_symbols(set(), {}, [imp])
@@ -169,6 +180,24 @@ def test_missing_symbols_star_import_never_missing() -> None:
     imp = SpineImport("regista", None, 1, Path("t.py"), star=True)
     result = missing_symbols(set(), {}, [imp])
     assert result == GateResult(missing=[], unverified=[])
+
+
+def test_missing_symbols_from_module_star_import_missing_when_submodule_absent() -> None:
+    # `from regista.foo import *` where regista.foo is NOT an importable
+    # submodule (and `foo` is not a top-level re-export) must be reported
+    # MISSING — that is the fail-open WI-066 closes. (Star imports are rare in
+    # test files, so this is narrow but real.)
+    imp = SpineImport("regista.foo", None, 1, Path("t.py"), star=True)
+    result = missing_symbols(set(), {}, [imp])
+    assert result.missing == [imp] and result.unverified == []
+
+
+def test_missing_symbols_from_module_star_import_present_when_submodule_exists() -> None:
+    # When regista.foo IS an importable submodule, the star import is
+    # satisfiable (MODULE branch: imp.module in submodule_attrs).
+    imp = SpineImport("regista.foo", None, 1, Path("t.py"), star=True)
+    result = missing_symbols(set(), {"regista.foo": {"X"}}, [imp])
+    assert result.missing == [] and result.unverified == []
 
 
 def test_missing_symbols_from_package_present_and_missing() -> None:
@@ -236,3 +265,25 @@ def test_missing_symbols_mixed_batch_counts() -> None:
     )
     assert [imp.lineno for imp in result.missing] == [3, 5]
     assert [imp.lineno for imp in result.unverified] == [6]
+
+
+# ---------------------------------------------------------------------------
+# Script-level candidate-submodule collection (the integration glue that
+# decides which submodules the wrapper probes). Extracted to a pure function
+# so it is unit-testable without a real sibling checkout.
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_submodules_from_module_star_import_is_probed() -> None:
+    # A from-module star import (`from regista.foo import *`) must add its
+    # submodule to the probe set — otherwise missing_symbols can never learn
+    # that regista.foo exists and would false-positive it missing. This is the
+    # half of WI-066 that the script delegates to the pure core. A package-
+    # level star import (`from regista import *`) names no submodule (its
+    # module is just "regista") and must NOT be probed.
+    from agent_suite.spine_symbol_gate import candidate_submodules
+
+    from_module_star = SpineImport("regista.foo", None, 1, Path("t.py"), star=True)
+    from_package_star = SpineImport("regista", None, 2, Path("t.py"), star=True)
+    probes = candidate_submodules(set(), [from_module_star, from_package_star])
+    assert probes == {"regista.foo"}

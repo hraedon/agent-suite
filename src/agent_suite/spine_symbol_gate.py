@@ -62,9 +62,14 @@ class SpineImport:
 def _classify(imp: SpineImport) -> ImportKind:
     """Map an import's ``module``/``name`` onto its :class:`ImportKind`."""
     if imp.star:
-        # A star import names no specific symbol; it is satisfiable whenever
-        # the package itself is, which the wrapper guarantees before resolving.
-        return ImportKind.PACKAGE
+        # A star import names no specific symbol. `from regista import *` is
+        # satisfiable whenever the package itself is, which the wrapper
+        # guarantees before resolving — classify it PACKAGE. But `from
+        # regista.foo import *` still requires regista.foo to be an importable
+        # submodule in the locked spine; classify it MODULE so its existence is
+        # checked (narrow fail-open otherwise: the sibling test fails while the
+        # gate passes). WI-066.
+        return ImportKind.PACKAGE if imp.module == SPINE_PACKAGE else ImportKind.MODULE
     if imp.name is None:
         return ImportKind.PACKAGE if imp.module == SPINE_PACKAGE else ImportKind.MODULE
     return (
@@ -127,6 +132,45 @@ def collect_regista_imports(test_file: Path) -> list[SpineImport]:
     return imports
 
 
+def candidate_submodules(
+    top_exports: set[str], imports: list[SpineImport]
+) -> set[str]:
+    """Return the dotted submodules that must be introspected against the locked spine.
+
+    Pure: takes the spine's top-level export set and the collected imports and
+    returns the set of dotted submodule paths the wrapper should probe. Only
+    submodules actually referenced by the imports are returned, so the wrapper
+    never imports the world. A referenced submodule that fails to import (or
+    raises at import time) is simply absent from the attrs the wrapper builds;
+    :func:`missing_symbols` treats that as MISSING (or UNVERIFIED for
+    ``from regista.x import name``).
+
+    Star imports (``from regista import *`` / ``from regista.foo import *``)
+    carry ``name=None``. ``from regista import *`` names no submodule (its
+    module is the package itself, which the wrapper guarantees importable), so
+    it is not probed. ``from regista.foo import *`` still requires regista.foo
+    to be an importable submodule, so it IS probed — that, together with the
+    MODULE classification in :func:`_classify`, closes the narrow fail-open in
+    WI-066.
+    """
+    candidates: set[str] = set()
+    for imp in imports:
+        if imp.name is None:
+            # `import regista` references nothing; `import regista.x` and
+            # `from regista.x import *` reference regista.x. A package-level
+            # star import (`from regista import *`) has module == SPINE_PACKAGE
+            # and names no submodule, so it correctly adds nothing here.
+            if imp.module.startswith(f"{SPINE_PACKAGE}."):
+                candidates.add(imp.module)
+        elif imp.module.startswith(f"{SPINE_PACKAGE}."):
+            # `from regista.x import name`.
+            candidates.add(imp.module)
+        elif imp.module == SPINE_PACKAGE and imp.name not in top_exports:
+            # `from regista import name` — name may itself be a submodule.
+            candidates.add(f"{SPINE_PACKAGE}.{imp.name}")
+    return candidates
+
+
 def sibling_test_files(sibling_root: Path) -> list[Path]:
     """Return the sorted ``*.py`` files under a sibling's test directories.
 
@@ -177,9 +221,12 @@ def missing_symbols(
       introspected at all, the import is unverified (benefit of the doubt)
       rather than missing.
 
-    Star imports are classified as :attr:`ImportKind.PACKAGE` and therefore
-    always satisfiable: ``from regista import *`` names no specific symbol, so
-    it cannot reference one that is absent.
+    Star imports from the package (``from regista import *``) are classified as
+    :attr:`ImportKind.PACKAGE` and always satisfiable: they name no specific
+    symbol, so they cannot reference one that is absent. Star imports from a
+    submodule (``from regista.foo import *``) are classified as
+    :attr:`ImportKind.MODULE` and checked like ``import regista.foo`` — the
+    submodule must be importable (WI-066).
     """
     missing: list[SpineImport] = []
     unverified: list[SpineImport] = []

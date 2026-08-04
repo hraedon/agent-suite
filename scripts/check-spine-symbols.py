@@ -47,14 +47,15 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import os
 import sys
 import tomllib
 from pathlib import Path
 
+from agent_suite.lock import resolve_workspace_root
 from agent_suite.spine_symbol_gate import (
     SPINE_PACKAGE,
     SpineImport,
+    candidate_submodules,
     collect_regista_imports,
     missing_symbols,
     sibling_test_files,
@@ -94,10 +95,11 @@ def main(argv: list[str] | None = None) -> int:
     umbrella = tomllib.loads(umbrella_text)
     components = umbrella.get("components", {})
 
-    # WI-058 will consolidate the workspace-root env var behind
-    # ``agent_suite.lock.resolve_workspace_root``; until that lands this script
-    # reads AGENT_SUITE_SIBLINGS_ROOT, matching the other sibling scanners.
-    siblings_root = Path(os.environ.get("AGENT_SUITE_SIBLINGS_ROOT", "/tmp/siblings"))
+    # WI-058 consolidated the workspace-root env var behind
+    # ``agent_suite.lock.resolve_workspace_root`` (precedence: canonical
+    # SUITE_WORKSPACE_ROOT > back-compat AGENT_SUITE_SIBLINGS_ROOT > default),
+    # so this script reads the same root as the other sibling scanners.
+    siblings_root = resolve_workspace_root(Path("/tmp/siblings"))
 
     # Collect regista imports per checked-out sibling. Umbrella-listed members
     # with no checkout are reported as [gone] — the gate must never silently
@@ -177,25 +179,14 @@ def main(argv: list[str] | None = None) -> int:
     # raises at import time, e.g. a missing optional dependency) is simply
     # absent from submodule_attrs; missing_symbols treats that as MISSING (or
     # UNVERIFIED for ``from regista.x import name``). Names already satisfied
-    # as top-level exports need no submodule probe.
-    candidate_submodules: set[str] = set()
-    for imp in all_imports:
-        if imp.star:
-            continue
-        if imp.name is None:
-            # `import regista` references nothing; `import regista.x` does.
-            if imp.module.startswith(f"{SPINE_PACKAGE}."):
-                candidate_submodules.add(imp.module)
-        elif imp.module.startswith(f"{SPINE_PACKAGE}."):
-            # `from regista.x import name`.
-            candidate_submodules.add(imp.module)
-        elif imp.module == SPINE_PACKAGE and imp.name not in top_exports:
-            # `from regista import name` — name may itself be a submodule.
-            candidate_submodules.add(f"{SPINE_PACKAGE}.{imp.name}")
+    # as top-level exports need no submodule probe. The pure collection lives
+    # in agent_suite.spine_symbol_gate.candidate_submodules; see WI-066 for why
+    # from-module star imports (``from regista.foo import *``) must be probed.
+    candidates: set[str] = candidate_submodules(top_exports, all_imports)
 
     submodule_attrs: dict[str, set[str]] = {}
     submodule_objs: dict[str, object] = {}
-    for mod in sorted(candidate_submodules):
+    for mod in sorted(candidates):
         try:
             submodule = importlib.import_module(mod)
         except Exception:
