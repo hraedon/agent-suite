@@ -64,14 +64,19 @@ Fill in the placeholders. Secrets are backend refs, never literals:
 
 ```env
 REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista
-REGISTA_DSN_PASSWORD=wincred:agent-suite/regista/dsn-password
-REGISTA_KEY_PATH=wincred:agent-suite/regista/signing-key
+REGISTA_KEY_PATH=C:\ProgramData\agent-suite\keys.json
 REGISTA_REQUIRE_SSL=true
+AGENT_SUITE_BACKUP_DIR=C:\ProgramData\agent-suite\backups
+AGENT_SUITE_VERIFY_RESTORE_DSN=postgresql://DB-SERVICE-ACCOUNT:PASSWORD@suite-db.example:5432/regista_verify
 ```
 
-See [`suite.env.example`](../suite.env.example) for the canonical placeholder
-set, and the relevant [secrets runbook](secrets-windows.md) for the backend
-refs.
+There is no `REGISTA_DSN_PASSWORD` variable in regista's config vocabulary —
+the DSN password is part of `REGISTA_DSN`. `REGISTA_KEY_PATH` is a path to a
+`keys.json` **file**, not a ref; custodied signing keys are per-key
+`secret_ref` entries *inside* that file ([secrets-windows.md](secrets-windows.md) §4),
+each carrying a `windows:<base64-dpapi-blob>` ref. See [`suite.env.example`](../suite.env.example)
+for the canonical placeholder set, and the relevant [secrets runbook](secrets-windows.md)
+for the backend refs.
 
 ## 4. Bootstrap
 
@@ -159,7 +164,26 @@ The service definitions are installed by each component's own
 `install-harness` (see the [install-harness contract](install-harness-contract.md));
 agent-suite calls them in order but does not define the service configs itself.
 
-## 8. Next steps
+## 8. Scheduled protection
+
+After bootstrap, install the Windows Scheduled Tasks from an elevated
+PowerShell session:
+
+```powershell
+agent-suite schedule install
+```
+
+This registers the daily `pg_dump`, weekly scratch restore plus
+`verify-restore`, hourly doctor alert, and weekly chain-integrity tasks. The
+installer reads every task back from Task Scheduler and verifies its executable,
+arguments, start time, and trigger before reporting `INSTALLED`; the doctor
+task uses a once-plus-one-hour repetition trigger so it remains hourly rather
+than degrading to daily. A generated `.ps1` file by itself is not success.
+`agent-suite schedule remove` executes the unregister operation and verifies
+that each task is absent. The weekly restore refuses to run without
+`AGENT_SUITE_VERIFY_RESTORE_DSN` and never defaults to production `REGISTA_DSN`.
+
+## 9. Next steps
 
 - Onboard additional humans: see [multi-user-onboarding.md](multi-user-onboarding.md).
 - Deploy Tier 2 (capabilities, signaling): `agent-suite bootstrap --tier 0-2`.

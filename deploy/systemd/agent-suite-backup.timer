@@ -1,5 +1,5 @@
 [Unit]
-Description=Nightly pg_dump of the suite Postgres store + weekly verify-restore (timer)
+Description=Nightly pg_dump of the suite Postgres store (timer)
 
 [Timer]
 OnCalendar=daily

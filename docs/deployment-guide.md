@@ -207,7 +207,7 @@ cat > ~/.config/agent-suite/suite.env << 'EOF'
 REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT:PASSWORD@db-host:5432/regista
 
 # Path to the store-level signing key (HMAC + principal index).
-# Use a file: path for a single-operator box, or vault:/akv:/wincred: for team.
+# Use a file: path for a single-operator box, or vault:/azure:/windows: for team.
 REGISTA_KEY_PATH=/home/USER/.config/regista/keys.json
 
 # The project to provision during bootstrap.
@@ -605,15 +605,17 @@ echo 'REGISTA_PROJECT=agent_notes' >> ~/.config/agent-suite/suite.env
 
 5. **Set up scheduled backups** (Plan 005):
 
-   ```bash
-   agent-suite schedule --backup --verify-restore
-   ```
+    ```bash
+    # Set AGENT_SUITE_BACKUP_DIR and AGENT_SUITE_VERIFY_RESTORE_DSN in suite.env first.
+    agent-suite schedule install
+    ```
 
 6. **Set up alerting** (Plan 005, needs agent-wake):
 
-   ```bash
-   agent-suite schedule --alert-check
-   ```
+    ```bash
+    # The same install registers the doctor-alert schedule.
+    agent-suite schedule install
+    ```
 
 ---
 

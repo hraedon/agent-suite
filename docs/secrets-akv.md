@@ -2,9 +2,16 @@
 
 How to store the suite's secrets — the DSN password and per-actor Ed25519
 signing keys — in Azure Key Vault and reference them from `suite.env` via the
-`akv:` prefix. regista's secret resolver (`regista.secrets.resolve`, Plan 025
-WI-1.2) reads `akv:` refs at load time; the suite never holds a literal
+`azure:` prefix. regista's secret resolver (`regista.secrets.resolve`, Plan 025
+WI-1.2) reads `azure:` refs at load time; the suite never holds a literal
 secret in a committed file.
+
+The `azure:` scheme takes a **bare Key Vault secret name** — the vault itself
+is named by the `AZURE_KEY_VAULT_NAME` environment variable (regista builds the
+vault URL as `https://<name>.vault.azure.net`), and is **not** embedded in the
+ref. This is the shape the resolver actually accepts; the old `akv:` prefix and
+the vault-DNS-embedded form several docs printed are not recognised and
+resolve as literal strings (WI-069).
 
 See the [bootstrap contract](bootstrap-contract.md) for where secret resolution
 sits in the install order (step 0), and the [key-custody threat model](key-custody-threat-model.md)
@@ -33,8 +40,9 @@ az keyvault create \
 ```
 
 The vault's DNS name will be `https://suite-secrets.WORK-DOMAIN.vault.azure.net/`
-(replace `WORK-DOMAIN` with your Azure-registered domain suffix). Use that
-name in the `akv:` refs below.
+(replace `WORK-DOMAIN` with your Azure-registered domain suffix). regista does
+**not** read that name from the ref — it reads `AZURE_KEY_VAULT_NAME` from the
+environment (see §4), so set that variable to the vault name (`suite-secrets`).
 
 ### Grant the suite identity read access
 
@@ -94,33 +102,47 @@ In the system `suite.env` (`/etc/agent-suite/suite.env` on Linux,
 `%ProgramData%\agent-suite\suite.env` on Windows):
 
 ```env
+AZURE_KEY_VAULT_NAME=suite-secrets
 REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista
-REGISTA_DSN_PASSWORD=akv:suite-secrets.WORK-DOMAIN.vault.azure.net/regista-dsn-password
-REGISTA_KEY_PATH=akv:suite-secrets.WORK-DOMAIN.vault.azure.net/regista-signing-key
+REGISTA_KEY_PATH=/etc/agent-suite/keys.json
 REGISTA_REQUIRE_SSL=true
 ```
 
-The `akv:` prefix tells regista's loader to resolve the value from Key Vault at
-load time. The format is:
+The `azure:` prefix tells regista's loader to resolve the value from Key Vault
+at load time. The format is:
 
 ```
-akv:<vault-name>.<domain-suffix>.vault.azure.net/<secret-name>
+azure:<secret-name>
 ```
+
+`AZURE_KEY_VAULT_NAME` names the vault (regista builds the URL as
+`https://<name>.vault.azure.net`); the secret name after `azure:` is the bare
+Key Vault secret name. Key Vault secret names must match `^[0-9a-zA-Z-]+$`.
 
 The resolved value reaches the process that needs it and is **never written
 back to the file**. Compare with [`suite.env.example`](../suite.env.example),
 which carries placeholders only.
 
+There is no `REGISTA_DSN_PASSWORD` variable in regista's config vocabulary —
+the DSN password is part of `REGISTA_DSN` (see the [bootstrap contract](bootstrap-contract.md)).
+`REGISTA_KEY_PATH` is a path to a `keys.json` **file**, not a ref; custodied
+signing keys are per-key `secret_ref` entries *inside* that file (see
+[secrets-vault.md](secrets-vault.md) §4.1), each of which may carry an
+`azure:<secret-name>` ref.
+
 Per-principal key refs are resolved by dossier at sign time
-(`akv:suite-secrets.WORK-DOMAIN.vault.azure.net/principal-<principal_id>-key`)
-and are not stored in the system `suite.env` — they are looked up by
-`principal_id` from the authenticated session.
+(`azure:principal-<principal_id>-key`) and are not stored in the system
+`suite.env` — they are looked up by `principal_id` from the authenticated
+session.
 
 ## 5. How resolution works
 
-`regista.secrets.resolve("akv:suite-secrets.WORK-DOMAIN.vault.azure.net/regista-signing-key")`:
+`regista.secrets.resolve("azure:regista-signing-key")` with
+`AZURE_KEY_VAULT_NAME=suite-secrets`:
 
-1. Parses the `akv:` scheme and extracts the vault DNS name and secret name.
+1. Parses the `azure:` scheme; the rest (`regista-signing-key`) is the secret
+   name. The vault URL is `https://suite-secrets.vault.azure.net`, built from
+   `AZURE_KEY_VAULT_NAME` — the vault name is **not** embedded in the ref.
 2. Authenticates via `DefaultAzureCredential` (Managed Identity in production,
    or the developer's `az login` session locally).
 3. Reads the secret value from Key Vault.
@@ -143,6 +165,6 @@ agent-suite bootstrap --dry-run
 ```
 
 Step 0 of the bootstrap (secret backend reachable) probes the resolver. If an
-`akv:` ref cannot be resolved, the bootstrap aborts with a clear message
+`azure:` ref cannot be resolved, the bootstrap aborts with a clear message
 naming the failing ref — it does not proceed to provision against an
 unresolvable secret. See the [bootstrap contract](bootstrap-contract.md) §1.

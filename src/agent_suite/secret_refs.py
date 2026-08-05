@@ -10,7 +10,7 @@ process*, not that any configured reference resolves. The qualification host's
 only ``vault:`` ref was repointed at a path its AppRole is denied — proved 403 —
 and step 0 still printed "secret backend reachable".
 
-Three ref-shape traps this estate hit, all of which this module catches
+Four ref-shape traps this estate hit, all of which this module catches
 *statically*, before any network call:
 
 1. **The mount.** ``kv/`` on the real Vault, not the ``secret/`` every install
@@ -26,6 +26,17 @@ Three ref-shape traps this estate hit, all of which this module catches
    regista's provider list says nothing about cairn's. So the probe reports the
    provider set per component that actually has a ``vault:`` ref configured,
    rather than generalising from one.
+4. **The scheme name and the ref shape.** regista's resolver knows
+   ``vault``/``azure``/``windows``/``file``/``env``/``literal`` — **not**
+   ``akv`` or ``wincred``, which several suite docs printed and no resolver
+   accepts (they fall through to ``literal`` and resolve as the literal string
+   the operator typed). And the *shape* after the scheme matters: ``azure:``
+   takes a bare Key Vault secret name (``azure:regista-dsn-password``), the
+   vault name coming from ``AZURE_KEY_VAULT_NAME``; ``windows:`` takes the
+   base64 DPAPI blob itself (``windows:AQAAANCMnd8B...``), not a credential
+   target name. The old ``akv:suite-secrets.WORK-DOMAIN.vault.azure.net/...``
+   and ``wincred:agent-suite/regista/signing-key`` shapes were wrong on both
+   counts — wrong scheme *and* wrong shape (WI-069).
 
 Nothing in this module ever handles a resolved secret **value**: ``regista
 secrets --ref`` prints the resolved secret to stdout on success, so the probe
@@ -44,6 +55,7 @@ from dataclasses import dataclass
 KeyFileLoader = Callable[[str], "str | None"]
 
 __all__ = [
+    "BACKEND_REF_LITERAL_RE",
     "VAULT_REF_LITERAL_RE",
     "ConfiguredRef",
     "KeyFileLoader",
@@ -79,6 +91,22 @@ _NON_REF_SUFFIXES = ("_PATH", "_DSN", "_URL", "_DIR", "_FILE")
 #: discovery path and by the docs test, so a doc cannot print a shape the
 #: resolver rejects (WI-039).
 VAULT_REF_LITERAL_RE = re.compile(r"vault:[A-Za-z0-9/._#@:-]+")
+
+#: Any backend-ref literal as it appears in prose or an env file — any of the
+#: resolver's known schemes (``vault:``/``azure:``/``windows:``/``file:``/``env:``)
+#: plus the two *known-bad* schemes this estate's docs printed for years
+#: (``akv:``/``wincred:``), followed by a non-empty body. The docs test
+#: matches this and then runs each match through :func:`ref_static_problem`,
+#: so a doc cannot print a scheme the resolver does not know *or* a shape the
+#: resolver rejects (WI-039/WI-069). The known-bad schemes are named
+#: explicitly — not matched by a generic ``<word>:`` — so prose such as
+#: ``ref:vault`` or ``custody:vault_auth`` is not false-positived. The body
+#: class is permissive on purpose: a too-permissive match is still validated
+#: statically, and an unknown scheme falls through to the ``literal`` branch
+#: below.
+BACKEND_REF_LITERAL_RE = re.compile(
+    r"(?:vault|azure|windows|file|env|akv|wincred):[A-Za-z0-9/._#@:+=:-]+"
+)
 
 #: Which component env var belongs to which CLI, for the per-component provider
 #: report. A ref configured for cairn is resolved by *cairn's* interpreter.
@@ -151,6 +179,33 @@ def ref_static_problem(ref: str) -> str | None:
             return (
                 f"vault ref {ref!r} has {len(rest.split('/'))} segment(s); "
                 f"regista requires mount/path.../field (at least 4)"
+            )
+    if scheme == "azure":
+        # regista's AzureProvider passes the part after 'azure:' straight to
+        # SecretClient.get_secret, so it must be a bare KV secret name
+        # ([0-9a-zA-Z-]+). The vault name comes from AZURE_KEY_VAULT_NAME and is
+        # NOT embedded in the ref — embedding a DNS name here (the old
+        # 'akv:suite-secrets.WORK-DOMAIN.vault.azure.net/...' shape) is a
+        # shape the resolver silently mis-reads.
+        if not re.fullmatch(r"[0-9a-zA-Z-]+", rest):
+            return (
+                f"azure ref {ref!r} is not a bare Key Vault secret name "
+                f"([0-9a-zA-Z-]+); regista's azure provider passes the part "
+                f"after 'azure:' to SecretClient.get_secret, and the vault "
+                f"name comes from AZURE_KEY_VAULT_NAME — it is not embedded "
+                f"in the ref"
+            )
+    if scheme == "windows":
+        # regista's WindowsProvider base64-decodes the part after 'windows:'
+        # and DPAPI-unprotects it, so the ref IS the DPAPI blob. A credential
+        # target name (the old 'wincred:agent-suite/regista/signing-key'
+        # shape) is not a ref here — it is not valid base64.
+        if not re.fullmatch(r"[A-Za-z0-9+/=]+", rest):
+            return (
+                f"windows ref {ref!r} is not valid base64; regista's windows "
+                f"provider base64-decodes the part after 'windows:' and "
+                f"DPAPI-unprotects it. A credential target name is not a ref "
+                f"here — the ref IS the DPAPI blob"
             )
     if scheme == "literal":
         return (

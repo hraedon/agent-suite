@@ -312,6 +312,109 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
             assert main([command.value]) == 0
 
 
+def test_scheduled_restore_requires_dedicated_dsn_and_never_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """The weekly restore's env indirection fails before touching restore."""
+    from agent_suite import backup as backup_mod
+    from agent_suite import config as config_mod
+
+    monkeypatch.setattr(config_mod, "system_suite_env_path", lambda: tmp_path / "system.env")
+    monkeypatch.setattr(config_mod, "user_suite_env_path", lambda: tmp_path / "user.env")
+    monkeypatch.delenv("AGENT_SUITE_VERIFY_RESTORE_DSN", raising=False)
+    monkeypatch.setenv("REGISTA_DSN", _DSN)
+    monkeypatch.setattr(
+        backup_mod,
+        "run_restore",
+        lambda **_kwargs: pytest.fail("restore must not run without the scratch DSN"),
+    )
+
+    code = main(
+        [
+            "restore",
+            "--dir",
+            str(tmp_path),
+            "--dsn-env",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN",
+            "--json",
+        ]
+    )
+    assert code == 1
+    document = json.loads(capsys.readouterr().out)
+    assert document["error"]["code"] == "DSN_MISSING"
+    assert _DSN not in json.dumps(document)
+
+
+def test_scheduled_restore_rejects_the_production_dsn(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    from agent_suite import config as config_mod
+
+    monkeypatch.setattr(config_mod, "system_suite_env_path", lambda: tmp_path / "system.env")
+    monkeypatch.setattr(config_mod, "user_suite_env_path", lambda: tmp_path / "user.env")
+    monkeypatch.setenv("REGISTA_DSN", _DSN)
+    monkeypatch.setenv("AGENT_SUITE_VERIFY_RESTORE_DSN", _DSN)
+
+    code = main(
+        [
+            "restore",
+            "--dir",
+            str(tmp_path),
+            "--dsn-env",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN",
+            "--json",
+        ]
+    )
+    assert code == 1
+    document = json.loads(capsys.readouterr().out)
+    assert document["error"]["code"] == "DSN_NOT_DEDICATED"
+    assert _DSN not in json.dumps(document)
+
+
+def test_scheduled_restore_normalizes_uri_before_database_comparison(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    from agent_suite import backup as backup_mod
+    from agent_suite import config as config_mod
+
+    monkeypatch.setattr(config_mod, "system_suite_env_path", lambda: tmp_path / "system.env")
+    monkeypatch.setattr(config_mod, "user_suite_env_path", lambda: tmp_path / "user.env")
+    monkeypatch.setenv(
+        "REGISTA_DSN",
+        "postgresql://prod:one@SUITE-DB.EXAMPLE:5432/regista?sslmode=require",
+    )
+    monkeypatch.setenv(
+        "AGENT_SUITE_VERIFY_RESTORE_DSN",
+        "postgres://scratch:two@suite-db.example/regista?application_name=verify",
+    )
+    monkeypatch.setattr(
+        backup_mod,
+        "run_restore",
+        lambda **_kwargs: pytest.fail("equivalent production DSN must be rejected first"),
+    )
+
+    code = main(
+        [
+            "restore",
+            "--dir",
+            str(tmp_path),
+            "--dsn-env",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN",
+            "--json",
+        ]
+    )
+    assert code == 1
+    document = json.loads(capsys.readouterr().out)
+    assert document["error"]["code"] == "DSN_NOT_DEDICATED"
+    assert "prod:one" not in json.dumps(document)
+
+
 def test_codex_plugin_profiles_are_accepted() -> None:
     for profile in ("core", "credentialed", "full"):
         assert main(["codex-plugins", "install", "--profile", profile, "--dry-run"]) == 0

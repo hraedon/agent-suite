@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, unquote, urlsplit
 
 if TYPE_CHECKING:
     from agent_suite.entra import EntraConfig
@@ -36,6 +37,59 @@ HINDSIGHT_TENANT_ENV = "HINDSIGHT_TENANT"
 ENTRA_TENANT_ID_ENV = "ENTRA_TENANT_ID"
 ENTRA_CLIENT_ID_ENV = "ENTRA_CLIENT_ID"
 ENTRA_AUDIENCE_ENV = "ENTRA_AUDIENCE"
+
+# Scheduled protection reads these by name from suite.env.  Keeping the names
+# here gives the CLI and the generated OS units one contract without putting a
+# DSN value (or a platform-specific path) in either artifact.
+SCHEDULE_BACKUP_DIR_ENV = "AGENT_SUITE_BACKUP_DIR"
+SCHEDULE_VERIFY_RESTORE_DSN_ENV = "AGENT_SUITE_VERIFY_RESTORE_DSN"
+
+
+def _postgres_database_identity(dsn: str) -> tuple[str, str, int, str] | None:
+    """Return the database target from a supported PostgreSQL URI.
+
+    Credentials and URI query options are deliberately excluded: changing a
+    password, user, or ``sslmode`` does not point ``pg_restore`` at a different
+    database.  Keyword/value DSNs and malformed URIs return ``None`` and are
+    compared conservatively by :func:`same_postgres_database`.
+    """
+    try:
+        parsed = urlsplit(dsn)
+        if parsed.scheme.lower() not in {"postgres", "postgresql"}:
+            return None
+        options = parse_qs(parsed.query, keep_blank_values=True)
+        host = parsed.hostname
+        if host is None:
+            host = options.get("host", [""])[0]
+        host = unquote(host).strip().lower().rstrip(".")
+
+        port = parsed.port
+        if port is None:
+            raw_port = options.get("port", ["5432"])[0]
+            port = int(raw_port)
+
+        database = unquote(parsed.path.lstrip("/").rstrip("/"))
+        if not database:
+            database = unquote(options.get("dbname", [""])[0])
+        if not database:
+            return None
+        return ("postgresql", host, port, database)
+    except (ValueError, UnicodeError):
+        return None
+
+
+def same_postgres_database(left: str, right: str) -> bool:
+    """Whether two DSNs identify the same PostgreSQL database.
+
+    Supported URI forms are compared by normalized scheme/host/port/database,
+    not by their raw spelling.  If either value is outside that supported URI
+    subset, equality remains the safe fallback and no DSN value is surfaced.
+    """
+    if left == right:
+        return True
+    left_identity = _postgres_database_identity(left)
+    right_identity = _postgres_database_identity(right)
+    return left_identity is not None and left_identity == right_identity
 
 
 @dataclass(frozen=True)
