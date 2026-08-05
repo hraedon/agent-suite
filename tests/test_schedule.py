@@ -1202,6 +1202,11 @@ def test_windows_remove_executes_and_verifies_unregistration(
     )
     assert report.results[0].status is InstallStatus.REMOVED
     assert report.results[0].verified == ["windows_task_unregistered", "windows_task_absent"]
+    # str(Path) renders separators per-platform (backslashes on a Windows
+    # runner), so build the expectation the same way production does.
+    expected_script = str(
+        Path("C:/ProgramData/agent-suite/schedules") / f"unregister-{spec.name}.ps1"
+    )
     assert runner.calls == [
         (
             "powershell",
@@ -1210,7 +1215,7 @@ def test_windows_remove_executes_and_verifies_unregistration(
             "-ExecutionPolicy",
             "Bypass",
             "-File",
-            "C:/ProgramData/agent-suite/schedules/unregister-agent-suite-backup.ps1",
+            expected_script,
         )
     ]
 
