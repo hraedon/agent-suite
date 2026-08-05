@@ -345,6 +345,13 @@ def _documented_backend_refs() -> list[tuple[Path, str]]:
     followed by a non-empty body. Prose that merely lists scheme names
     (``vault:/azure:/windows:``) is filtered out because its body contains a
     second ``:``.
+
+    Known residual (WI-071 L6, by design): the match truncates at ``<``
+    placeholder markers, so ``azure:principal-<principal_id>-key`` validates
+    only its ``azure:principal-`` prefix and a ref written entirely as a
+    placeholder (``windows:<base64-dpapi-blob>``) is invisible to this gate.
+    Docs that print refs only in placeholder form are therefore not proven
+    parseable here — the concrete-literal cases below carry that weight.
     """
     found: list[tuple[Path, str]] = []
     candidates = sorted((REPO_ROOT / "docs").rglob("*.md"))

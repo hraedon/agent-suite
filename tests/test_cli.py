@@ -415,6 +415,64 @@ def test_scheduled_restore_normalizes_uri_before_database_comparison(
     assert "prod:one" not in json.dumps(document)
 
 
+def test_scheduled_backup_and_restore_env_indirection_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """WI-071 L5: the values behind --dir-env/--dsn-env reach the orchestration.
+
+    The failure paths (missing/conflicting/invalid indirections) are covered
+    above; this proves the happy path actually hands the *resolved* values to
+    ``run_backup``/``run_restore`` rather than the variable names.
+    """
+    from agent_suite import backup as backup_mod
+    from agent_suite import config as config_mod
+    from agent_suite.backup import BackupResult, RestoreResult
+
+    monkeypatch.setattr(config_mod, "system_suite_env_path", lambda: tmp_path / "system.env")
+    monkeypatch.setattr(config_mod, "user_suite_env_path", lambda: tmp_path / "user.env")
+    backup_dir = tmp_path / "backups"
+    scratch_dsn = "postgresql://verify:pw@suite-db.example:5432/regista_verify"
+    monkeypatch.setenv("AGENT_SUITE_BACKUP_DIR", str(backup_dir))
+    monkeypatch.setenv("AGENT_SUITE_VERIFY_RESTORE_DSN", scratch_dsn)
+    monkeypatch.setenv("REGISTA_DSN", _DSN)
+
+    seen: dict[str, dict[str, object]] = {}
+
+    def fake_run_backup(**kwargs: object) -> BackupResult:
+        seen["backup"] = kwargs
+        return BackupResult(ok=True, dry_run=False, backup_dir=str(kwargs["backup_dir"]))
+
+    def fake_run_restore(**kwargs: object) -> RestoreResult:
+        seen["restore"] = kwargs
+        return RestoreResult(ok=True, dry_run=False, backup_dir=str(kwargs["backup_dir"]))
+
+    monkeypatch.setattr(backup_mod, "run_backup", fake_run_backup)
+    monkeypatch.setattr(backup_mod, "run_restore", fake_run_restore)
+
+    assert main(["backup", "--dir-env", "AGENT_SUITE_BACKUP_DIR", "--json"]) == 0
+    assert (
+        main(
+            [
+                "restore",
+                "--dir-env",
+                "AGENT_SUITE_BACKUP_DIR",
+                "--dsn-env",
+                "AGENT_SUITE_VERIFY_RESTORE_DSN",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert seen["backup"]["backup_dir"] == backup_dir
+    assert seen["backup"]["dsn"] == _DSN
+    assert seen["restore"]["backup_dir"] == backup_dir
+    assert seen["restore"]["dsn"] == scratch_dsn
+
+
 def test_codex_plugin_profiles_are_accepted() -> None:
     for profile in ("core", "credentialed", "full"):
         assert main(["codex-plugins", "install", "--profile", profile, "--dry-run"]) == 0

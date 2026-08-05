@@ -199,7 +199,11 @@ The schedules are:
 
 The weekly restore is scheduled for 04:00 (after the daily 00:00/02:00 backup
 window on Linux/Windows respectively), so it does not race the dump that
-produces the shared latest-dump file.
+produces the shared latest-dump file. The weekly *day* differs by platform:
+systemd weekly units render `Mon *-*-* HH:MM:SS`, while Windows weekly
+triggers register `-DaysOfWeek Sunday` (the same pattern the chain-integrity
+schedule has always used). Both satisfy the weekly cadence; treat the day as
+platform-defined rather than aligned.
 
 The nightly source-side verification that `agent-suite backup` performs is a
 health check of the live store, not proof that the dump can be restored. That
@@ -251,13 +255,14 @@ byte-identical to the generator.
 
 ### 3.6 Backup retention
 
-Backup retention is configured in the operator's environment (e.g.,
-`pg_dump` retention policy, `restic` retention, or the backup tool of
-choice). The schedule keeps the latest `database.dump` and manifest in
-`AGENT_SUITE_BACKUP_DIR`; it does not silently delete older copies or invent a
-retention policy. Put that directory under the operator's backup/retention
-tooling (the DR runbook recommends 30 days for daily full backups), and make
-sure the weekly job always sees the retained dump selected by that policy. See
+The nightly backup writes exactly one dump at a fixed path —
+`AGENT_SUITE_BACKUP_DIR/database.dump` plus its manifest — and **overwrites it
+on every run**. There are no older copies in that directory to retain: history
+exists only if external tooling (`restic`, filesystem snapshots, the backup
+tool of choice) captures the file before the next nightly overwrite. Put the
+directory under such tooling (the DR runbook recommends 30 days for daily full
+backups); the weekly restore-verify job always reads the current
+`database.dump`, so it proves the latest dump, not the retained history. See
 the [DR runbook](disaster-recovery.md) §2.1 for the recommended cadence and
 retention table.
 

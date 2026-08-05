@@ -132,15 +132,37 @@ def _no_which(executable: str) -> str | None:
     return None
 
 
-@pytest.fixture(autouse=True)
-def _configured_schedule_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Give install tests an explicit, valid schedule configuration by default."""
-    monkeypatch.setenv("REGISTA_DSN", "postgresql://backup:pw@suite-db.example:5432/regista")
-    monkeypatch.setenv("AGENT_SUITE_BACKUP_DIR", "/var/lib/agent-suite/backups")
-    monkeypatch.setenv(
-        "AGENT_SUITE_VERIFY_RESTORE_DSN",
-        "postgresql://verify:pw@suite-db.example:5432/regista_verify",
+_VALID_SCHEDULE_ENV: dict[str, str] = {
+    "REGISTA_DSN": "postgresql://backup:pw@suite-db.example:5432/regista",
+    "AGENT_SUITE_BACKUP_DIR": "/var/lib/agent-suite/backups",
+    "AGENT_SUITE_VERIFY_RESTORE_DSN": "postgresql://verify:pw@suite-db.example:5432/regista_verify",
+}
+
+
+def _write_system_suite_env(path: Path, env: Mapping[str, str]) -> None:
+    path.write_text(
+        "".join(f"{key}={value}\n" for key, value in env.items()), encoding="utf-8"
     )
+
+
+@pytest.fixture(autouse=True)
+def system_suite_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Give install tests an explicit, valid schedule configuration by default.
+
+    The systemd preflight reads the environment the *unit* will see — the
+    system suite.env file — not the installer's shell (WI-071 M2), so the
+    valid-by-default configuration is written to both ``os.environ`` (the
+    Windows source) and a test-local system suite.env. Returns the file path
+    so preflight tests can rewrite it.
+    """
+    for key, value in _VALID_SCHEDULE_ENV.items():
+        monkeypatch.setenv(key, value)
+    system_env = tmp_path / "system-suite.env"
+    _write_system_suite_env(system_env, _VALID_SCHEDULE_ENV)
+    monkeypatch.setattr(
+        "agent_suite.schedule.system_suite_env_path", lambda: system_env
+    )
+    return system_env
 
 
 def test_every_agent_suite_schedule_command_uses_production_cli_grammar() -> None:
@@ -190,10 +212,15 @@ def test_install_preflights_required_schedule_configuration(
     missing_env: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    system_suite_env: Path,
 ) -> None:
     """Neither dry-run nor real install may green an unusable restore task."""
     restore = next(s for s in SCHEDULES if s.kind is ScheduleKind.RESTORE_VERIFY)
     monkeypatch.delenv(missing_env)
+    _write_system_suite_env(
+        system_suite_env,
+        {k: v for k, v in _VALID_SCHEDULE_ENV.items() if k != missing_env},
+    )
     report = install_schedules(
         os_target=OSTarget.SYSTEMD,
         dry_run=dry_run,
@@ -213,15 +240,18 @@ def test_install_preflights_equivalent_production_and_scratch_database(
     dry_run: bool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    system_suite_env: Path,
 ) -> None:
     restore = next(s for s in SCHEDULES if s.kind is ScheduleKind.RESTORE_VERIFY)
-    monkeypatch.setenv(
-        "REGISTA_DSN",
-        "postgresql://prod:one@SUITE-DB.EXAMPLE:5432/regista?sslmode=require",
-    )
-    monkeypatch.setenv(
-        "AGENT_SUITE_VERIFY_RESTORE_DSN",
-        "postgres://scratch:two@suite-db.example/regista?application_name=verify",
+    _write_system_suite_env(
+        system_suite_env,
+        {
+            **_VALID_SCHEDULE_ENV,
+            "REGISTA_DSN": "postgresql://prod:one@SUITE-DB.EXAMPLE:5432/regista?sslmode=require",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN": (
+                "postgres://scratch:two@suite-db.example/regista?application_name=verify"
+            ),
+        },
     )
     report = install_schedules(
         os_target=OSTarget.SYSTEMD,
@@ -234,6 +264,204 @@ def test_install_preflights_equivalent_production_and_scratch_database(
     assert result.status is InstallStatus.FAILED
     assert "distinct from REGISTA_DSN" in result.detail
     assert "prod:one" not in result.detail
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_install_preflights_keyword_spelled_production_dsn(
+    dry_run: bool,
+    tmp_path: Path,
+    system_suite_env: Path,
+) -> None:
+    """WI-071 M1: a keyword/value production DSN must still match the scratch URI.
+
+    ``backup.py`` accepts the keyword spelling, so it is a real operator shape;
+    comparing it to the URI-spelled scratch DSN by raw string alone would green
+    an install whose weekly restore ``pg_restore --clean``s production.
+    """
+    restore = next(s for s in SCHEDULES if s.kind is ScheduleKind.RESTORE_VERIFY)
+    _write_system_suite_env(
+        system_suite_env,
+        {
+            **_VALID_SCHEDULE_ENV,
+            "REGISTA_DSN": "host=SUITE-DB.EXAMPLE port=5432 dbname=regista user=prod password=one",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN": (
+                "postgresql://scratch:two@suite-db.example:5432/regista?application_name=verify"
+            ),
+        },
+    )
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=dry_run,
+        runner=StubRunner(),
+        schedules=(restore,),
+        unit_dir=tmp_path / "systemd",
+    )
+    result = report.results[0]
+    assert result.status is InstallStatus.FAILED
+    assert "distinct from REGISTA_DSN" in result.detail
+    assert "password=one" not in result.detail
+
+
+def test_systemd_preflight_reads_the_units_environment_not_the_installers(
+    tmp_path: Path,
+    system_suite_env: Path,
+) -> None:
+    """WI-071 M2: config living only in the installer's shell must not green.
+
+    The unit reads ``Environment=`` pins plus the system suite.env; the
+    installer's per-user suite.env / shell exports are invisible to it, so a
+    preflight against ``os.environ`` reports INSTALLED for a unit whose every
+    fire will fail DSN_MISSING.
+    """
+    restore = next(s for s in SCHEDULES if s.kind is ScheduleKind.RESTORE_VERIFY)
+    # os.environ keeps the full valid config (the autouse fixture set it);
+    # only the file the unit will read is missing the scratch DSN.
+    _write_system_suite_env(
+        system_suite_env,
+        {
+            k: v
+            for k, v in _VALID_SCHEDULE_ENV.items()
+            if k != "AGENT_SUITE_VERIFY_RESTORE_DSN"
+        },
+    )
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=True,
+        runner=StubRunner(),
+        schedules=(restore,),
+        unit_dir=tmp_path / "systemd",
+    )
+    result = report.results[0]
+    assert result.status is InstallStatus.FAILED
+    assert "AGENT_SUITE_VERIFY_RESTORE_DSN" in result.detail
+    assert str(system_suite_env) in result.detail
+    assert "postgresql://" not in result.detail
+
+
+def test_systemd_preflight_accepts_configuration_only_the_unit_will_see(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    system_suite_env: Path,
+) -> None:
+    """The converse of WI-071 M2: the system file alone is a valid config source."""
+    for name in _VALID_SCHEDULE_ENV:
+        monkeypatch.delenv(name, raising=False)
+    bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=False,
+        runner=_verifying_runner(bindir),
+        which=_no_which,
+        search_dirs=(bindir,),
+        unit_dir=tmp_path / "systemd",
+    )
+    assert all(r.status is InstallStatus.INSTALLED for r in report.results), [
+        (r.kind, r.detail) for r in report.results
+    ]
+
+
+# ---------------------------------------------------------------------------
+# DSN identity comparison (WI-071 M1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        # keyword/value vs URI, same database — credentials/options differ
+        (
+            "host=SUITE-DB.EXAMPLE port=5432 dbname=regista user=prod password=one",
+            "postgresql://scratch:two@suite-db.example:5432/regista?sslmode=require",
+        ),
+        # default port on the keyword side, explicit on the URI side
+        (
+            "host=suite-db.example dbname=regista",
+            "postgresql://u:p@suite-db.example:5432/regista",
+        ),
+        # single-quoted value with an escaped quote, still the same target
+        (
+            "host=suite-db.example dbname='regista' password='it\\'s'",
+            "postgresql://suite-db.example/regista",
+        ),
+        # hostaddr stands in when host is absent
+        (
+            "hostaddr=192.0.2.7 dbname=regista",
+            "postgresql://192.0.2.7:5432/regista",
+        ),
+        # both keyword-spelled, different key order and spacing
+        (
+            "dbname=regista  host = suite-db.example",
+            "host=SUITE-DB.EXAMPLE. dbname=regista",
+        ),
+    ],
+)
+def test_same_postgres_database_parses_keyword_value_dsns(left: str, right: str) -> None:
+    from agent_suite.config import same_postgres_database
+
+    assert same_postgres_database(left, right)
+    assert same_postgres_database(right, left)
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        # different database
+        (
+            "host=suite-db.example dbname=regista_verify",
+            "postgresql://suite-db.example/regista",
+        ),
+        # different host
+        (
+            "host=other-db.example dbname=regista",
+            "postgresql://suite-db.example/regista",
+        ),
+        # multi-host list is outside the supported subset → conservative
+        (
+            "host=a.example,b.example dbname=regista",
+            "postgresql://a.example/regista",
+        ),
+        # nested dbname conninfo expansion → conservative
+        (
+            "dbname='host=x dbname=regista'",
+            "postgresql://x/regista",
+        ),
+        # unterminated quote → conservative
+        (
+            "host=suite-db.example dbname='regista",
+            "postgresql://suite-db.example/regista",
+        ),
+    ],
+)
+def test_same_postgres_database_stays_conservative_outside_the_subset(
+    left: str, right: str
+) -> None:
+    from agent_suite.config import same_postgres_database
+
+    assert not same_postgres_database(left, right)
+
+
+# ---------------------------------------------------------------------------
+# Latent -Hourly refusal (WI-071 L1)
+# ---------------------------------------------------------------------------
+
+
+def test_hourly_without_repetition_is_refused_at_generation_time() -> None:
+    """New-ScheduledTaskTrigger has no -Hourly parameter set (WI-071 L1).
+
+    Unreachable through SCHEDULES today (the only HOURLY spec carries
+    windows_repetition_minutes), but a future spec must fail loudly at
+    generation instead of emitting a script that can never register.
+    """
+    from agent_suite.schedule import _windows_trigger_expr, _windows_trigger_type
+
+    with pytest.raises(ValueError, match="-Hourly"):
+        _windows_trigger_expr("HOURLY", repetition_minutes=None)
+    with pytest.raises(ValueError, match="-Hourly"):
+        _windows_trigger_type("HOURLY", repetition_minutes=None)
+    # The supported spelling stays supported.
+    assert _windows_trigger_expr("HOURLY", repetition_minutes=60) == "-Once"
+    assert _windows_trigger_type("HOURLY", repetition_minutes=60) == "MSFT_TaskTimeTrigger"
 
 
 def _treat_as_system_scoped(monkeypatch: pytest.MonkeyPatch, bindir: Path) -> None:

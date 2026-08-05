@@ -605,17 +605,17 @@ echo 'REGISTA_PROJECT=agent_notes' >> ~/.config/agent-suite/suite.env
 
 5. **Set up scheduled backups** (Plan 005):
 
-    ```bash
-    # Set AGENT_SUITE_BACKUP_DIR and AGENT_SUITE_VERIFY_RESTORE_DSN in suite.env first.
-    agent-suite schedule install
-    ```
+   ```bash
+   # Set AGENT_SUITE_BACKUP_DIR and AGENT_SUITE_VERIFY_RESTORE_DSN in suite.env first.
+   agent-suite schedule install
+   ```
 
 6. **Set up alerting** (Plan 005, needs agent-wake):
 
-    ```bash
-    # The same install registers the doctor-alert schedule.
-    agent-suite schedule install
-    ```
+   ```bash
+   # The same install registers the doctor-alert schedule.
+   agent-suite schedule install
+   ```
 
 ---
 

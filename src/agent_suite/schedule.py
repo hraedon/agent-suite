@@ -65,6 +65,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -74,7 +75,9 @@ from typing import Protocol, assert_never
 from agent_suite.config import (
     SCHEDULE_BACKUP_DIR_ENV,
     SCHEDULE_VERIFY_RESTORE_DSN_ENV,
+    _parse_env_file,
     same_postgres_database,
+    system_suite_env_path,
 )
 
 # ---------------------------------------------------------------------------
@@ -828,10 +831,18 @@ def _windows_trigger_expr(
 
     The Weekly parameter set makes ``-DaysOfWeek`` mandatory — a bare
     ``-Weekly`` dies non-interactively with a missing-parameter prompt.  An
-    hourly schedule uses Task Scheduler's once-plus-repetition parameter set.
+    hourly schedule uses Task Scheduler's once-plus-repetition parameter set;
+    ``New-ScheduledTaskTrigger`` has no ``-Hourly`` parameter set at all, so an
+    HOURLY spec without ``windows_repetition_minutes`` is refused here rather
+    than emitted as a script that can never register (WI-071 L1).
     """
     if repetition_minutes is not None:
         return "-Once"
+    if trigger.upper() == "HOURLY":
+        raise ValueError(
+            "an HOURLY windows_trigger requires windows_repetition_minutes — "
+            "New-ScheduledTaskTrigger has no -Hourly parameter set"
+        )
     if trigger.upper() == "WEEKLY":
         return "-Weekly -DaysOfWeek Sunday"
     return f"-{trigger.capitalize()}"
@@ -856,6 +867,11 @@ def _windows_trigger_type(
     """Return the Scheduled Task CIM trigger type for a built-in cadence."""
     if repetition_minutes is not None:
         return "MSFT_TaskTimeTrigger"
+    if trigger.upper() == "HOURLY":
+        raise ValueError(
+            "an HOURLY windows_trigger requires windows_repetition_minutes — "
+            "New-ScheduledTaskTrigger has no -Hourly parameter set"
+        )
     if trigger.upper() == "WEEKLY":
         return "MSFT_TaskWeeklyTrigger"
     return "MSFT_TaskDailyTrigger"
@@ -1342,21 +1358,55 @@ _UNRESOLVED_HINT = (
 )
 
 
-def _schedule_config_failure(spec: ScheduleSpec) -> str | None:
+def _systemd_fire_time_env(spec: ScheduleSpec) -> dict[str, str]:
+    """The environment a generated systemd unit will actually see at fire time.
+
+    A systemd unit does not inherit the installer's shell: it sees the
+    unit-level ``Environment=`` pins plus the optional ``EnvironmentFile`` at
+    :func:`system_suite_env_path` (the file renders after the pins, so it wins
+    — the same precedence the CLI itself applies when it loads the system file
+    at fire time). Preflighting
+    against ``os.environ`` greens an install whose required names live only in
+    the operator's per-user suite.env, and then every fire fails
+    FLAG_MISSING/DSN_MISSING (WI-071 M2).
+    """
+    env: dict[str, str] = {}
+    for pin in spec.environment:
+        key, _, value = pin.partition("=")
+        env[key] = value
+    env.update(_parse_env_file(system_suite_env_path()))
+    return env
+
+
+def _schedule_config_failure(spec: ScheduleSpec, *, os_target: OSTarget) -> str | None:
     """Return a safe configuration failure for a declarative schedule.
 
     This is intentionally a preflight rather than a check inside the scheduled
     command: an operator must not receive an ``INSTALLED`` claim for a unit
-    whose required environment is absent.  Only variable names appear in the
-    detail; DSN values stay in memory.
+    whose required environment is absent.  On systemd the check reads the
+    environment the *unit* will see (:func:`_systemd_fire_time_env`), not the
+    installer's shell; on Windows the task runs as the registering user, whose
+    fire-time environment ``os.environ`` (with suite.env already layered in)
+    faithfully approximates.  Only variable names appear in the detail; DSN
+    values stay in memory.
     """
+    env: Mapping[str, str]
+    if os_target is OSTarget.SYSTEMD:
+        env = _systemd_fire_time_env(spec)
+        source_hint = (
+            f" in {system_suite_env_path()} — the unit reads that file, not the "
+            "installer's shell environment"
+        )
+    else:
+        env = os.environ
+        source_hint = ""
     for env_name in spec.required_env:
-        if not os.environ.get(env_name, "").strip():
-            return f"required environment variable {env_name} is not set"
+        if not env.get(env_name, "").strip():
+            return f"required environment variable {env_name} is not set{source_hint}"
 
     if spec.dedicated_dsn_env is not None:
-        scratch_dsn = os.environ.get(spec.dedicated_dsn_env, "").strip()
-        production_dsn = os.environ.get("REGISTA_DSN", "").strip()
+        scratch_dsn = env.get(spec.dedicated_dsn_env, "").strip()
+        production_dsn = env.get("REGISTA_DSN", "").strip()
         if production_dsn and same_postgres_database(scratch_dsn, production_dsn):
             return (
                 f"{spec.dedicated_dsn_env} must identify a database distinct from "
@@ -1449,7 +1499,7 @@ def install_schedules(
     config_failures = {
         spec.kind: failure
         for spec in schedules
-        if (failure := _schedule_config_failure(spec)) is not None
+        if (failure := _schedule_config_failure(spec, os_target=target)) is not None
     }
     if config_failures:
         first_failed_kind = next(iter(config_failures))

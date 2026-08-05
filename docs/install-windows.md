@@ -60,7 +60,11 @@ Copy-Item suite.env.example "$env:ProgramData\agent-suite\suite.env"
 notepad "$env:ProgramData\agent-suite\suite.env"
 ```
 
-Fill in the placeholders. Secrets are backend refs, never literals:
+Fill in the placeholders. `suite.env` carries connection *identity* — the DSNs
+below are literal values (replace `PASSWORD` with the scratch database's real
+password and restrict the file's ACL to Administrators/SYSTEM). Key *material*
+never goes in `suite.env`: `keys.json` custodies it as `windows:` DPAPI refs —
+see [secrets-windows.md](secrets-windows.md):
 
 ```env
 REGISTA_DSN=postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/regista

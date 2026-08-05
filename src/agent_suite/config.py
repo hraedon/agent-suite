@@ -20,6 +20,7 @@ The per-user file is at ``~/.config/agent-suite/suite.env`` (Linux) or
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,18 +46,107 @@ SCHEDULE_BACKUP_DIR_ENV = "AGENT_SUITE_BACKUP_DIR"
 SCHEDULE_VERIFY_RESTORE_DSN_ENV = "AGENT_SUITE_VERIFY_RESTORE_DSN"
 
 
+_CONNINFO_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _parse_conninfo_keywords(dsn: str) -> dict[str, str] | None:
+    """Parse a libpq keyword/value conninfo string into a key→value dict.
+
+    Implements the libpq grammar subset that matters for identity: ``key =
+    value`` pairs separated by whitespace, values optionally single-quoted
+    with ``\\'`` and ``\\\\`` escapes. Returns ``None`` on any anomaly (a
+    stray token, an unterminated quote) rather than guessing — the caller
+    falls back to conservative string comparison.
+    """
+    result: dict[str, str] = {}
+    i, n = 0, len(dsn)
+    while i < n:
+        while i < n and dsn[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        matched = _CONNINFO_KEY_RE.match(dsn, i)
+        if matched is None:
+            return None
+        key = matched.group(0).lower()
+        i = matched.end()
+        while i < n and dsn[i].isspace():
+            i += 1
+        if i >= n or dsn[i] != "=":
+            return None
+        i += 1
+        while i < n and dsn[i].isspace():
+            i += 1
+        if i < n and dsn[i] == "'":
+            i += 1
+            chars: list[str] = []
+            closed = False
+            while i < n:
+                ch = dsn[i]
+                if ch == "\\" and i + 1 < n:
+                    chars.append(dsn[i + 1])
+                    i += 2
+                    continue
+                if ch == "'":
+                    closed = True
+                    i += 1
+                    break
+                chars.append(ch)
+                i += 1
+            if not closed:
+                return None
+            value = "".join(chars)
+        else:
+            start = i
+            while i < n and not dsn[i].isspace():
+                i += 1
+            value = dsn[start:i]
+        result[key] = value
+    return result or None
+
+
+def _keyword_value_identity(dsn: str) -> tuple[str, str, int, str] | None:
+    """Database identity of a libpq keyword/value DSN (``host=… dbname=…``).
+
+    ``backup.py`` accepts this DSN spelling, so a keyword-spelled production
+    DSN is a real operator shape — comparing it to a URI-spelled scratch DSN
+    by raw string only would let the weekly restore point at production
+    (WI-071 M1). Multi-host values and nested ``dbname`` conninfo expansion
+    are outside the supported subset and return ``None``.
+    """
+    keywords = _parse_conninfo_keywords(dsn)
+    if keywords is None:
+        return None
+    database = keywords.get("dbname", "")
+    if not database or "=" in database:
+        return None
+    host = keywords.get("host") or keywords.get("hostaddr") or ""
+    if "," in host:
+        return None
+    host = host.strip().lower().rstrip(".")
+    raw_port = keywords.get("port", "5432")
+    if "," in raw_port:
+        return None
+    try:
+        port = int(raw_port)
+    except ValueError:
+        return None
+    return ("postgresql", host, port, database)
+
+
 def _postgres_database_identity(dsn: str) -> tuple[str, str, int, str] | None:
-    """Return the database target from a supported PostgreSQL URI.
+    """Return the database target from a supported PostgreSQL DSN.
 
     Credentials and URI query options are deliberately excluded: changing a
     password, user, or ``sslmode`` does not point ``pg_restore`` at a different
-    database.  Keyword/value DSNs and malformed URIs return ``None`` and are
-    compared conservatively by :func:`same_postgres_database`.
+    database.  Both URI and libpq keyword/value spellings are supported;
+    anything outside those subsets returns ``None`` and is compared
+    conservatively by :func:`same_postgres_database`.
     """
     try:
         parsed = urlsplit(dsn)
         if parsed.scheme.lower() not in {"postgres", "postgresql"}:
-            return None
+            return _keyword_value_identity(dsn)
         options = parse_qs(parsed.query, keep_blank_values=True)
         host = parsed.hostname
         if host is None:
@@ -81,9 +171,12 @@ def _postgres_database_identity(dsn: str) -> tuple[str, str, int, str] | None:
 def same_postgres_database(left: str, right: str) -> bool:
     """Whether two DSNs identify the same PostgreSQL database.
 
-    Supported URI forms are compared by normalized scheme/host/port/database,
-    not by their raw spelling.  If either value is outside that supported URI
-    subset, equality remains the safe fallback and no DSN value is surfaced.
+    Supported URI and keyword/value forms are compared by normalized
+    scheme/host/port/database, not by their raw spelling.  If either value is
+    outside those supported subsets (multi-host lists, nested ``dbname``
+    expansion, service files), equality remains the safe fallback and no DSN
+    value is surfaced — a residual fail-open for exotic spellings, accepted
+    and documented in WI-071 M1.
     """
     if left == right:
         return True
