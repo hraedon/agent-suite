@@ -23,7 +23,7 @@ import pytest
 
 from agent_suite.bootstrap import StepKind, StepStatus, run_bootstrap
 from agent_suite.secret_refs import (
-    VAULT_REF_LITERAL_RE,
+    BACKEND_REF_LITERAL_RE,
     config_problems,
     discover_refs,
     probe_ref_argv,
@@ -82,6 +82,30 @@ def test_scheme_names_match_the_resolver_vocabulary() -> None:
     # 'akv:' and 'wincred:' are doc inventions; the resolver knows azure/windows.
     assert scheme_of("akv:vault-name/secret") == "literal"
     assert ref_static_problem("akv:vault-name/secret") is not None
+    assert ref_static_problem("wincred:agent-suite/regista/signing-key") is not None
+    # Correct scheme names are recognised.
+    assert scheme_of("azure:regista-dsn-password") == "azure"
+    assert scheme_of("windows:AQAAANCMnd8B") == "windows"
+
+
+def test_azure_ref_shape_is_validated() -> None:
+    """``azure:`` takes a bare KV secret name, not an embedded vault DNS."""
+    # The bare secret-name shape works.
+    assert ref_static_problem("azure:regista-dsn-password") is None
+    # Embedding the vault DNS (the old akv: shape, corrected to the right
+    # scheme) is still the wrong *shape* and must be caught.
+    bad_azure = "azure:suite-secrets.vault.azure.net/regista-dsn-password"
+    assert ref_static_problem(bad_azure) is not None
+
+
+def test_windows_ref_shape_is_validated() -> None:
+    """``windows:`` takes the base64 DPAPI blob, not a credential target."""
+    # A base64 blob (the ref IS the blob) works.
+    assert ref_static_problem("windows:AQAAANCMnd8B") is None
+    # A credential-target name (the old wincred: shape, corrected to the right
+    # scheme) is still the wrong *shape* and must be caught.
+    bad_windows = "windows:agent-suite/regista/signing-key"
+    assert ref_static_problem(bad_windows) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -314,34 +338,50 @@ def test_no_refs_configured_does_not_claim_to_have_verified_anything() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _documented_vault_refs() -> list[tuple[Path, str]]:
+def _documented_backend_refs() -> list[tuple[Path, str]]:
+    """Every backend-ref literal the committed docs and examples print.
+
+    Matches any of the resolver's known schemes (vault/azure/windows/file/env)
+    followed by a non-empty body. Prose that merely lists scheme names
+    (``vault:/azure:/windows:``) is filtered out because its body contains a
+    second ``:``.
+
+    Known residual (WI-071 L6, by design): the match truncates at ``<``
+    placeholder markers, so ``azure:principal-<principal_id>-key`` validates
+    only its ``azure:principal-`` prefix and a ref written entirely as a
+    placeholder (``windows:<base64-dpapi-blob>``) is invisible to this gate.
+    Docs that print refs only in placeholder form are therefore not proven
+    parseable here — the concrete-literal cases below carry that weight.
+    """
     found: list[tuple[Path, str]] = []
     candidates = sorted((REPO_ROOT / "docs").rglob("*.md"))
     candidates.append(REPO_ROOT / "suite.env.example")
     for path in candidates:
         if not path.is_file():
             continue
-        for match in VAULT_REF_LITERAL_RE.finditer(path.read_text(encoding="utf-8")):
+        for match in BACKEND_REF_LITERAL_RE.finditer(path.read_text(encoding="utf-8")):
             literal = match.group(0).rstrip(".,;:)`\"'")
-            body = literal[len("vault:") :]
-            # `vault:` on its own, or in a list of scheme names
-            # ("vault:/akv:/wincred:"), is prose about the scheme rather than a
-            # reference. A reference has a path and no second scheme in it.
+            _scheme, _sep, body = literal.partition(":")
+            # `<scheme>:` on its own, or in a list of scheme names
+            # ("vault:/azure:/windows:"), is prose about the scheme rather than
+            # a reference. A reference has a path and no second scheme in it.
             if not body or ":" in body:
                 continue
             found.append((path.relative_to(REPO_ROOT), literal))
     return found
 
 
-def test_every_documented_vault_ref_parses() -> None:
-    """A pure-parse assertion — no Vault needed, and none of it is optional.
+def test_every_documented_backend_ref_parses() -> None:
+    """A pure-parse assertion — no backend needed, and none of it is optional.
 
-    `suite.env.example` is the file `install-linux.md` §3 calls "the canonical
-    placeholder set". It printed a ref that can never resolve, so every host
-    built from it started with an unresolvable secret reference.
+    Every documented backend-ref literal must both (a) use a scheme the
+    resolver knows and (b) have a shape the resolver accepts. This is what
+    catches a doc that prints ``akv:``/``wincred:`` (unknown scheme) or the
+    old embedded-DNS / credential-target shapes even after the scheme name is
+    corrected (WI-039/WI-069).
     """
-    literals = _documented_vault_refs()
-    assert literals, "the docs stopped mentioning vault: refs — update this test"
+    literals = _documented_backend_refs()
+    assert literals, "the docs stopped mentioning backend refs — update this test"
     broken = [
         (str(path), literal, ref_static_problem(literal))
         for path, literal in literals
@@ -352,9 +392,16 @@ def test_every_documented_vault_ref_parses() -> None:
 
 @pytest.mark.parametrize(
     "literal",
-    ["vault:secret/agent-suite/regista#signing_key", "vault:kv/a/b#field"],
+    [
+        "vault:secret/agent-suite/regista#signing_key",
+        "vault:kv/a/b#field",
+        "akv:suite-secrets.vault.azure.net/regista-dsn-password",
+        "wincred:agent-suite/regista/signing-key",
+        "azure:suite-secrets.vault.azure.net/regista-dsn-password",
+        "windows:agent-suite/regista/signing-key",
+    ],
 )
 def test_the_docs_test_would_have_caught_the_shipped_shape(literal: str) -> None:
     """Proof the guard has teeth: the shapes that shipped are rejected."""
     assert ref_static_problem(literal) is not None
-    assert re.fullmatch(VAULT_REF_LITERAL_RE, literal)
+    assert re.fullmatch(BACKEND_REF_LITERAL_RE, literal)

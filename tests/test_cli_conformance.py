@@ -69,11 +69,100 @@ ERROR_CASES = [
         env=_HERMETIC_ENV,
         unset_env=("REGISTA_DSN",),
     ),
+    # WI-071 L3: the scheduled-protection env-indirection codes (WI-068/069),
+    # each through the real CLI. The DSN-handling paths carry the kit's
+    # sentinel-secret redaction property — a DSN value in error output is a
+    # violation, not just a style problem.
+    ErrorCase(
+        name="backup-dir-env-unset-flag-missing",
+        argv=(*_CLI, "backup", "--dir-env", "AGENT_SUITE_BACKUP_DIR", "--json"),
+        expect_code="FLAG_MISSING",
+        env=_HERMETIC_ENV,
+        unset_env=("AGENT_SUITE_BACKUP_DIR",),
+    ),
+    ErrorCase(
+        name="restore-dsn-and-dsn-env-conflict",
+        argv=(
+            *_CLI,
+            "restore",
+            "--dir",
+            "/nonexistent/backups",
+            "--dsn",
+            "postgresql://u@h/db",
+            "--dsn-env",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN",
+            "--json",
+        ),
+        expect_code="FLAG_CONFLICT",
+        env=_HERMETIC_ENV,
+    ),
+    ErrorCase(
+        name="restore-dsn-env-invalid-name",
+        argv=(
+            *_CLI,
+            "restore",
+            "--dir",
+            "/nonexistent/backups",
+            "--dsn-env",
+            "not a valid env name",
+            "--json",
+        ),
+        expect_code="FLAG_INVALID",
+        env=_HERMETIC_ENV,
+    ),
+    ErrorCase(
+        name="restore-dsn-env-unset",
+        argv=(
+            *_CLI,
+            "restore",
+            "--dir",
+            "/nonexistent/backups",
+            "--dsn-env",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN",
+            "--json",
+        ),
+        expect_code="DSN_MISSING",
+        env=_HERMETIC_ENV,
+        unset_env=("AGENT_SUITE_VERIFY_RESTORE_DSN",),
+    ),
+    ErrorCase(
+        name="restore-dsn-not-dedicated-redacts",
+        argv=(
+            *_CLI,
+            "restore",
+            "--dir",
+            "/nonexistent/backups",
+            "--dsn-env",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN",
+            "--json",
+        ),
+        expect_code="DSN_NOT_DEDICATED",
+        env=_HERMETIC_ENV,
+        # Both DSNs planted as the sentinel: string-equal → NOT_DEDICATED,
+        # and neither value may surface in the error output.
+        secret_env_names=("REGISTA_DSN", "AGENT_SUITE_VERIFY_RESTORE_DSN"),
+    ),
 ]
 
 USAGE_CASES = [
     UsageCase(name="unknown-verb", argv=(*_CLI, "no-such-verb")),
     UsageCase(name="no-verb", argv=_CLI),
+    # WI-071 L3/L4: the --dir/--dir-env group is parser-enforced, so omitting
+    # both (or passing both) is a usage error (exit 2, usage text), not an
+    # envelope path — the 1/2 boundary ratified in cli-contract.md §2.
+    UsageCase(name="backup-no-dir", argv=(*_CLI, "backup", "--json")),
+    UsageCase(
+        name="restore-dir-and-dir-env",
+        argv=(
+            *_CLI,
+            "restore",
+            "--dir",
+            "/nonexistent/backups",
+            "--dir-env",
+            "AGENT_SUITE_BACKUP_DIR",
+            "--json",
+        ),
+    ),
 ]
 
 BROKEN_PIPE_CASES = [

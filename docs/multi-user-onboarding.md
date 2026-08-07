@@ -135,15 +135,19 @@ file — they are not duplicated per user.
 Each human's Ed25519 private key is stored in the secret backend at a distinct
 path, scoped to that `principal_id`:
 
-| Backend | Path |
-|---------|------|
-| Vault | `vault:secret/agent-suite/principals/<principal_id>#key` |
-| AKV | `akv:suite-secrets.WORK-DOMAIN.vault.azure.net/principal-<principal_id>-key` |
-| Windows | `wincred:agent-suite/principals/<principal_id>/key` |
+| Backend | Ref shape |
+|---------|-----------|
+| Vault | `vault:kv/agent-suite/principals/<principal_id>/key` |
+| AKV | `azure:principal-<principal_id>-key` (with `AZURE_KEY_VAULT_NAME` set) |
+| Windows | `windows:<base64-dpapi-blob>` |
 
-dossier retrieves the key at sign time and clears it after — the human never
-handles the private key directly. This is the trusted-signing-proxy model
-documented in the [threat model](key-custody-threat-model.md) §3.
+A `vault:` ref is `vault:<mount>/<path…>/<field>` — the field is the **last
+path segment**, never a `#field` suffix. An `azure:` ref is a bare Key Vault
+secret name; the vault name comes from `AZURE_KEY_VAULT_NAME`, not the ref.
+A `windows:` ref is the base64 DPAPI blob itself. dossier retrieves the key at
+sign time and clears it after — the human never handles the private key
+directly. This is the trusted-signing-proxy model documented in the
+[threat model](key-custody-threat-model.md) §3.
 
 Agent principals (the agent-notes CLI, cairn hooks) are onboarded the same
 way, with their own `principal_id` and key. An agent signs `on_behalf_of` a

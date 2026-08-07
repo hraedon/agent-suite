@@ -10,12 +10,15 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import re
 import sys
 from enum import Enum
 from typing import assert_never
 
 from agent_suite.conformance.envelope import emit_error
 from agent_suite.harness import HarnessTarget
+
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 #: The name ``preflight-windows`` shipped under until WI-050. Kept as a working
 #: alias — an operator or script that already runs ``agent-suite preflight`` must
@@ -411,7 +414,16 @@ def _build_parser() -> argparse.ArgumentParser:
         Command.BACKUP.value,
         help="suite-level backup: doctor -> pg_dump -> verify -> evidence -> manifest",
     )
-    backup.add_argument("--dir", required=True, help="backup output directory")
+    backup_dir = backup.add_mutually_exclusive_group(required=True)
+    backup_dir.add_argument("--dir", help="backup output directory")
+    backup_dir.add_argument(
+        "--dir-env",
+        metavar="NAME",
+        help=(
+            "read the backup output directory from this environment variable "
+            "(useful for generated OS units)"
+        ),
+    )
     backup.add_argument("--dsn", help="Postgres DSN (or REGISTA_DSN)")
     backup.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
     backup.add_argument("--json", action="store_true", help="emit the result as JSON")
@@ -420,8 +432,25 @@ def _build_parser() -> argparse.ArgumentParser:
         Command.RESTORE.value,
         help="restore from a backup directory: doctor -> pg_restore -> verify -> doctor",
     )
-    restore.add_argument("--dir", required=True, help="backup directory to restore from")
+    restore_dir = restore.add_mutually_exclusive_group(required=True)
+    restore_dir.add_argument("--dir", help="backup directory to restore from")
+    restore_dir.add_argument(
+        "--dir-env",
+        metavar="NAME",
+        help=(
+            "read the backup directory from this environment variable "
+            "(useful for generated OS units)"
+        ),
+    )
     restore.add_argument("--dsn", help="Postgres DSN (or REGISTA_DSN)")
+    restore.add_argument(
+        "--dsn-env",
+        metavar="NAME",
+        help=(
+            "read the restore DSN from this environment variable; unlike the "
+            "default, this never falls back to REGISTA_DSN"
+        ),
+    )
     restore.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
     restore.add_argument("--json", action="store_true", help="emit the result as JSON")
 
@@ -533,6 +562,33 @@ def _shared_endpoints_from_env() -> dict[str, str]:
         if url:
             endpoints[comp.ident] = url
     return endpoints
+
+
+def _resolve_value_or_env(
+    value: str | None,
+    env_name: str | None,
+    *,
+    missing_code: str,
+    missing_detail: str,
+) -> tuple[str | None, str | None, str | None]:
+    """Resolve a CLI value or an environment indirection without exposing it.
+
+    The generated schedule commands use this for paths and DSNs.  Only the
+    variable *name* appears in diagnostics; the value stays in the process
+    environment and is passed to the existing backup/restore orchestration.
+    """
+    if value and env_name:
+        return None, "FLAG_CONFLICT", "use either the direct option or its --*-env form"
+    if env_name:
+        if _ENV_NAME_RE.fullmatch(env_name) is None:
+            return None, "FLAG_INVALID", f"invalid environment variable name: {env_name!r}"
+        resolved = os.environ.get(env_name)
+        if not resolved:
+            return None, missing_code, f"set {env_name} in suite.env or the process environment"
+        return resolved, None, None
+    if value:
+        return value, None, None
+    return None, missing_code, missing_detail
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1310,8 +1366,22 @@ def main(argv: list[str] | None = None) -> int:
 
             from agent_suite.backup import format_backup_text, run_backup
 
+            backup_dir, error_code, error_detail = _resolve_value_or_env(
+                args.dir,
+                args.dir_env,
+                missing_code="FLAG_MISSING",
+                missing_detail="backup requires --dir or --dir-env",
+            )
+            if error_code is not None:
+                return emit_error(
+                    error_code,
+                    "backup: cannot resolve output directory",
+                    detail=error_detail,
+                    json_mode=getattr(args, "json", False),
+                )
+            assert backup_dir is not None
             bk_result = run_backup(
-                backup_dir=Path(args.dir),
+                backup_dir=Path(backup_dir),
                 dsn=args.dsn or os.environ.get("REGISTA_DSN"),
                 dry_run=args.dry_run,
             )
@@ -1326,10 +1396,60 @@ def main(argv: list[str] | None = None) -> int:
             from pathlib import Path
 
             from agent_suite.backup import format_restore_text, run_restore
+            from agent_suite.config import same_postgres_database
+
+            backup_dir, error_code, error_detail = _resolve_value_or_env(
+                args.dir,
+                args.dir_env,
+                missing_code="FLAG_MISSING",
+                missing_detail="restore requires --dir or --dir-env",
+            )
+            if error_code is not None:
+                return emit_error(
+                    error_code,
+                    "restore: cannot resolve backup directory",
+                    detail=error_detail,
+                    json_mode=getattr(args, "json", False),
+                )
+            assert backup_dir is not None
+
+            if args.dsn and args.dsn_env:
+                return emit_error(
+                    "FLAG_CONFLICT",
+                    "restore: use either --dsn or --dsn-env",
+                    json_mode=getattr(args, "json", False),
+                )
+            restore_dsn = args.dsn or os.environ.get("REGISTA_DSN")
+            if args.dsn_env:
+                restore_dsn, dsn_error_code, dsn_error_detail = _resolve_value_or_env(
+                    None,
+                    args.dsn_env,
+                    missing_code="DSN_MISSING",
+                    missing_detail="restore requires a DSN",
+                )
+                if dsn_error_code is not None:
+                    return emit_error(
+                        dsn_error_code,
+                        "restore: verification DSN is not configured",
+                        detail=dsn_error_detail,
+                        json_mode=getattr(args, "json", False),
+                    )
+                assert restore_dsn is not None
+                production_dsn = os.environ.get("REGISTA_DSN")
+                if production_dsn and same_postgres_database(restore_dsn, production_dsn):
+                    return emit_error(
+                        "DSN_NOT_DEDICATED",
+                        "restore: verification DSN must be distinct from REGISTA_DSN",
+                        detail=(
+                            "Configure a dedicated scratch database in the environment "
+                            f"variable {args.dsn_env}."
+                        ),
+                        json_mode=getattr(args, "json", False),
+                    )
 
             rs_result = run_restore(
-                backup_dir=Path(args.dir),
-                dsn=args.dsn or os.environ.get("REGISTA_DSN"),
+                backup_dir=Path(backup_dir),
+                dsn=restore_dsn,
                 dry_run=args.dry_run,
             )
             if getattr(args, "json", False):

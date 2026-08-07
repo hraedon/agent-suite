@@ -148,30 +148,68 @@ daemon.
 sudo agent-suite schedule install
 ```
 
-This writes systemd timer/unit files (or Windows PowerShell scripts), enables
-them, and then **verifies** each one: that the resolved `ExecStart` is an
-absolute existing executable, that systemd's own parse of `ExecStart` names it,
-and that the timer is `active`. A unit it cannot verify is reported `failed`
-with the reason, and the command exits non-zero — writing a file is not the
-success condition. `ExecStart` is resolved to an absolute path at install time;
-see [install-linux.md §7](install-linux.md) for why, and for `--bin-dir` when the
-CLIs are not on a system PATH. Each generated unit also pins an explicit `PATH`
-of **only** the standard system directories: systemd runs the unit as root with a
-stripped `PATH`, and without this the doctor that `alert-check` shells out to
-would resolve different component binaries than the operator sees — a different
-estate (WI-038). The pin is the system directories only (not the directory the
-installer resolved `ExecStart` from) so a root-run unit never searches a foreign
-or user-writable bin dir; an install that resolves the CLI from a non-system bin
-dir is refused instead. The pin renders before `EnvironmentFile`, so `suite.env`
-can still override it.
+This writes systemd timer/unit files (or Windows PowerShell registration
+scripts), enables/registers them, and then **verifies** each one. On Linux that
+means the resolved `ExecStart` is an absolute existing executable, systemd's
+own parse of `ExecStart` names it, and the timer is `active`. On Windows the
+generated script registers the task and reads it back to verify the action,
+arguments, start time, and daily/weekly/hourly trigger (including hourly
+repetition). A schedule it cannot verify is reported
+`failed` with the reason, and the command exits non-zero — writing a file is not
+the success condition. `ExecStart` is resolved to an absolute path at install
+time; see [install-linux.md §7](install-linux.md) for why, and for `--bin-dir`
+when the CLIs are not on a system PATH. Each generated unit also pins an
+explicit `PATH` of **only** the standard system directories: systemd runs the
+unit as root with a stripped `PATH`, and without this the doctor that
+`alert-check` shells out to would resolve different component binaries than the
+operator sees — a different estate (WI-038). The pin is the system directories
+only (not the directory the installer resolved `ExecStart` from) so a root-run
+unit never searches a foreign or user-writable bin dir; an install that resolves
+the CLI from a non-system bin dir is refused instead. The pin renders before
+`EnvironmentFile`, so `suite.env` can still override it.
+
+Before installing, set the scheduled-protection values in the system
+`suite.env` (the Windows file is `%ProgramData%\agent-suite\suite.env`):
+
+```env
+AGENT_SUITE_BACKUP_DIR=/var/lib/agent-suite/backups
+AGENT_SUITE_VERIFY_RESTORE_DSN=postgresql://DB-SERVICE-ACCOUNT:PASSWORD@suite-db.example:5432/regista_verify
+```
+
+On Windows, use a Windows backup path such as
+`C:\ProgramData\agent-suite\backups`. `AGENT_SUITE_VERIFY_RESTORE_DSN` is
+required by the weekly job and must identify a dedicated scratch database; it
+must not be omitted and must not equal `REGISTA_DSN`. The weekly job never falls
+back to the production DSN. The scheduled commands carry only these environment
+variable names, not their values.
+
+`schedule install` performs this configuration preflight in both normal and
+`--dry-run` modes. If either required variable is absent, or the verification
+DSN resolves to the same PostgreSQL database as `REGISTA_DSN`, the affected
+schedules are reported `failed` and no schedule files/tasks are installed.
 
 The schedules are:
 
 | Schedule | Cadence | Command | Purpose |
 |----------|---------|---------|---------|
-| `agent-suite-backup` | Daily | `agent-suite backup --verify-restore` | Nightly pg_dump + weekly verify-restore |
+| `agent-suite-backup` | Daily | `agent-suite backup --dir-env AGENT_SUITE_BACKUP_DIR` | Nightly `pg_dump` and manifest |
+| `agent-suite-restore-verify` | Weekly | `agent-suite restore --dir-env AGENT_SUITE_BACKUP_DIR --dsn-env AGENT_SUITE_VERIFY_RESTORE_DSN` | Restore the latest dump into scratch, then run `verify-restore` |
 | `agent-suite-doctor-alert` | Hourly | `agent-suite alert-check` | Periodic doctor + alert routing |
 | `agent-suite-chain-integrity` | Weekly | `cairn integrity` | Full chain replay; records the verdict doctor reports (cairn WI-030) |
+
+The weekly restore is scheduled for 04:00 (after the daily 00:00/02:00 backup
+window on Linux/Windows respectively), so it does not race the dump that
+produces the shared latest-dump file. The weekly *day* differs by platform:
+systemd weekly units render `Mon *-*-* HH:MM:SS`, while Windows weekly
+triggers register `-DaysOfWeek Sunday` (the same pattern the chain-integrity
+schedule has always used). Both satisfy the weekly cadence; treat the day as
+platform-defined rather than aligned.
+
+The nightly source-side verification that `agent-suite backup` performs is a
+health check of the live store, not proof that the dump can be restored. That
+proof comes from the distinct weekly `restore` schedule: `pg_restore` loads the
+dump into the configured scratch database and the existing restore pipeline then
+calls `verify-restore` against that scratch DSN.
 
 Run `sudo -E cairn integrity` once at install time (as root, with
 `CAIRN_INTEGRITY_DIR` in scope from `/etc/agent-suite/suite.env` — a
@@ -217,10 +255,16 @@ byte-identical to the generator.
 
 ### 3.6 Backup retention
 
-Backup retention is configured in the operator's environment (e.g.,
-`pg_dump` retention policy, `restic` retention, or the backup tool of
-choice). See the [DR runbook](disaster-recovery.md) §2.1 for the
-recommended cadence and retention table.
+The nightly backup writes exactly one dump at a fixed path —
+`AGENT_SUITE_BACKUP_DIR/database.dump` plus its manifest — and **overwrites it
+on every run**. There are no older copies in that directory to retain: history
+exists only if external tooling (`restic`, filesystem snapshots, the backup
+tool of choice) captures the file before the next nightly overwrite. Put the
+directory under such tooling (the DR runbook recommends 30 days for daily full
+backups); the weekly restore-verify job always reads the current
+`database.dump`, so it proves the latest dump, not the retained history. See
+the [DR runbook](disaster-recovery.md) §2.1 for the recommended cadence and
+retention table.
 
 ---
 

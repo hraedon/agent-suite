@@ -111,7 +111,7 @@ the shared store (install order step 7).
 
 Canonical vars (regista owns the vocabulary): `REGISTA_DSN`, `REGISTA_KEY_PATH`,
 `REGISTA_REQUIRE_SSL`, plus per-consumer `<TOOL>_PROJECT`. Secrets are backend
-refs (`vault:` / `akv:` / `wincred:` / `file:`), never literals in the system file.
+refs (`vault:` / `azure:` / `windows:` / `file:`), never literals in the system file.
 
 ## 3. The doctor umbrella (what `doctor` aggregates)
 

@@ -56,6 +56,7 @@ check alone would not have caught WI-045, which is why all three run.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
@@ -64,14 +65,32 @@ import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Protocol, assert_never
 
+from agent_suite.config import (
+    SCHEDULE_BACKUP_DIR_ENV,
+    SCHEDULE_VERIFY_RESTORE_DSN_ENV,
+    _parse_env_file,
+    same_postgres_database,
+    system_suite_env_path,
+)
+
 # ---------------------------------------------------------------------------
 # Injectable interfaces
 # ---------------------------------------------------------------------------
+
+
+_DEFAULT_RUNNER_TIMEOUT_SECONDS = 30.0
+
+# Windows PowerShell 5.1 and the ScheduledTasks CIM provider can take longer
+# than the shared timeout to cold-start. Keep the larger budget scoped to the
+# two mutating Task Scheduler calls (WI-071 B2).
+POWERSHELL_TASK_TIMEOUT_SECONDS = 240.0
 
 
 class Runner(Protocol):
@@ -80,8 +99,21 @@ class Runner(Protocol):
     def __call__(self, cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]: ...
 
 
-def _default_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+def _default_runner(
+    cmd: tuple[str, ...], *, timeout: float = _DEFAULT_RUNNER_TIMEOUT_SECONDS
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout, check=False
+    )
+
+
+def _run_powershell_task(
+    runner: Runner, cmd: tuple[str, ...]
+) -> subprocess.CompletedProcess[str]:
+    """Run a Task Scheduler mutation without changing the Runner contract."""
+    if runner is _default_runner:
+        return _default_runner(cmd, timeout=POWERSHELL_TASK_TIMEOUT_SECONDS)
+    return runner(cmd)
 
 
 class Which(Protocol):
@@ -106,7 +138,8 @@ class ScheduleKind(Enum):
     silently unhandled in the generation or install logic.
     """
 
-    BACKUP_VERIFY = "backup-verify"  # WI-2.1: nightly pg_dump + weekly verify-restore
+    BACKUP_VERIFY = "backup-verify"  # WI-2.1: nightly pg_dump
+    RESTORE_VERIFY = "restore-verify"  # WI-2.1: weekly scratch restore + verification
     DOCTOR_ALERT = "doctor-alert"  # WI-3.1: periodic doctor + red-routing
     CHAIN_INTEGRITY = "chain-integrity"  # cairn WI-030: scheduled full replay
 
@@ -160,20 +193,43 @@ class ScheduleSpec:
     description: str
     on_calendar: str  # systemd OnCalendar expression (e.g. "daily", "weekly")
     command: str  # the agent-suite command to run
-    windows_trigger: str  # Windows task trigger (e.g. "DAILY", "WEEKLY")
+    windows_trigger: str  # Windows task trigger (e.g. "DAILY", "WEEKLY", "HOURLY")
     # Unit-level Environment= defaults, rendered before EnvironmentFile so the
     # operator's suite.env still overrides them (systemd file-beats-unit).
     environment: tuple[str, ...] = ()
+    # The restore is deliberately later than the nightly dump on the weekly
+    # day, so the two jobs cannot race over the shared latest-dump path.
+    windows_time: str = "2am"
+    systemd_time: str | None = None  # explicit HH:MM:SS on the weekly day
+    windows_repetition_minutes: int | None = None
+    required_env: tuple[str, ...] = ()
+    dedicated_dsn_env: str | None = None
 
 
 SCHEDULES: tuple[ScheduleSpec, ...] = (
     ScheduleSpec(
         kind=ScheduleKind.BACKUP_VERIFY,
         name="agent-suite-backup",
-        description="Nightly pg_dump of the suite Postgres store + weekly verify-restore",
+        description="Nightly pg_dump of the suite Postgres store",
         on_calendar="daily",
-        command="agent-suite backup --verify-restore",
+        command=f"agent-suite backup --dir-env {SCHEDULE_BACKUP_DIR_ENV}",
         windows_trigger="DAILY",
+        required_env=(SCHEDULE_BACKUP_DIR_ENV,),
+    ),
+    ScheduleSpec(
+        kind=ScheduleKind.RESTORE_VERIFY,
+        name="agent-suite-restore-verify",
+        description="Weekly restore of the latest dump into scratch + verify-restore",
+        on_calendar="weekly",
+        command=(
+            f"agent-suite restore --dir-env {SCHEDULE_BACKUP_DIR_ENV} "
+            f"--dsn-env {SCHEDULE_VERIFY_RESTORE_DSN_ENV}"
+        ),
+        windows_trigger="WEEKLY",
+        windows_time="4am",
+        systemd_time="04:00:00",
+        required_env=(SCHEDULE_BACKUP_DIR_ENV, SCHEDULE_VERIFY_RESTORE_DSN_ENV),
+        dedicated_dsn_env=SCHEDULE_VERIFY_RESTORE_DSN_ENV,
     ),
     ScheduleSpec(
         kind=ScheduleKind.DOCTOR_ALERT,
@@ -181,7 +237,8 @@ SCHEDULES: tuple[ScheduleSpec, ...] = (
         description="Periodic doctor health check + alert routing on state change",
         on_calendar="hourly",
         command="agent-suite alert-check",
-        windows_trigger="DAILY",
+        windows_trigger="HOURLY",
+        windows_repetition_minutes=60,
         # Same pin as CHAIN_INTEGRITY: this unit's doctor subprocess is the
         # automated READER of the verdict — without the pin, an install whose
         # suite.env predates the variable has the writer and the hourly
@@ -750,12 +807,15 @@ def _systemd_service(spec: ScheduleSpec, *, resolved: ResolvedCommand | None = N
 
 def _systemd_timer(spec: ScheduleSpec) -> str:
     """Generate a systemd timer unit file for a schedule."""
+    on_calendar = (
+        f"Mon *-*-* {spec.systemd_time}" if spec.systemd_time else spec.on_calendar
+    )
     return (
         f"[Unit]\n"
         f"Description={spec.description} (timer)\n"
         f"\n"
         f"[Timer]\n"
-        f"OnCalendar={spec.on_calendar}\n"
+        f"OnCalendar={on_calendar}\n"
         f"Persistent=true\n"
         f"RandomizedDelaySec=300\n"
         f"\n"
@@ -764,15 +824,106 @@ def _systemd_timer(spec: ScheduleSpec) -> str:
     )
 
 
-def _windows_trigger_expr(trigger: str) -> str:
+def _windows_trigger_expr(
+    trigger: str, *, repetition_minutes: int | None = None
+) -> str:
     """PowerShell trigger switches for a spec's windows_trigger.
 
     The Weekly parameter set makes ``-DaysOfWeek`` mandatory — a bare
-    ``-Weekly`` dies non-interactively with a missing-parameter prompt.
+    ``-Weekly`` dies non-interactively with a missing-parameter prompt.  An
+    hourly schedule uses Task Scheduler's once-plus-repetition parameter set;
+    ``New-ScheduledTaskTrigger`` has no ``-Hourly`` parameter set at all, so an
+    HOURLY spec without ``windows_repetition_minutes`` is refused here rather
+    than emitted as a script that can never register (WI-071 L1).
     """
+    if repetition_minutes is not None:
+        return "-Once"
+    if trigger.upper() == "HOURLY":
+        raise ValueError(
+            "an HOURLY windows_trigger requires windows_repetition_minutes — "
+            "New-ScheduledTaskTrigger has no -Hourly parameter set"
+        )
     if trigger.upper() == "WEEKLY":
         return "-Weekly -DaysOfWeek Sunday"
     return f"-{trigger.capitalize()}"
+
+
+def _powershell_single_quote(value: str) -> str:
+    """Quote a value for a PowerShell single-quoted string literal.
+
+    The scheduled-task command is passed to PowerShell with ``-File`` rather
+    than through a shell command string.  Values still have to be quoted in the
+    generated script, though: a path containing an apostrophe must not change
+    the script's syntax, and metacharacters must remain data rather than code.
+    """
+    if "\x00" in value:
+        raise ValueError("PowerShell values cannot contain NUL")
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _windows_trigger_type(
+    trigger: str, *, repetition_minutes: int | None = None
+) -> str:
+    """Return the Scheduled Task CIM trigger type for a built-in cadence."""
+    if repetition_minutes is not None:
+        return "MSFT_TaskTimeTrigger"
+    if trigger.upper() == "HOURLY":
+        raise ValueError(
+            "an HOURLY windows_trigger requires windows_repetition_minutes — "
+            "New-ScheduledTaskTrigger has no -Hourly parameter set"
+        )
+    if trigger.upper() == "WEEKLY":
+        return "MSFT_TaskWeeklyTrigger"
+    return "MSFT_TaskDailyTrigger"
+
+
+_WINDOWS_TIME_RE = re.compile(
+    r"^(?P<hour>1[0-2]|0?[1-9])(?::(?P<minute>[0-5][0-9]))?(?P<ampm>[ap]m)$",
+    re.IGNORECASE,
+)
+
+
+def _windows_time_parts(value: str) -> tuple[int, int]:
+    """Convert the declarative ``2am``/``4am`` form to 24-hour parts."""
+    match = _WINDOWS_TIME_RE.fullmatch(value.strip())
+    if match is None:
+        raise ValueError(f"unsupported Windows task time: {value!r}")
+    hour = int(match.group("hour")) % 12
+    if match.group("ampm").lower() == "pm":
+        hour += 12
+    minute = int(match.group("minute") or "0")
+    return hour, minute
+
+
+def _parse_windows_start_boundary(value: object) -> tuple[int, int] | None:
+    """Read Task Scheduler's ISO StartBoundary without trusting its timezone."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    # Some Windows/.NET versions emit seven fractional-second digits while
+    # Python's ISO parser accepts at most six.
+    text = re.sub(r"(\.\d{6})\d+(?=(?:[+-]\d{2}:\d{2})?$)", r"\1", text)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        parsed = None
+        for format_string in (
+            "%m/%d/%Y %H:%M:%S",
+            "%m/%d/%Y %I:%M:%S %p",
+            "%Y-%m-%d %H:%M:%S",
+        ):
+            try:
+                parsed = datetime.strptime(text, format_string)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            return None
+    if parsed is None:
+        return None
+    return parsed.hour, parsed.minute
 
 
 def _windows_task_script(spec: ScheduleSpec, *, resolved: ResolvedCommand | None = None) -> str:
@@ -780,37 +931,183 @@ def _windows_task_script(spec: ScheduleSpec, *, resolved: ResolvedCommand | None
 
     ``New-ScheduledTaskAction -Execute`` takes the *program*; arguments belong in
     ``-Argument``. The same install-time resolution as the systemd path is used,
-    so the task action names a real executable rather than a bare word.
+    so the task action names a real executable rather than a bare word.  The
+    script reads the task back after registration and exits non-zero unless the
+    action and trigger that Windows registered match the requested values.  The
+    JSON receipt is consumed by ``schedule install``; writing the script alone is
+    never an ``INSTALLED`` claim (WI-067).
     """
     command = resolved or reference_command(spec, os_target=OSTarget.WINDOWS_TASK)
-    argument = f" -Argument '{command.arguments}'" if command.arguments else ""
+    execute = _powershell_single_quote(command.exec_path)
+    arguments = _powershell_single_quote(command.arguments)
+    argument = f" -Argument {arguments}" if command.arguments else ""
+    repetition_argument = (
+        f" -RepetitionInterval (New-TimeSpan -Minutes {spec.windows_repetition_minutes})"
+        if spec.windows_repetition_minutes is not None
+        else ""
+    )
+    task_name = _powershell_single_quote(spec.name)
+    expected_trigger_type = _powershell_single_quote(
+        _windows_trigger_type(
+            spec.windows_trigger,
+            repetition_minutes=spec.windows_repetition_minutes,
+        )
+    )
+    trigger_kind = _powershell_single_quote(spec.windows_trigger.upper())
+    expected_hour, expected_minute = _windows_time_parts(spec.windows_time)
+    trigger_expr = _windows_trigger_expr(
+        spec.windows_trigger,
+        repetition_minutes=spec.windows_repetition_minutes,
+    )
+    if spec.windows_repetition_minutes is not None:
+        trigger_setup = (
+            f"  $startAt = (Get-Date).Date.AddHours({expected_hour})\n"
+            f"  if ($startAt -le (Get-Date)) {{\n"
+            f"    $startAt = $startAt.AddDays(1)\n"
+            f"  }}\n"
+            f"  # Omit -RepetitionDuration: Task Scheduler represents indefinite\n"
+            f"  # repetition by leaving Repetition.Duration unset.\n"
+            f"  $trigger = New-ScheduledTaskTrigger {trigger_expr} "
+            f"-At $startAt{repetition_argument}\n"
+        )
+    else:
+        trigger_setup = (
+            f"  $trigger = New-ScheduledTaskTrigger {trigger_expr} "
+            f"-At {spec.windows_time}{repetition_argument}\n"
+        )
+    repetition_check = (
+        f"  $repetitionVerified = $repetitionMinutes -eq "
+        f"{spec.windows_repetition_minutes}\n"
+        if spec.windows_repetition_minutes is not None
+        else "  $repetitionVerified = $null -eq $repetitionMinutes\n"
+    )
     return (
         f"# {spec.description}\n"
         f"# Generated by `agent-suite schedule install` — do not edit by hand.\n"
         f"# Re-run `agent-suite schedule install` to regenerate.\n"
-        f"$action = New-ScheduledTaskAction -Execute '{command.exec_path}'{argument}\n"
-        f"$trigger = New-ScheduledTaskTrigger "
-        f"{_windows_trigger_expr(spec.windows_trigger)} -At 2am\n"
-        f"$settings = New-ScheduledTaskSettingsSet `\n"
-        f"  -StartWhenAvailable `\n"
-        f"  -DontStopOnIdleEnd `\n"
-        f"  -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 15)\n"
-        f"Register-ScheduledTask `\n"
-        f"  -TaskName '{spec.name}' `\n"
-        f"  -Action $action `\n"
-        f"  -Trigger $trigger `\n"
-        f"  -Settings $settings `\n"
-        f"  -RunLevel Highest `\n"
-        f"  -Force\n"
+        f"try {{\n"
+        f"  $action = New-ScheduledTaskAction -Execute {execute}{argument}\n"
+        f"{trigger_setup}"
+        f"  $settings = New-ScheduledTaskSettingsSet `\n"
+        f"    -StartWhenAvailable `\n"
+        f"    -DontStopOnIdleEnd `\n"
+        f"    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 15)\n"
+        f"  Register-ScheduledTask `\n"
+        f"    -TaskName {task_name} `\n"
+        f"    -Action $action `\n"
+        f"    -Trigger $trigger `\n"
+        f"    -Settings $settings `\n"
+        f"    -RunLevel Highest `\n"
+        f"    -Force -ErrorAction Stop | Out-Null\n"
+        f"  $registered = Get-ScheduledTask -TaskName {task_name} -ErrorAction Stop\n"
+        f"  $registeredAction = @($registered.Actions)[0]\n"
+        f"  $registeredTrigger = @($registered.Triggers)[0]\n"
+        f"  $startBoundaryText = [string]$registeredTrigger.StartBoundary\n"
+        f"  $startBoundaryVerified = $false\n"
+        f"  try {{\n"
+        f"    $startBoundary = [DateTimeOffset]::Parse($startBoundaryText, "
+        f"[System.Globalization.CultureInfo]::InvariantCulture)\n"
+        f"    $startBoundaryVerified = ($startBoundary.Hour -eq {expected_hour}) -and "
+        f"($startBoundary.Minute -eq {expected_minute})\n"
+        f"  }} catch {{\n"
+        f"    try {{\n"
+        f"      $startBoundary = [DateTimeOffset]::Parse($startBoundaryText)\n"
+        f"      $startBoundaryVerified = ($startBoundary.Hour -eq {expected_hour}) -and "
+        f"($startBoundary.Minute -eq {expected_minute})\n"
+        f"    }} catch {{\n"
+        f"      $startBoundaryVerified = $false\n"
+        f"    }}\n"
+        f"  }}\n"
+        f"  $repetitionText = [string]$registeredTrigger.Repetition.Interval\n"
+        f"  $repetitionMinutes = $null\n"
+        f"  if ($repetitionText) {{\n"
+        f"    try {{\n"
+        f"      $repetitionMinutes = "
+        f"([System.Xml.XmlConvert]::ToTimeSpan($repetitionText)).TotalMinutes\n"
+        f"    }} catch {{\n"
+        f"      try {{\n"
+        f"        $repetitionMinutes = ([TimeSpan]::Parse($repetitionText)).TotalMinutes\n"
+        f"      }} catch {{\n"
+        f"        $repetitionMinutes = $null\n"
+        f"      }}\n"
+        f"    }}\n"
+        f"  }}\n"
+        f"  $durationText = [string]$registeredTrigger.Repetition.Duration\n"
+        f"  $durationMinutes = $null\n"
+        f"  $durationVerified = -not [bool]$durationText\n"
+        f"  if ($durationText) {{\n"
+        f"    try {{\n"
+        f"      $durationMinutes = "
+        f"([System.Xml.XmlConvert]::ToTimeSpan($durationText)).TotalMinutes\n"
+        f"    }} catch {{\n"
+        f"      try {{\n"
+        f"        $durationMinutes = ([TimeSpan]::Parse($durationText)).TotalMinutes\n"
+        f"      }} catch {{\n"
+        f"        $durationMinutes = $null\n"
+        f"      }}\n"
+        f"    }}\n"
+        f"  }}\n"
+        f"{repetition_check}"
+        f"  $actionVerified = ([string]$registeredAction.Execute -eq {execute}) -and\n"
+        f"    ([string]$registeredAction.Arguments -eq {arguments})\n"
+        f"  $triggerType = [string]$registeredTrigger.CimClass.CimClassName\n"
+        f"  $triggerVerified = ($triggerType -eq {expected_trigger_type}) -and "
+        f"$startBoundaryVerified -and $repetitionVerified -and $durationVerified\n"
+        f"  if ({trigger_kind} -eq 'WEEKLY') {{\n"
+        f"    $triggerVerified = $triggerVerified -and\n"
+        f"      ([string]$registeredTrigger.DaysOfWeek -match 'Sunday')\n"
+        f"  }}\n"
+        f"  if (-not $actionVerified -or -not $triggerVerified) {{\n"
+        f"    throw \"registered task action or trigger does not match the requested schedule\"\n"
+        f"  }}\n"
+        f"  [ordered]@{{\n"
+        f"    verified = $true\n"
+        f"    task_name = [string]$registered.TaskName\n"
+        f"    execute = [string]$registeredAction.Execute\n"
+        f"    arguments = [string]$registeredAction.Arguments\n"
+        f"    trigger = {trigger_kind}\n"
+        f"    trigger_type = $triggerType\n"
+        f"    trigger_time = $startBoundaryText\n"
+        f"    trigger_time_verified = $startBoundaryVerified\n"
+        f"    repetition_interval = $repetitionText\n"
+        f"    repetition_minutes = $repetitionMinutes\n"
+        f"    repetition_verified = $repetitionVerified\n"
+        f"    repetition_duration = $durationText\n"
+        f"    repetition_duration_minutes = $durationMinutes\n"
+        f"    repetition_duration_verified = $durationVerified\n"
+        f"    action_verified = $actionVerified\n"
+        f"    trigger_verified = $triggerVerified\n"
+        f"  }} | ConvertTo-Json -Compress\n"
+        f"}} catch {{\n"
+        f"  Write-Error $_\n"
+        f"  exit 1\n"
+        f"}}\n"
     )
 
 
 def _windows_unregister_script(spec: ScheduleSpec) -> str:
     """Generate a PowerShell script that unregisters a Windows Scheduled Task."""
+    task_name = _powershell_single_quote(spec.name)
     return (
         f"# Remove the '{spec.name}' scheduled task.\n"
-        f"Unregister-ScheduledTask -TaskName '{spec.name}' "
-        f"-Confirm:$false -ErrorAction SilentlyContinue\n"
+        f"try {{\n"
+        f"  $existing = Get-ScheduledTask -TaskName {task_name} "
+        f"-ErrorAction SilentlyContinue\n"
+        f"  if ($null -ne $existing) {{\n"
+        f"    Unregister-ScheduledTask -TaskName {task_name} "
+        f"-Confirm:$false -ErrorAction Stop | Out-Null\n"
+        f"  }}\n"
+        f"  $remaining = Get-ScheduledTask -TaskName {task_name} "
+        f"-ErrorAction SilentlyContinue\n"
+        f"  if ($null -ne $remaining) {{\n"
+        f"    throw \"scheduled task remains registered\"\n"
+        f"  }}\n"
+        f"  [ordered]@{{ verified = $true; task_name = {task_name}; removed = $true }} "
+        f"| ConvertTo-Json -Compress\n"
+        f"}} catch {{\n"
+        f"  Write-Error $_\n"
+        f"  exit 1\n"
+        f"}}\n"
     )
 
 
@@ -869,6 +1166,111 @@ def _extract_exec_path(raw: str) -> str | None:
     except ValueError:
         return None
     return words[0] if words else None
+
+
+def _verify_windows_registration(
+    spec: ScheduleSpec,
+    resolved: ResolvedCommand,
+    result: subprocess.CompletedProcess[str],
+) -> tuple[list[str], str | None]:
+    """Validate the receipt emitted after a Windows task was registered.
+
+    The PowerShell script queries Task Scheduler itself.  This second check is
+    deliberately kept in Python as well: a successful process exit is not, by
+    itself, evidence that the script's verification branch ran or that its
+    output describes this spec.
+    """
+    if result.returncode != 0:
+        detail = result.stderr.strip()[:300] or "no detail"
+        return [], f"PowerShell task registration failed: {detail}"
+    try:
+        receipt = json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        return [], "PowerShell task registration returned no valid verification receipt"
+    if not isinstance(receipt, dict):
+        return [], "PowerShell task registration receipt was not an object"
+
+    expected_trigger_type = _windows_trigger_type(
+        spec.windows_trigger,
+        repetition_minutes=spec.windows_repetition_minutes,
+    )
+    checks: tuple[tuple[str, object, object], ...] = (
+        ("verified", receipt.get("verified"), True),
+        ("task_name", receipt.get("task_name"), spec.name),
+        ("execute", receipt.get("execute"), resolved.exec_path),
+        ("arguments", receipt.get("arguments"), resolved.arguments),
+        ("trigger", receipt.get("trigger"), spec.windows_trigger.upper()),
+        ("trigger_type", receipt.get("trigger_type"), expected_trigger_type),
+        ("trigger_time_verified", receipt.get("trigger_time_verified"), True),
+        ("repetition_verified", receipt.get("repetition_verified"), True),
+        (
+            "repetition_duration_verified",
+            receipt.get("repetition_duration_verified"),
+            True,
+        ),
+        ("action_verified", receipt.get("action_verified"), True),
+        ("trigger_verified", receipt.get("trigger_verified"), True),
+    )
+    for field_name, actual, expected in checks:
+        if actual != expected:
+            return [], (
+                f"registered task verification mismatch for {field_name}: "
+                f"expected {expected!r}, got {actual!r}"
+            )
+
+    expected_time = _windows_time_parts(spec.windows_time)
+    actual_time = _parse_windows_start_boundary(receipt.get("trigger_time"))
+    if actual_time != expected_time:
+        return [], (
+            "registered task verification mismatch for trigger_time: "
+            f"expected {expected_time!r}, got {actual_time!r}"
+        )
+    if spec.windows_repetition_minutes is not None:
+        actual_repetition = receipt.get("repetition_minutes")
+        if actual_repetition != spec.windows_repetition_minutes:
+            return [], (
+                "registered task verification mismatch for repetition_minutes: "
+                f"expected {spec.windows_repetition_minutes!r}, "
+                f"got {actual_repetition!r}"
+            )
+    elif receipt.get("repetition_minutes") is not None:
+        return [], (
+            "registered task verification mismatch for repetition_minutes: "
+            f"expected None, got {receipt.get('repetition_minutes')!r}"
+        )
+    duration = receipt.get("repetition_duration")
+    duration_minutes = receipt.get("repetition_duration_minutes")
+    if duration != "" or duration_minutes is not None:
+        return [], (
+            "registered task verification mismatch for repetition_duration: "
+            f"expected indefinite (empty), got {duration!r}"
+        )
+    return [
+        "windows_task_registered",
+        "windows_action_verified",
+        "windows_trigger_verified",
+    ], None
+
+
+def _verify_windows_removal(
+    spec: ScheduleSpec,
+    result: subprocess.CompletedProcess[str],
+) -> tuple[list[str], str | None]:
+    """Validate the receipt emitted after a Windows task was unregistered."""
+    if result.returncode != 0:
+        detail = result.stderr.strip()[:300] or "no detail"
+        return [], f"PowerShell task removal failed: {detail}"
+    try:
+        receipt = json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        return [], "PowerShell task removal returned no valid verification receipt"
+    if not isinstance(receipt, dict):
+        return [], "PowerShell task removal receipt was not an object"
+    if receipt.get("verified") is not True or receipt.get("task_name") != spec.name:
+        return [], "PowerShell task removal was not verified"
+    if receipt.get("removed") is not True:
+        return [], "PowerShell task removal receipt did not confirm removal"
+    return ["windows_task_unregistered", "windows_task_absent"], None
 
 
 def check_exec_start_runnable(resolved: ResolvedCommand) -> str | None:
@@ -956,6 +1358,63 @@ _UNRESOLVED_HINT = (
 )
 
 
+def _systemd_fire_time_env(spec: ScheduleSpec) -> dict[str, str]:
+    """The environment a generated systemd unit will actually see at fire time.
+
+    A systemd unit does not inherit the installer's shell: it sees the
+    unit-level ``Environment=`` pins plus the optional ``EnvironmentFile`` at
+    :func:`system_suite_env_path` (the file renders after the pins, so it wins
+    — the same precedence the CLI itself applies when it loads the system file
+    at fire time). Preflighting
+    against ``os.environ`` greens an install whose required names live only in
+    the operator's per-user suite.env, and then every fire fails
+    FLAG_MISSING/DSN_MISSING (WI-071 M2).
+    """
+    env: dict[str, str] = {}
+    for pin in spec.environment:
+        key, _, value = pin.partition("=")
+        env[key] = value
+    env.update(_parse_env_file(system_suite_env_path()))
+    return env
+
+
+def _schedule_config_failure(spec: ScheduleSpec, *, os_target: OSTarget) -> str | None:
+    """Return a safe configuration failure for a declarative schedule.
+
+    This is intentionally a preflight rather than a check inside the scheduled
+    command: an operator must not receive an ``INSTALLED`` claim for a unit
+    whose required environment is absent.  On systemd the check reads the
+    environment the *unit* will see (:func:`_systemd_fire_time_env`), not the
+    installer's shell; on Windows the task runs as the registering user, whose
+    fire-time environment ``os.environ`` (with suite.env already layered in)
+    faithfully approximates.  Only variable names appear in the detail; DSN
+    values stay in memory.
+    """
+    env: Mapping[str, str]
+    if os_target is OSTarget.SYSTEMD:
+        env = _systemd_fire_time_env(spec)
+        source_hint = (
+            f" in {system_suite_env_path()} — the unit reads that file, not the "
+            "installer's shell environment"
+        )
+    else:
+        env = os.environ
+        source_hint = ""
+    for env_name in spec.required_env:
+        if not env.get(env_name, "").strip():
+            return f"required environment variable {env_name} is not set{source_hint}"
+
+    if spec.dedicated_dsn_env is not None:
+        scratch_dsn = env.get(spec.dedicated_dsn_env, "").strip()
+        production_dsn = env.get("REGISTA_DSN", "").strip()
+        if production_dsn and same_postgres_database(scratch_dsn, production_dsn):
+            return (
+                f"{spec.dedicated_dsn_env} must identify a database distinct from "
+                "REGISTA_DSN"
+            )
+    return None
+
+
 def check_actor_system_scoped(
     resolved: ResolvedCommand,
     *,
@@ -1010,8 +1469,10 @@ def install_schedules(
     reversed): the scheduled run resolves the estate from the process PATH, so an
     actor that resolved the CLI from a foreign / user-writable dir is rejected
     rather than having that dir trusted under root / the Task Scheduler. On
-    Windows an unresolved command otherwise degrades to the bare name and is
-    recorded as such.
+    Windows, a non-dry-run install executes each generated PowerShell script and
+    requires its read-back receipt to prove the registered action and trigger.
+    Task registration uses a larger timeout than the shared runner default so a
+    cold ScheduledTasks provider cannot time out after applying the task.
 
     Every result carries an ``invoking_context`` (WI-038) recording how the
     install was invoked — the box (the machine the unit runs in, system-scoped)
@@ -1034,6 +1495,32 @@ def install_schedules(
                 for s in schedules
             ],
         )
+
+    config_failures = {
+        spec.kind: failure
+        for spec in schedules
+        if (failure := _schedule_config_failure(spec, os_target=target)) is not None
+    }
+    if config_failures:
+        first_failed_kind = next(iter(config_failures))
+        first_failure = config_failures[first_failed_kind]
+        first_failed_spec = next(s for s in schedules if s.kind is first_failed_kind)
+        preflight_results = [
+            ScheduleResult(
+                kind=spec.kind,
+                status=InstallStatus.FAILED,
+                detail=(
+                    config_failures[spec.kind]
+                    if spec.kind in config_failures
+                    else (
+                        "not attempted because schedule configuration preflight "
+                        f"failed for {first_failed_spec.name}: {first_failure}"
+                    )
+                ),
+            )
+            for spec in schedules
+        ]
+        return ScheduleReport(results=preflight_results, os_target=target)
 
     results: list[ScheduleResult] = []
     for spec in schedules:
@@ -1197,6 +1684,53 @@ def install_schedules(
                 )
                 continue
 
+        elif target is OSTarget.WINDOWS_TASK:
+            script_path = files[0][0]
+            register_cmd: tuple[str, ...] = (
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+            )
+            try:
+                registration = _run_powershell_task(runner, register_cmd)
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+                results.append(
+                    ScheduleResult(
+                        kind=spec.kind,
+                        status=InstallStatus.FAILED,
+                        files_written=written,
+                        detail=f"PowerShell task registration error: {exc}",
+                        exec_start=resolved.exec_start,
+                        verified=verified,
+                        invoking_context=ctx,
+                    )
+                )
+                continue
+
+            post_checks, verify_failure = _verify_windows_registration(
+                spec, resolved, registration
+            )
+            verified.extend(post_checks)
+            if verify_failure is not None:
+                results.append(
+                    ScheduleResult(
+                        kind=spec.kind,
+                        status=InstallStatus.FAILED,
+                        files_written=written,
+                        detail=f"task written but not verified: {verify_failure}",
+                        exec_start=resolved.exec_start,
+                        verified=verified,
+                        invoking_context=ctx,
+                    )
+                )
+                continue
+        else:
+            assert_never(target)
+
         results.append(
             ScheduleResult(
                 kind=spec.kind,
@@ -1280,18 +1814,83 @@ def remove_schedules(
                 unregister_script.write_text(
                     _windows_unregister_script(spec), encoding="utf-8"
                 )
-                runner((
-                    "powershell", "-ExecutionPolicy", "Bypass",
-                    "-File", str(unregister_script),
-                ))
-            except OSError:
-                pass
+            except OSError as exc:
+                results.append(
+                    ScheduleResult(
+                        kind=spec.kind,
+                        status=InstallStatus.FAILED,
+                        files_written=[str(unregister_script)],
+                        detail=f"failed to write task removal script: {exc}",
+                    )
+                )
+                continue
+
+            unregister_cmd: tuple[str, ...] = (
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(unregister_script),
+            )
+            try:
+                removal = _run_powershell_task(runner, unregister_cmd)
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+                results.append(
+                    ScheduleResult(
+                        kind=spec.kind,
+                        status=InstallStatus.FAILED,
+                        files_written=[str(unregister_script)],
+                        detail=f"PowerShell task removal error: {exc}",
+                    )
+                )
+                continue
+
+            verified, verify_failure = _verify_windows_removal(spec, removal)
+            if verify_failure is not None:
+                results.append(
+                    ScheduleResult(
+                        kind=spec.kind,
+                        status=InstallStatus.FAILED,
+                        files_written=[str(unregister_script)],
+                        detail=f"task removal was not verified: {verify_failure}",
+                        verified=verified,
+                    )
+                )
+                continue
+
+            cleanup_errors: list[str] = []
+            for path in (
+                script_dir / f"{spec.name}.ps1",
+                unregister_script,
+            ):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    cleanup_errors.append(f"{path}: {exc}")
+
+            if cleanup_errors:
+                results.append(
+                    ScheduleResult(
+                        kind=spec.kind,
+                        status=InstallStatus.FAILED,
+                        files_written=[str(unregister_script)],
+                        detail=(
+                            "task unregistered, but generated script cleanup failed: "
+                            + "; ".join(cleanup_errors)
+                        ),
+                        verified=verified,
+                    )
+                )
+                continue
 
             results.append(
                 ScheduleResult(
                     kind=spec.kind,
                     status=InstallStatus.REMOVED,
-                    detail="removed",
+                    detail="removed and verified",
+                    verified=verified,
                 )
             )
         else:

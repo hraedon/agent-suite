@@ -1,11 +1,11 @@
 [Unit]
-Description=Nightly pg_dump of the suite Postgres store
+Description=Weekly restore of the latest dump into scratch + verify-restore
 Wants=network-online.target
 After=network-online.target postgresql.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/agent-suite backup --dir-env AGENT_SUITE_BACKUP_DIR
+ExecStart=/usr/local/bin/agent-suite restore --dir-env AGENT_SUITE_BACKUP_DIR --dsn-env AGENT_SUITE_VERIFY_RESTORE_DSN
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-/etc/agent-suite/suite.env
 User=root

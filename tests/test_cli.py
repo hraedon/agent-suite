@@ -312,6 +312,167 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
             assert main([command.value]) == 0
 
 
+def test_scheduled_restore_requires_dedicated_dsn_and_never_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """The weekly restore's env indirection fails before touching restore."""
+    from agent_suite import backup as backup_mod
+    from agent_suite import config as config_mod
+
+    monkeypatch.setattr(config_mod, "system_suite_env_path", lambda: tmp_path / "system.env")
+    monkeypatch.setattr(config_mod, "user_suite_env_path", lambda: tmp_path / "user.env")
+    monkeypatch.delenv("AGENT_SUITE_VERIFY_RESTORE_DSN", raising=False)
+    monkeypatch.setenv("REGISTA_DSN", _DSN)
+    monkeypatch.setattr(
+        backup_mod,
+        "run_restore",
+        lambda **_kwargs: pytest.fail("restore must not run without the scratch DSN"),
+    )
+
+    code = main(
+        [
+            "restore",
+            "--dir",
+            str(tmp_path),
+            "--dsn-env",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN",
+            "--json",
+        ]
+    )
+    assert code == 1
+    document = json.loads(capsys.readouterr().out)
+    assert document["error"]["code"] == "DSN_MISSING"
+    assert _DSN not in json.dumps(document)
+
+
+def test_scheduled_restore_rejects_the_production_dsn(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    from agent_suite import config as config_mod
+
+    monkeypatch.setattr(config_mod, "system_suite_env_path", lambda: tmp_path / "system.env")
+    monkeypatch.setattr(config_mod, "user_suite_env_path", lambda: tmp_path / "user.env")
+    monkeypatch.setenv("REGISTA_DSN", _DSN)
+    monkeypatch.setenv("AGENT_SUITE_VERIFY_RESTORE_DSN", _DSN)
+
+    code = main(
+        [
+            "restore",
+            "--dir",
+            str(tmp_path),
+            "--dsn-env",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN",
+            "--json",
+        ]
+    )
+    assert code == 1
+    document = json.loads(capsys.readouterr().out)
+    assert document["error"]["code"] == "DSN_NOT_DEDICATED"
+    assert _DSN not in json.dumps(document)
+
+
+def test_scheduled_restore_normalizes_uri_before_database_comparison(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    from agent_suite import backup as backup_mod
+    from agent_suite import config as config_mod
+
+    monkeypatch.setattr(config_mod, "system_suite_env_path", lambda: tmp_path / "system.env")
+    monkeypatch.setattr(config_mod, "user_suite_env_path", lambda: tmp_path / "user.env")
+    monkeypatch.setenv(
+        "REGISTA_DSN",
+        "postgresql://prod:one@SUITE-DB.EXAMPLE:5432/regista?sslmode=require",
+    )
+    monkeypatch.setenv(
+        "AGENT_SUITE_VERIFY_RESTORE_DSN",
+        "postgres://scratch:two@suite-db.example/regista?application_name=verify",
+    )
+    monkeypatch.setattr(
+        backup_mod,
+        "run_restore",
+        lambda **_kwargs: pytest.fail("equivalent production DSN must be rejected first"),
+    )
+
+    code = main(
+        [
+            "restore",
+            "--dir",
+            str(tmp_path),
+            "--dsn-env",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN",
+            "--json",
+        ]
+    )
+    assert code == 1
+    document = json.loads(capsys.readouterr().out)
+    assert document["error"]["code"] == "DSN_NOT_DEDICATED"
+    assert "prod:one" not in json.dumps(document)
+
+
+def test_scheduled_backup_and_restore_env_indirection_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """WI-071 L5: the values behind --dir-env/--dsn-env reach the orchestration.
+
+    The failure paths (missing/conflicting/invalid indirections) are covered
+    above; this proves the happy path actually hands the *resolved* values to
+    ``run_backup``/``run_restore`` rather than the variable names.
+    """
+    from agent_suite import backup as backup_mod
+    from agent_suite import config as config_mod
+    from agent_suite.backup import BackupResult, RestoreResult
+
+    monkeypatch.setattr(config_mod, "system_suite_env_path", lambda: tmp_path / "system.env")
+    monkeypatch.setattr(config_mod, "user_suite_env_path", lambda: tmp_path / "user.env")
+    backup_dir = tmp_path / "backups"
+    scratch_dsn = "postgresql://verify:pw@suite-db.example:5432/regista_verify"
+    monkeypatch.setenv("AGENT_SUITE_BACKUP_DIR", str(backup_dir))
+    monkeypatch.setenv("AGENT_SUITE_VERIFY_RESTORE_DSN", scratch_dsn)
+    monkeypatch.setenv("REGISTA_DSN", _DSN)
+
+    seen: dict[str, dict[str, object]] = {}
+
+    def fake_run_backup(**kwargs: object) -> BackupResult:
+        seen["backup"] = kwargs
+        return BackupResult(ok=True, dry_run=False, backup_dir=str(kwargs["backup_dir"]))
+
+    def fake_run_restore(**kwargs: object) -> RestoreResult:
+        seen["restore"] = kwargs
+        return RestoreResult(ok=True, dry_run=False, backup_dir=str(kwargs["backup_dir"]))
+
+    monkeypatch.setattr(backup_mod, "run_backup", fake_run_backup)
+    monkeypatch.setattr(backup_mod, "run_restore", fake_run_restore)
+
+    assert main(["backup", "--dir-env", "AGENT_SUITE_BACKUP_DIR", "--json"]) == 0
+    assert (
+        main(
+            [
+                "restore",
+                "--dir-env",
+                "AGENT_SUITE_BACKUP_DIR",
+                "--dsn-env",
+                "AGENT_SUITE_VERIFY_RESTORE_DSN",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert seen["backup"]["backup_dir"] == backup_dir
+    assert seen["backup"]["dsn"] == _DSN
+    assert seen["restore"]["backup_dir"] == backup_dir
+    assert seen["restore"]["dsn"] == scratch_dsn
+
+
 def test_codex_plugin_profiles_are_accepted() -> None:
     for profile in ("core", "credentialed", "full"):
         assert main(["codex-plugins", "install", "--profile", profile, "--dry-run"]) == 0

@@ -5,6 +5,7 @@ All tests use stubbed runners — no real systemd or Windows.
 
 from __future__ import annotations
 
+import json
 import shlex
 import stat
 import subprocess
@@ -14,7 +15,9 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from agent_suite.cli import _build_parser
 from agent_suite.schedule import (
+    POWERSHELL_TASK_TIMEOUT_SECONDS,
     REFERENCE_BIN_DIR,
     SCHEDULES,
     SUITE_ENV_PATH,
@@ -30,6 +33,7 @@ from agent_suite.schedule import (
     ScopeContext,
     _systemd_service,
     _systemd_timer,
+    _verify_windows_registration,
     _windows_task_script,
     build_invoking_context,
     check_actor_system_scoped,
@@ -126,6 +130,338 @@ def _verifying_runner(
 def _no_which(executable: str) -> str | None:
     """Never resolve from the ambient PATH — tests must not depend on the host."""
     return None
+
+
+_VALID_SCHEDULE_ENV: dict[str, str] = {
+    "REGISTA_DSN": "postgresql://backup:pw@suite-db.example:5432/regista",
+    "AGENT_SUITE_BACKUP_DIR": "/var/lib/agent-suite/backups",
+    "AGENT_SUITE_VERIFY_RESTORE_DSN": "postgresql://verify:pw@suite-db.example:5432/regista_verify",
+}
+
+
+def _write_system_suite_env(path: Path, env: Mapping[str, str]) -> None:
+    path.write_text(
+        "".join(f"{key}={value}\n" for key, value in env.items()), encoding="utf-8"
+    )
+
+
+@pytest.fixture(autouse=True)
+def system_suite_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Give install tests an explicit, valid schedule configuration by default.
+
+    The systemd preflight reads the environment the *unit* will see — the
+    system suite.env file — not the installer's shell (WI-071 M2), so the
+    valid-by-default configuration is written to both ``os.environ`` (the
+    Windows source) and a test-local system suite.env. Returns the file path
+    so preflight tests can rewrite it.
+    """
+    for key, value in _VALID_SCHEDULE_ENV.items():
+        monkeypatch.setenv(key, value)
+    system_env = tmp_path / "system-suite.env"
+    _write_system_suite_env(system_env, _VALID_SCHEDULE_ENV)
+    monkeypatch.setattr(
+        "agent_suite.schedule.system_suite_env_path", lambda: system_env
+    )
+    return system_env
+
+
+def test_every_agent_suite_schedule_command_uses_production_cli_grammar() -> None:
+    """Built-in suite commands must remain parseable by the real CLI parser.
+
+    The old backup schedule passed ``--verify-restore`` without the required
+    ``--dir`` (and the backup parser did not define that flag at all).  Parsing
+    the declarative commands through the production parser makes a schedule
+    grammar drift a test failure instead of a timer-time failure.  Component
+    commands such as ``cairn integrity`` are intentionally outside this
+    umbrella's parser and remain component-owned.
+    """
+    parser = _build_parser()
+    for spec in SCHEDULES:
+        words = shlex.split(spec.command)
+        assert words, spec.name
+        if words[0] != "agent-suite":
+            assert words[0] == "cairn", spec.command
+            continue
+        parsed = parser.parse_args(words[1:])
+        assert parsed.command in {"backup", "restore", "alert-check"}, spec.command
+
+
+def test_backup_and_restore_verify_are_distinct_cadences() -> None:
+    """A live-store replay must not stand in for restoring the dump."""
+    backup = next(s for s in SCHEDULES if s.kind is ScheduleKind.BACKUP_VERIFY)
+    restore = next(s for s in SCHEDULES if s.kind is ScheduleKind.RESTORE_VERIFY)
+    assert backup.on_calendar == "daily"
+    assert restore.on_calendar == "weekly"
+    assert restore.systemd_time == "04:00:00"
+    assert restore.windows_time == "4am"
+    assert backup.name != restore.name
+    assert backup.command.startswith("agent-suite backup ")
+    assert "--dir-env AGENT_SUITE_BACKUP_DIR" in backup.command
+    assert restore.command.startswith("agent-suite restore ")
+    assert "--dsn-env AGENT_SUITE_VERIFY_RESTORE_DSN" in restore.command
+    assert "--verify-restore" not in backup.command
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize(
+    "missing_env",
+    ["AGENT_SUITE_BACKUP_DIR", "AGENT_SUITE_VERIFY_RESTORE_DSN"],
+)
+def test_install_preflights_required_schedule_configuration(
+    dry_run: bool,
+    missing_env: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    system_suite_env: Path,
+) -> None:
+    """Neither dry-run nor real install may green an unusable restore task."""
+    restore = next(s for s in SCHEDULES if s.kind is ScheduleKind.RESTORE_VERIFY)
+    monkeypatch.delenv(missing_env)
+    _write_system_suite_env(
+        system_suite_env,
+        {k: v for k, v in _VALID_SCHEDULE_ENV.items() if k != missing_env},
+    )
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=dry_run,
+        runner=StubRunner(),
+        schedules=(restore,),
+        unit_dir=tmp_path / "systemd",
+    )
+    result = report.results[0]
+    assert result.status is InstallStatus.FAILED
+    assert missing_env in result.detail
+    assert "postgresql://" not in result.detail
+    assert not (tmp_path / "systemd").exists()
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_install_preflights_equivalent_production_and_scratch_database(
+    dry_run: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    system_suite_env: Path,
+) -> None:
+    restore = next(s for s in SCHEDULES if s.kind is ScheduleKind.RESTORE_VERIFY)
+    _write_system_suite_env(
+        system_suite_env,
+        {
+            **_VALID_SCHEDULE_ENV,
+            "REGISTA_DSN": "postgresql://prod:one@SUITE-DB.EXAMPLE:5432/regista?sslmode=require",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN": (
+                "postgres://scratch:two@suite-db.example/regista?application_name=verify"
+            ),
+        },
+    )
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=dry_run,
+        runner=StubRunner(),
+        schedules=(restore,),
+        unit_dir=tmp_path / "systemd",
+    )
+    result = report.results[0]
+    assert result.status is InstallStatus.FAILED
+    assert "distinct from REGISTA_DSN" in result.detail
+    assert "prod:one" not in result.detail
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_install_preflights_keyword_spelled_production_dsn(
+    dry_run: bool,
+    tmp_path: Path,
+    system_suite_env: Path,
+) -> None:
+    """WI-071 M1: a keyword/value production DSN must still match the scratch URI.
+
+    ``backup.py`` accepts the keyword spelling, so it is a real operator shape;
+    comparing it to the URI-spelled scratch DSN by raw string alone would green
+    an install whose weekly restore ``pg_restore --clean``s production.
+    """
+    restore = next(s for s in SCHEDULES if s.kind is ScheduleKind.RESTORE_VERIFY)
+    _write_system_suite_env(
+        system_suite_env,
+        {
+            **_VALID_SCHEDULE_ENV,
+            "REGISTA_DSN": "host=SUITE-DB.EXAMPLE port=5432 dbname=regista user=prod password=one",
+            "AGENT_SUITE_VERIFY_RESTORE_DSN": (
+                "postgresql://scratch:two@suite-db.example:5432/regista?application_name=verify"
+            ),
+        },
+    )
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=dry_run,
+        runner=StubRunner(),
+        schedules=(restore,),
+        unit_dir=tmp_path / "systemd",
+    )
+    result = report.results[0]
+    assert result.status is InstallStatus.FAILED
+    assert "distinct from REGISTA_DSN" in result.detail
+    assert "password=one" not in result.detail
+
+
+def test_systemd_preflight_reads_the_units_environment_not_the_installers(
+    tmp_path: Path,
+    system_suite_env: Path,
+) -> None:
+    """WI-071 M2: config living only in the installer's shell must not green.
+
+    The unit reads ``Environment=`` pins plus the system suite.env; the
+    installer's per-user suite.env / shell exports are invisible to it, so a
+    preflight against ``os.environ`` reports INSTALLED for a unit whose every
+    fire will fail DSN_MISSING.
+    """
+    restore = next(s for s in SCHEDULES if s.kind is ScheduleKind.RESTORE_VERIFY)
+    # os.environ keeps the full valid config (the autouse fixture set it);
+    # only the file the unit will read is missing the scratch DSN.
+    _write_system_suite_env(
+        system_suite_env,
+        {
+            k: v
+            for k, v in _VALID_SCHEDULE_ENV.items()
+            if k != "AGENT_SUITE_VERIFY_RESTORE_DSN"
+        },
+    )
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=True,
+        runner=StubRunner(),
+        schedules=(restore,),
+        unit_dir=tmp_path / "systemd",
+    )
+    result = report.results[0]
+    assert result.status is InstallStatus.FAILED
+    assert "AGENT_SUITE_VERIFY_RESTORE_DSN" in result.detail
+    assert str(system_suite_env) in result.detail
+    assert "postgresql://" not in result.detail
+
+
+def test_systemd_preflight_accepts_configuration_only_the_unit_will_see(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    system_suite_env: Path,
+) -> None:
+    """The converse of WI-071 M2: the system file alone is a valid config source."""
+    for name in _VALID_SCHEDULE_ENV:
+        monkeypatch.delenv(name, raising=False)
+    bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=False,
+        runner=_verifying_runner(bindir),
+        which=_no_which,
+        search_dirs=(bindir,),
+        unit_dir=tmp_path / "systemd",
+    )
+    assert all(r.status is InstallStatus.INSTALLED for r in report.results), [
+        (r.kind, r.detail) for r in report.results
+    ]
+
+
+# ---------------------------------------------------------------------------
+# DSN identity comparison (WI-071 M1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        # keyword/value vs URI, same database — credentials/options differ
+        (
+            "host=SUITE-DB.EXAMPLE port=5432 dbname=regista user=prod password=one",
+            "postgresql://scratch:two@suite-db.example:5432/regista?sslmode=require",
+        ),
+        # default port on the keyword side, explicit on the URI side
+        (
+            "host=suite-db.example dbname=regista",
+            "postgresql://u:p@suite-db.example:5432/regista",
+        ),
+        # single-quoted value with an escaped quote, still the same target
+        (
+            "host=suite-db.example dbname='regista' password='it\\'s'",
+            "postgresql://suite-db.example/regista",
+        ),
+        # hostaddr stands in when host is absent
+        (
+            "hostaddr=192.0.2.7 dbname=regista",
+            "postgresql://192.0.2.7:5432/regista",
+        ),
+        # both keyword-spelled, different key order and spacing
+        (
+            "dbname=regista  host = suite-db.example",
+            "host=SUITE-DB.EXAMPLE. dbname=regista",
+        ),
+    ],
+)
+def test_same_postgres_database_parses_keyword_value_dsns(left: str, right: str) -> None:
+    from agent_suite.config import same_postgres_database
+
+    assert same_postgres_database(left, right)
+    assert same_postgres_database(right, left)
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        # different database
+        (
+            "host=suite-db.example dbname=regista_verify",
+            "postgresql://suite-db.example/regista",
+        ),
+        # different host
+        (
+            "host=other-db.example dbname=regista",
+            "postgresql://suite-db.example/regista",
+        ),
+        # multi-host list is outside the supported subset → conservative
+        (
+            "host=a.example,b.example dbname=regista",
+            "postgresql://a.example/regista",
+        ),
+        # nested dbname conninfo expansion → conservative
+        (
+            "dbname='host=x dbname=regista'",
+            "postgresql://x/regista",
+        ),
+        # unterminated quote → conservative
+        (
+            "host=suite-db.example dbname='regista",
+            "postgresql://suite-db.example/regista",
+        ),
+    ],
+)
+def test_same_postgres_database_stays_conservative_outside_the_subset(
+    left: str, right: str
+) -> None:
+    from agent_suite.config import same_postgres_database
+
+    assert not same_postgres_database(left, right)
+
+
+# ---------------------------------------------------------------------------
+# Latent -Hourly refusal (WI-071 L1)
+# ---------------------------------------------------------------------------
+
+
+def test_hourly_without_repetition_is_refused_at_generation_time() -> None:
+    """New-ScheduledTaskTrigger has no -Hourly parameter set (WI-071 L1).
+
+    Unreachable through SCHEDULES today (the only HOURLY spec carries
+    windows_repetition_minutes), but a future spec must fail loudly at
+    generation instead of emitting a script that can never register.
+    """
+    from agent_suite.schedule import _windows_trigger_expr, _windows_trigger_type
+
+    with pytest.raises(ValueError, match="-Hourly"):
+        _windows_trigger_expr("HOURLY", repetition_minutes=None)
+    with pytest.raises(ValueError, match="-Hourly"):
+        _windows_trigger_type("HOURLY", repetition_minutes=None)
+    # The supported spelling stays supported.
+    assert _windows_trigger_expr("HOURLY", repetition_minutes=60) == "-Once"
+    assert _windows_trigger_type("HOURLY", repetition_minutes=60) == "MSFT_TaskTimeTrigger"
 
 
 def _treat_as_system_scoped(monkeypatch: pytest.MonkeyPatch, bindir: Path) -> None:
@@ -557,10 +893,244 @@ def test_windows_task_action_separates_program_from_arguments() -> None:
     spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.CHAIN_INTEGRITY)
     script = _windows_task_script(spec)
     assert "-Execute 'cairn' -Argument 'integrity'" in script
+    assert "-Force -ErrorAction Stop | Out-Null" in script
 
     resolved = ResolvedCommand("C:/Python312/Scripts/cairn.exe", "integrity")
     script = _windows_task_script(spec, resolved=resolved)
     assert "-Execute 'C:/Python312/Scripts/cairn.exe' -Argument 'integrity'" in script
+
+
+def test_windows_task_script_quotes_paths_and_arguments_without_shell_text() -> None:
+    """A path/argument apostrophe stays data in the generated PowerShell."""
+    spec = SCHEDULES[0]
+    resolved = ResolvedCommand(
+        r"C:\Program Files\Agent Suite\agent's.exe",
+        "backup --label O'Reilly",
+    )
+    script = _windows_task_script(spec, resolved=resolved)
+    assert "-Execute 'C:\\Program Files\\Agent Suite\\agent''s.exe'" in script
+    assert "-Argument 'backup --label O''Reilly'" in script
+    assert "-Command" not in script
+
+
+def test_windows_doctor_alert_preserves_hourly_repetition() -> None:
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
+    script = _windows_task_script(spec)
+    assert spec.on_calendar == "hourly"
+    assert spec.windows_trigger == "HOURLY"
+    assert "$startAt = (Get-Date).Date.AddHours(2)" in script
+    assert "if ($startAt -le (Get-Date))" in script
+    assert (
+        "-Once -At $startAt -RepetitionInterval (New-TimeSpan -Minutes 60)" in script
+    )
+    trigger_line = next(
+        line
+        for line in script.splitlines()
+        if line.startswith("  $trigger = New-ScheduledTaskTrigger")
+    )
+    assert "-RepetitionDuration" not in trigger_line
+    assert "$trigger.Repetition.Duration" not in script
+    assert "MSFT_TaskTimeTrigger" in script
+    assert "repetition_minutes" in script
+    assert "$durationText = [string]$registeredTrigger.Repetition.Duration" in script
+    assert "repetition_duration_verified" in script
+
+
+def test_windows_readback_rejects_a_start_time_mismatch() -> None:
+    spec = SCHEDULES[0]
+    resolved = ResolvedCommand("C:/Python312/Scripts/agent-suite.exe", "backup")
+    receipt = {
+        "verified": True,
+        "task_name": spec.name,
+        "execute": resolved.exec_path,
+        "arguments": resolved.arguments,
+        "trigger": spec.windows_trigger,
+        "trigger_type": "MSFT_TaskDailyTrigger",
+        "trigger_time": "2026-08-05T03:00:00.0000000+00:00",
+        "trigger_time_verified": True,
+        "repetition_interval": "",
+        "repetition_minutes": None,
+        "repetition_verified": True,
+        "repetition_duration": "",
+        "repetition_duration_minutes": None,
+        "repetition_duration_verified": True,
+        "action_verified": True,
+        "trigger_verified": True,
+    }
+    checks, failure = _verify_windows_registration(
+        spec, resolved, _completed(stdout=json.dumps(receipt))
+    )
+    assert checks == []
+    assert failure is not None and "trigger_time" in failure
+
+
+def test_windows_readback_rejects_hourly_repetition_mismatch() -> None:
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
+    resolved = ResolvedCommand("C:/Python312/Scripts/agent-suite.exe", "alert-check")
+    receipt = {
+        "verified": True,
+        "task_name": spec.name,
+        "execute": resolved.exec_path,
+        "arguments": resolved.arguments,
+        "trigger": "HOURLY",
+        "trigger_type": "MSFT_TaskTimeTrigger",
+        "trigger_time": "2026-08-05T02:00:00",
+        "trigger_time_verified": True,
+        "repetition_interval": "PT30M",
+        "repetition_minutes": 30,
+        "repetition_verified": True,
+        "repetition_duration": "",
+        "repetition_duration_minutes": None,
+        "repetition_duration_verified": True,
+        "action_verified": True,
+        "trigger_verified": True,
+    }
+    checks, failure = _verify_windows_registration(
+        spec, resolved, _completed(stdout=json.dumps(receipt))
+    )
+    assert checks == []
+    assert failure is not None and "repetition_minutes" in failure
+
+
+def test_windows_readback_accepts_hourly_repetition_and_start_time() -> None:
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
+    resolved = ResolvedCommand("C:/Python312/Scripts/agent-suite.exe", "alert-check")
+    receipt = {
+        "verified": True,
+        "task_name": spec.name,
+        "execute": resolved.exec_path,
+        "arguments": resolved.arguments,
+        "trigger": "HOURLY",
+        "trigger_type": "MSFT_TaskTimeTrigger",
+        "trigger_time": "08/05/2026 02:00:00",
+        "trigger_time_verified": True,
+        "repetition_interval": "PT1H",
+        "repetition_minutes": 60,
+        "repetition_verified": True,
+        "repetition_duration": "",
+        "repetition_duration_minutes": None,
+        "repetition_duration_verified": True,
+        "action_verified": True,
+        "trigger_verified": True,
+    }
+    checks, failure = _verify_windows_registration(
+        spec, resolved, _completed(stdout=json.dumps(receipt))
+    )
+    assert failure is None
+    assert checks == [
+        "windows_task_registered",
+        "windows_action_verified",
+        "windows_trigger_verified",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("duration", "duration_minutes"),
+    [("P1D", 1440), ("not-a-duration", None), (None, None)],
+)
+def test_windows_readback_requires_explicitly_empty_repetition_duration(
+    duration: object,
+    duration_minutes: object,
+) -> None:
+    """Finite, malformed, and missing duration evidence all fail closed."""
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.DOCTOR_ALERT)
+    resolved = ResolvedCommand("C:/Python312/Scripts/agent-suite.exe", "alert-check")
+    receipt = {
+        "verified": True,
+        "task_name": spec.name,
+        "execute": resolved.exec_path,
+        "arguments": resolved.arguments,
+        "trigger": "HOURLY",
+        "trigger_type": "MSFT_TaskTimeTrigger",
+        "trigger_time": "08/05/2026 02:00:00",
+        "trigger_time_verified": True,
+        "repetition_interval": "PT1H",
+        "repetition_minutes": 60,
+        "repetition_verified": True,
+        "repetition_duration": duration,
+        "repetition_duration_minutes": duration_minutes,
+        # Prove the Python guard is independent of a permissive script flag.
+        "repetition_duration_verified": True,
+        "action_verified": True,
+        "trigger_verified": True,
+    }
+    checks, failure = _verify_windows_registration(
+        spec, resolved, _completed(stdout=json.dumps(receipt))
+    )
+    assert checks == []
+    assert failure is not None and "repetition_duration" in failure
+
+
+def test_windows_install_registers_and_verifies_each_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Writing a .ps1 is not enough: the runner must return a verified receipt."""
+    monkeypatch.chdir(tmp_path)
+    bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
+    spec = SCHEDULES[0]
+    resolved = resolve_command(spec.command, which=_no_which, search_dirs=(bindir,))
+    assert resolved is not None
+    receipt = {
+        "verified": True,
+        "task_name": spec.name,
+        "execute": resolved.exec_path,
+        "arguments": resolved.arguments,
+        "trigger": spec.windows_trigger,
+        "trigger_type": "MSFT_TaskDailyTrigger",
+        "trigger_time": "2026-08-05T02:00:00",
+        "trigger_time_verified": True,
+        "repetition_interval": "",
+        "repetition_minutes": None,
+        "repetition_verified": True,
+        "repetition_duration": "",
+        "repetition_duration_minutes": None,
+        "repetition_duration_verified": True,
+        "action_verified": True,
+        "trigger_verified": True,
+    }
+    runner = StubRunner({("powershell",): _completed(stdout=json.dumps(receipt))})
+    report = install_schedules(
+        os_target=OSTarget.WINDOWS_TASK,
+        runner=runner,
+        which=_no_which,
+        search_dirs=(bindir,),
+        schedules=(spec,),
+    )
+    assert report.results[0].status is InstallStatus.INSTALLED
+    assert report.results[0].verified == [
+        "exec_start_runnable",
+        "windows_task_registered",
+        "windows_action_verified",
+        "windows_trigger_verified",
+    ]
+    assert runner.calls[0][:5] == (
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+    )
+    assert "-Command" not in runner.calls[0]
+
+
+def test_windows_install_fails_without_a_matching_registration_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
+    spec = SCHEDULES[0]
+    runner = StubRunner({("powershell",): _completed(stdout="{}")})
+    report = install_schedules(
+        os_target=OSTarget.WINDOWS_TASK,
+        runner=runner,
+        which=_no_which,
+        search_dirs=(bindir,),
+        schedules=(spec,),
+    )
+    assert report.results[0].status is InstallStatus.FAILED
+    assert "not verified" in report.results[0].detail
 
 
 def test_reference_command_is_os_shaped() -> None:
@@ -616,6 +1186,188 @@ def test_remove_is_idempotent(tmp_path: Path) -> None:
     )
     # Removing when nothing exists should still succeed
     assert all(r.status is InstallStatus.REMOVED for r in report.results)
+
+
+def test_windows_remove_executes_and_verifies_unregistration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    spec = SCHEDULES[0]
+    receipt = {"verified": True, "task_name": spec.name, "removed": True}
+    runner = StubRunner({("powershell",): _completed(stdout=json.dumps(receipt))})
+    report = remove_schedules(
+        os_target=OSTarget.WINDOWS_TASK,
+        runner=runner,
+        schedules=(spec,),
+    )
+    assert report.results[0].status is InstallStatus.REMOVED
+    assert report.results[0].verified == ["windows_task_unregistered", "windows_task_absent"]
+    # str(Path) renders separators per-platform (backslashes on a Windows
+    # runner), so build the expectation the same way production does.
+    expected_script = str(
+        Path("C:/ProgramData/agent-suite/schedules") / f"unregister-{spec.name}.ps1"
+    )
+    assert runner.calls == [
+        (
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            expected_script,
+        )
+    ]
+
+
+def test_windows_remove_reports_powershell_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    spec = SCHEDULES[0]
+    runner = StubRunner({("powershell",): _completed(returncode=1, stderr="denied")})
+    report = remove_schedules(
+        os_target=OSTarget.WINDOWS_TASK,
+        runner=runner,
+        schedules=(spec,),
+    )
+    assert report.results[0].status is InstallStatus.FAILED
+    assert "denied" in report.results[0].detail
+
+
+def test_powershell_task_timeout_is_generous_but_bounded() -> None:
+    assert 180.0 <= POWERSHELL_TASK_TIMEOUT_SECONDS <= 300.0
+
+
+def test_windows_registration_and_removal_select_generous_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
+    spec = SCHEDULES[0]
+    resolved = resolve_command(spec.command, which=_no_which, search_dirs=(bindir,))
+    assert resolved is not None
+    install_receipt = {
+        "verified": True,
+        "task_name": spec.name,
+        "execute": resolved.exec_path,
+        "arguments": resolved.arguments,
+        "trigger": spec.windows_trigger,
+        "trigger_type": "MSFT_TaskDailyTrigger",
+        "trigger_time": "2026-08-05T02:00:00",
+        "trigger_time_verified": True,
+        "repetition_interval": "",
+        "repetition_minutes": None,
+        "repetition_verified": True,
+        "repetition_duration": "",
+        "repetition_duration_minutes": None,
+        "repetition_duration_verified": True,
+        "action_verified": True,
+        "trigger_verified": True,
+    }
+    remove_receipt = {"verified": True, "task_name": spec.name, "removed": True}
+    run_calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        command = tuple(cmd)
+        run_calls.append((command, kwargs))
+        receipt = remove_receipt if "unregister" in command[-1] else install_receipt
+        return _completed(stdout=json.dumps(receipt))
+
+    monkeypatch.setattr("agent_suite.schedule.subprocess.run", fake_run)
+    installed = install_schedules(
+        os_target=OSTarget.WINDOWS_TASK,
+        which=_no_which,
+        search_dirs=(bindir,),
+        schedules=(spec,),
+    )
+    removed = remove_schedules(os_target=OSTarget.WINDOWS_TASK, schedules=(spec,))
+
+    assert installed.results[0].status is InstallStatus.INSTALLED
+    assert removed.results[0].status is InstallStatus.REMOVED
+    assert len(run_calls) == 2
+    assert all(
+        kwargs["timeout"] == POWERSHELL_TASK_TIMEOUT_SECONDS
+        for _cmd, kwargs in run_calls
+    )
+
+
+def test_systemd_path_keeps_default_runner_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
+    run_calls: list[dict[str, object]] = []
+
+    def fake_run(_cmd, **kwargs):  # type: ignore[no-untyped-def]
+        run_calls.append(kwargs)
+        return _completed()
+
+    monkeypatch.setattr("agent_suite.schedule.subprocess.run", fake_run)
+    install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        which=_no_which,
+        search_dirs=(bindir,),
+        unit_dir=unit_dir,
+    )
+    assert run_calls
+    assert all(call["timeout"] == 30.0 for call in run_calls)
+
+
+def test_legacy_one_arg_runner_works_for_windows_install_and_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    bindir = _fake_bin_dir(tmp_path)
+    _treat_as_system_scoped(monkeypatch, bindir)
+    spec = SCHEDULES[0]
+    resolved = resolve_command(spec.command, which=_no_which, search_dirs=(bindir,))
+    assert resolved is not None
+    install_receipt = {
+        "verified": True,
+        "task_name": spec.name,
+        "execute": resolved.exec_path,
+        "arguments": resolved.arguments,
+        "trigger": spec.windows_trigger,
+        "trigger_type": "MSFT_TaskDailyTrigger",
+        "trigger_time": "2026-08-05T02:00:00",
+        "trigger_time_verified": True,
+        "repetition_interval": "",
+        "repetition_minutes": None,
+        "repetition_verified": True,
+        "repetition_duration": "",
+        "repetition_duration_minutes": None,
+        "repetition_duration_verified": True,
+        "action_verified": True,
+        "trigger_verified": True,
+    }
+    remove_receipt = {"verified": True, "task_name": spec.name, "removed": True}
+    calls: list[tuple[str, ...]] = []
+
+    def legacy_runner(cmd: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        receipt = remove_receipt if "unregister" in cmd[-1] else install_receipt
+        return _completed(stdout=json.dumps(receipt))
+
+    installed = install_schedules(
+        os_target=OSTarget.WINDOWS_TASK,
+        runner=legacy_runner,
+        which=_no_which,
+        search_dirs=(bindir,),
+        schedules=(spec,),
+    )
+    removed = remove_schedules(
+        os_target=OSTarget.WINDOWS_TASK,
+        runner=legacy_runner,
+        schedules=(spec,),
+    )
+
+    assert installed.results[0].status is InstallStatus.INSTALLED
+    assert removed.results[0].status is InstallStatus.REMOVED
+    assert len(calls) == 2
 
 
 # ---------------------------------------------------------------------------

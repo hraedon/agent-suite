@@ -29,6 +29,14 @@ is deliberately one page: violations are bugs, not style choices.
 | `1` | Operational failure — **every** path that reports an error. No path may print an error and exit 0. |
 | `2` | Usage error (argparse default: unknown verb, missing required flag). |
 
+**The 1/2 boundary is who detects it, not whose fault it is.** Exit `2` is
+reserved for failures the argument *parser* raises (unknown verb, missing
+required flag, bad flag value rejected by the parser) — those print usage text,
+not the envelope. A flag combination or value the parser accepts but the verb
+then rejects (e.g. `FLAG_CONFLICT`, `FLAG_INVALID`) is a documented error path:
+envelope on stdout, exit `1`. The conformance kit enforces this split — an
+envelope path that exits `2` is a violation (ratified 2026-08-05, WI-071 L4).
+
 Partial success must pick a side: a batch verb that fails any item
 exits nonzero and reports the split in the error envelope's `partial`
 field (§3). "Some succeeded" is not exit 0.

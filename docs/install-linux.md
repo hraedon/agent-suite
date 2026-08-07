@@ -183,9 +183,21 @@ drift. A suite release is a green lock — see the
 
 Two commands, both root, both idempotent, both re-runnable after an upgrade:
 
+Before installing the schedules, set these values in `/etc/agent-suite/suite.env`:
+
+```env
+AGENT_SUITE_BACKUP_DIR=/var/lib/agent-suite/backups
+AGENT_SUITE_VERIFY_RESTORE_DSN=postgresql://DB-SERVICE-ACCOUNT:PASSWORD@suite-db.example:5432/regista_verify
+```
+
+The verification DSN must be a dedicated scratch database and must not be the
+production `REGISTA_DSN`; the weekly restore refuses to fall back to it or run
+without this variable. Keep the backup directory under the retention policy
+described in [operating-the-suite.md §3.6](operating-the-suite.md#36-backup-retention).
+
 ```bash
 sudo agent-suite install-services      # the long-running faces (dossier)
-sudo agent-suite schedule install      # the timers (backup, doctor-alert, chain-integrity)
+sudo agent-suite schedule install      # the timers (backup, restore-verify, doctor-alert, chain-integrity)
 ```
 
 Add `--dry-run` to either to see the plan and act on nothing. Both are real
