@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+# Nine jobs per run, several of which clone every sibling at its SUITE.lock
+# revision. A superseded PR run holding those slots delays the whole estate,
+# since the account-wide concurrent-job cap is shared across all repos.
+# main-branch runs are left alone: they are the record of what landed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
