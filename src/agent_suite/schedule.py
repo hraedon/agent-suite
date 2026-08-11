@@ -142,6 +142,7 @@ class ScheduleKind(Enum):
     RESTORE_VERIFY = "restore-verify"  # WI-2.1: weekly scratch restore + verification
     DOCTOR_ALERT = "doctor-alert"  # WI-3.1: periodic doctor + red-routing
     CHAIN_INTEGRITY = "chain-integrity"  # cairn WI-030: scheduled full replay
+    INVARIANT_PROBES = "invariant-probes"
 
 
 class OSTarget(Enum):
@@ -204,6 +205,7 @@ class ScheduleSpec:
     windows_repetition_minutes: int | None = None
     required_env: tuple[str, ...] = ()
     dedicated_dsn_env: str | None = None
+    randomized_delay_seconds: int = 300
 
 
 SCHEDULES: tuple[ScheduleSpec, ...] = (
@@ -263,6 +265,16 @@ SCHEDULES: tuple[ScheduleSpec, ...] = (
         command="cairn integrity",
         windows_trigger="WEEKLY",
         environment=("CAIRN_INTEGRITY_DIR=/var/lib/agent-suite/cairn",),
+    ),
+    ScheduleSpec(
+        kind=ScheduleKind.INVARIANT_PROBES,
+        name="agent-suite-invariant-probes",
+        description="Recurring evidentiary invariant measurements",
+        on_calendar="*:0/5",
+        command="agent-suite invariant-probes --json",
+        windows_trigger="HOURLY",
+        windows_repetition_minutes=5,
+        randomized_delay_seconds=30,
     ),
 )
 
@@ -817,7 +829,7 @@ def _systemd_timer(spec: ScheduleSpec) -> str:
         f"[Timer]\n"
         f"OnCalendar={on_calendar}\n"
         f"Persistent=true\n"
-        f"RandomizedDelaySec=300\n"
+        f"RandomizedDelaySec={spec.randomized_delay_seconds}\n"
         f"\n"
         f"[Install]\n"
         f"WantedBy=timers.target\n"

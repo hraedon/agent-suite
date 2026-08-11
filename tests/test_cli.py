@@ -10,6 +10,7 @@ import pytest
 
 from agent_suite import bootstrap as bootstrap_mod
 from agent_suite import doctor as doctor_mod
+from agent_suite import genesis_gate as genesis_gate_mod
 from agent_suite import lock as lock_mod
 from agent_suite import onboard as onboard_mod
 from agent_suite import schedule as schedule_mod
@@ -48,6 +49,19 @@ def _stub_aggregate(
             suite_ok=suite_ok, components=[], post_restore=post_restore
         ),
     )
+
+
+def _stub_genesis_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    probe = genesis_gate_mod.ProbeResult(
+        component="stub",
+        status=genesis_gate_mod.ProbeStatus.PASS,
+        checks=(),
+        detail="stubbed",
+    )
+    probes = genesis_gate_mod.InvariantProbeReport(ok=True, probes=(probe,))
+    gate = genesis_gate_mod.GenesisGateReport(ok=True, findings=(), probes=probes)
+    monkeypatch.setattr(genesis_gate_mod, "run_invariant_probes", lambda: probes)
+    monkeypatch.setattr(genesis_gate_mod, "evaluate_genesis_gate", lambda _report: gate)
 
 
 def _stub_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -251,6 +265,7 @@ def _stub_deploy(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_aggregate(monkeypatch, suite_ok=False)
+    _stub_genesis_gate(monkeypatch)
     _stub_lock(monkeypatch)
     _stub_bootstrap(monkeypatch)
     _stub_onboard(monkeypatch)
@@ -310,6 +325,42 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
             assert main([command.value, "build", "--tag", "v0.0.0-test"]) == 1
         else:
             assert main([command.value]) == 0
+
+
+def test_invariant_probe_cli_failure_is_json_and_exit_one(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = genesis_gate_mod.InvariantProbeReport(
+        ok=False,
+        probes=(
+            genesis_gate_mod.ProbeResult(
+                component="regista",
+                status=genesis_gate_mod.ProbeStatus.ERROR,
+                checks=(),
+                detail="probe process failed",
+            ),
+        ),
+    )
+    monkeypatch.setattr(genesis_gate_mod, "run_invariant_probes", lambda: report)
+
+    assert main(["invariant-probes", "--json"]) == 1
+    assert json.loads(capsys.readouterr().out)["ok"] is False
+
+
+def test_genesis_gate_cli_blocked_is_json_and_exit_one(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    probes = genesis_gate_mod.InvariantProbeReport(ok=True, probes=())
+    report = genesis_gate_mod.GenesisGateReport(ok=False, findings=(), probes=probes)
+    monkeypatch.setattr(genesis_gate_mod, "run_invariant_probes", lambda: probes)
+    monkeypatch.setattr(genesis_gate_mod, "evaluate_genesis_gate", lambda _probes: report)
+
+    assert main(["genesis-gate", "--json"]) == 1
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is False
+    assert body["epoch_may_open"] is False
 
 
 def test_scheduled_restore_requires_dedicated_dsn_and_never_falls_back(

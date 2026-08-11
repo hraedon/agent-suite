@@ -197,7 +197,7 @@ described in [operating-the-suite.md §3.6](operating-the-suite.md#36-backup-ret
 
 ```bash
 sudo agent-suite install-services      # the long-running faces (dossier)
-sudo agent-suite schedule install      # the timers (backup, restore-verify, doctor-alert, chain-integrity)
+sudo agent-suite schedule install      # backup, restore, alerts, chain and invariant probes
 ```
 
 Add `--dry-run` to either to see the plan and act on nothing. Both are real

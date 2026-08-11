@@ -178,7 +178,8 @@ agent-suite schedule install
 ```
 
 This registers the daily `pg_dump`, weekly scratch restore plus
-`verify-restore`, hourly doctor alert, and weekly chain-integrity tasks. The
+`verify-restore`, hourly doctor alert, weekly chain-integrity, and five-minute
+invariant-probe tasks. The
 installer reads every task back from Task Scheduler and verifies its executable,
 arguments, start time, and trigger before reporting `INSTALLED`; the doctor
 task uses a once-plus-one-hour repetition trigger so it remains hourly rather

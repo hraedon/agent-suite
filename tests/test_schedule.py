@@ -183,7 +183,12 @@ def test_every_agent_suite_schedule_command_uses_production_cli_grammar() -> Non
             assert words[0] == "cairn", spec.command
             continue
         parsed = parser.parse_args(words[1:])
-        assert parsed.command in {"backup", "restore", "alert-check"}, spec.command
+        assert parsed.command in {
+            "backup",
+            "restore",
+            "alert-check",
+            "invariant-probes",
+        }, spec.command
 
 
 def test_backup_and_restore_verify_are_distinct_cadences() -> None:
@@ -1413,6 +1418,16 @@ def test_chain_integrity_schedule_is_declared():
     assert spec.on_calendar == "weekly"
     assert spec.windows_trigger == "WEEKLY"
     assert spec.name == "agent-suite-chain-integrity"
+
+
+def test_invariant_probe_schedule_is_declared() -> None:
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.INVARIANT_PROBES)
+    assert spec.command == "agent-suite invariant-probes --json"
+    assert spec.on_calendar == "*:0/5"
+    assert spec.windows_trigger == "HOURLY"
+    assert spec.windows_repetition_minutes == 5
+    assert spec.randomized_delay_seconds == 30
+    assert spec.name == "agent-suite-invariant-probes"
 
 
 def test_windows_weekly_trigger_includes_days_of_week():

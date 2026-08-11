@@ -196,6 +196,22 @@ The schedules are:
 | `agent-suite-restore-verify` | Weekly | `agent-suite restore --dir-env AGENT_SUITE_BACKUP_DIR --dsn-env AGENT_SUITE_VERIFY_RESTORE_DSN` | Restore the latest dump into scratch, then run `verify-restore` |
 | `agent-suite-doctor-alert` | Hourly | `agent-suite alert-check` | Periodic doctor + alert routing |
 | `agent-suite-chain-integrity` | Weekly | `cairn integrity` | Full chain replay; records the verdict doctor reports (cairn WI-030) |
+| `agent-suite-invariant-probes` | Every 5 minutes | `agent-suite invariant-probes --json` | Run component-owned lineage, model, identity, scheme and authorship measurements |
+
+`invariant-probes` and `genesis-gate` are deliberately separate. The scheduled
+command runs measurements continuously and fails only when a component probe is
+missing, malformed or reports a failed behavioral invariant. `genesis-gate`
+applies the stricter empty-store and first-write preconditions and is a manual
+ceremony command; it is expected to remain `BLOCKED` until regista implements
+transactional first-write admission and agent-notes contributes its resolvable
+session-scoped identity probe. Unimplemented component probes are named blockers
+in the gate, not scheduled subprocesses that can only fail. Each required check is a closed, tested set in
+`agent_suite.genesis_gate.GENESIS_REQUIRED_CHECKS`. Removing or weakening a
+check is a policy change, not a way to make a permanently red gate green.
+The umbrella validates component names, required check IDs, result shape and
+exit-code/body agreement, but component CLIs remain the trust boundary for the
+measurements they own; agent-suite does not independently reproduce their SQL
+or harness observation.
 
 The weekly restore is scheduled for 04:00 (after the daily 00:00/02:00 backup
 window on Linux/Windows respectively), so it does not race the dump that
