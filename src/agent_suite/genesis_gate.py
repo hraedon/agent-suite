@@ -1,3 +1,9 @@
+"""Read-only component probes and the pre-genesis admission verdict.
+
+The component CLIs own the measurements.  This module only validates their
+versioned report shape and composes the measurements into a fail-closed gate.
+"""
+
 from __future__ import annotations
 
 import json
@@ -17,11 +23,23 @@ class ProbeStatus(StrEnum):
     ERROR = "error"
 
 
+PROBE_REPORT_VERSION = 1
+GENESIS_GATE_REPORT_VERSION = 1
+_PROBE_CHECK_STATUSES = frozenset({"pass", "measured", "fail"})
+
+
 @dataclass(frozen=True)
 class ProbeSpec:
     component: str
     command: tuple[str, ...]
     required_checks: frozenset[str]
+    #: Whether ``schedule install`` must verify (parser-only) that the
+    #: component CLI exposes ``invariants probe`` before installing the probe
+    #: schedule. False only while a component's probe contribution is itself a
+    #: named, tracked gate blocker: the schedule must remain installable so
+    #: the implemented probes are measured continuously, and the runtime probe
+    #: honestly reports the missing component on every scheduled run.
+    preflight_capability: bool = True
 
 
 @dataclass(frozen=True)
@@ -52,7 +70,7 @@ class InvariantProbeReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "report_version": 1,
+            "report_version": PROBE_REPORT_VERSION,
             "kind": "invariant_probes",
             "ok": self.ok,
             "probes": [probe.to_dict() for probe in self.probes],
@@ -85,7 +103,7 @@ class GenesisGateReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "report_version": 1,
+            "report_version": GENESIS_GATE_REPORT_VERSION,
             "kind": "genesis_gate",
             "ok": self.ok,
             "epoch_may_open": self.ok,
@@ -137,6 +155,9 @@ PROBE_SPECS: tuple[ProbeSpec, ...] = (
         component="agent-notes",
         command=("agent-notes", "invariants", "probe", "--json"),
         required_checks=frozenset({"agent_notes.session_identity_resolvable"}),
+        # The agent-notes session-identity probe is a named gate blocker that
+        # has not shipped; flip this to True in the change that ships it.
+        preflight_capability=False,
     ),
 )
 
@@ -188,8 +209,21 @@ def _parse_probe_result(
     spec: ProbeSpec,
     completed: subprocess.CompletedProcess[str],
 ) -> ProbeResult:
+    output: object = completed.stdout
+    if isinstance(output, bytes):
+        try:
+            output = output.decode("utf-8")
+        except UnicodeDecodeError:
+            return ProbeResult(
+                spec.component,
+                ProbeStatus.MALFORMED,
+                (),
+                "probe output was not valid UTF-8",
+            )
+    if not isinstance(output, str):
+        output = None
     try:
-        body = json.loads(completed.stdout)
+        body = json.loads(output)  # type: ignore[arg-type]
     except (TypeError, json.JSONDecodeError):
         return ProbeResult(
             spec.component,
@@ -208,6 +242,16 @@ def _parse_probe_result(
             (),
             _status_detail(ProbeStatus.MALFORMED),
         )
+    if (
+        type(body.get("probe_version")) is not int
+        or body.get("probe_version") != PROBE_REPORT_VERSION
+    ):
+        return ProbeResult(
+            spec.component,
+            ProbeStatus.MALFORMED,
+            (),
+            f"unsupported or missing probe_version (expected {PROBE_REPORT_VERSION})",
+        )
     raw_checks = body.get("checks")
     if not isinstance(raw_checks, list) or not all(isinstance(check, dict) for check in raw_checks):
         return ProbeResult(
@@ -217,6 +261,13 @@ def _parse_probe_result(
             _status_detail(ProbeStatus.MALFORMED),
         )
     checks = tuple(raw_checks)
+    if any(check.get("status") not in _PROBE_CHECK_STATUSES for check in checks):
+        return ProbeResult(
+            spec.component,
+            ProbeStatus.MALFORMED,
+            checks,
+            "probe checks must use a known status (pass, measured, fail)",
+        )
     check_ids = {
         check.get("id")
         for check in checks
@@ -265,6 +316,13 @@ def _parse_probe_result(
             checks,
             f"probe required checks used the wrong success status: {', '.join(wrong_status)}",
         )
+    if completed.returncode not in (0, 1):
+        return ProbeResult(
+            spec.component,
+            ProbeStatus.ERROR,
+            checks,
+            f"probe exited with unsupported status {completed.returncode}",
+        )
     failed_ids = [
         str(check["id"])
         for check in checks
@@ -289,6 +347,37 @@ def run_invariant_probes(
 ) -> InvariantProbeReport:
     results: list[ProbeResult] = []
     for spec in specs:
+        if not isinstance(spec.component, str) or not spec.component.strip():
+            results.append(
+                ProbeResult(
+                    str(spec.component),
+                    ProbeStatus.MALFORMED,
+                    (),
+                    "probe specification must declare a non-empty component",
+                )
+            )
+            continue
+        namespace = spec.component.replace("-", "_") + "."
+        if (
+            not spec.command
+            or not all(isinstance(part, str) and part for part in spec.command)
+            or not spec.required_checks
+            or any(
+                not isinstance(check_id, str)
+                or not check_id.startswith(namespace)
+                or check_id == namespace
+                for check_id in spec.required_checks
+            )
+        ):
+            results.append(
+                ProbeResult(
+                    spec.component,
+                    ProbeStatus.MALFORMED,
+                    (),
+                    "probe specification must declare a command and namespaced checks",
+                )
+            )
+            continue
         if not installed(spec.command[0]):
             results.append(
                 ProbeResult(
@@ -301,6 +390,16 @@ def run_invariant_probes(
             continue
         try:
             completed = runner(spec.command)
+        except UnicodeDecodeError:
+            results.append(
+                ProbeResult(
+                    spec.component,
+                    ProbeStatus.MALFORMED,
+                    (),
+                    "probe output was not valid UTF-8",
+                )
+            )
+            continue
         except (OSError, subprocess.SubprocessError, UnicodeError):
             results.append(
                 ProbeResult(
@@ -331,6 +430,68 @@ def _checks_by_component(
     }
 
 
+def _probe_contract_findings(report: InvariantProbeReport) -> list[GateFinding]:
+    """Reject forged, duplicated, or otherwise unscoped check identifiers.
+
+    Normal subprocess results are checked by :func:`_parse_probe_result`, but
+    the evaluator is also a public pure function.  Rechecking ownership here
+    prevents a caller from satisfying (for example) a ``regista.*`` gate with
+    a check copied into an unrelated component's result, and from hiding a
+    failed check behind a hand-built passing ``ProbeResult``.
+    """
+    findings: list[GateFinding] = []
+    seen: dict[str, str] = {}
+    for probe in report.probes:
+        namespace = probe.component.replace("-", "_") + "."
+        for check in probe.checks:
+            if not isinstance(check, dict):
+                findings.append(
+                    GateFinding(
+                        "probe.check_contract",
+                        ProbeStatus.FAIL,
+                        f"{probe.component} returned a non-object check",
+                    )
+                )
+                continue
+            check_id = check.get("id")
+            if (
+                not isinstance(check_id, str)
+                or not check_id
+                or check_id != check_id.strip()
+                or not check_id.startswith(namespace)
+                or check.get("status") not in _PROBE_CHECK_STATUSES
+            ):
+                findings.append(
+                    GateFinding(
+                        "probe.check_contract",
+                        ProbeStatus.FAIL,
+                        f"{probe.component} returned an invalid or foreign check ID",
+                    )
+                )
+                continue
+            if check.get("status") == "fail":
+                findings.append(
+                    GateFinding(
+                        "probe.check_status",
+                        ProbeStatus.FAIL,
+                        f"{probe.component} returned a failed check {check_id!r}",
+                    )
+                )
+            previous = seen.get(check_id)
+            if previous is not None:
+                findings.append(
+                    GateFinding(
+                        "probe.check_contract",
+                        ProbeStatus.FAIL,
+                        f"check ID {check_id!r} was returned by both {previous} and "
+                        f"{probe.component}",
+                    )
+                )
+            else:
+                seen[check_id] = probe.component
+    return findings
+
+
 def _measurement_findings(
     check: Mapping[str, Any] | None,
     *,
@@ -345,7 +506,13 @@ def _measurement_findings(
                 "store invariant measurements are absent",
             )
         ], None)
-    if check.get("status") != "measured" or check.get("errors"):
+    errors = check.get("errors")
+    if (
+        check.get("status") != "measured"
+        or not isinstance(errors, list)
+        or not all(isinstance(error, dict) for error in errors)
+        or errors
+    ):
         return ([
             GateFinding(
                 "regista.store_invariant_measurements",
@@ -486,11 +653,13 @@ def evaluate_genesis_gate(
     probes_by_component = {probe.component: probe for probe in probes.probes}
     regista_checks = checks.get("regista", {})
     measurement_check = regista_checks.get("regista.store_invariant_measurements")
-    findings, snapshot = _measurement_findings(
+    findings = _probe_contract_findings(probes)
+    measurement_findings, snapshot = _measurement_findings(
         measurement_check,
         expected_store_fingerprint=expected_store_fingerprint,
         expected_project=expected_project,
     )
+    findings.extend(measurement_findings)
     for check_id in sorted(GENESIS_REQUIRED_CHECKS):
         owner = GENESIS_REQUIRED_CHECK_OWNERS[check_id]
         check = checks.get(owner, {}).get(check_id)
@@ -515,7 +684,16 @@ def evaluate_genesis_gate(
                 detail,
             )
         )
-    ok = probes.ok and all(finding.status is ProbeStatus.PASS for finding in findings)
+    probe_health = bool(probes.probes) and probes.ok and all(probe.ok for probe in probes.probes)
+    if not probe_health:
+        findings.append(
+            GateFinding(
+                "probe.report",
+                ProbeStatus.FAIL,
+                "one or more component probes did not complete successfully",
+            )
+        )
+    ok = probe_health and all(finding.status is ProbeStatus.PASS for finding in findings)
     return GenesisGateReport(
         ok=ok,
         findings=tuple(findings),

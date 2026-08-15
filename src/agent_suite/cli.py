@@ -118,7 +118,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     invariant_probes.add_argument("--json", action="store_true", help="emit JSON output")
     invariant_probes.add_argument(
-        "--exit-code", action="store_true", help="exit non-zero when any probe fails"
+        "--exit-code",
+        action="store_true",
+        help="exit non-zero when a probe is missing, malformed, or reports a failed check",
     )
     genesis_gate = sub.add_parser(
         Command.GENESIS_GATE.value,
@@ -126,7 +128,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     genesis_gate.add_argument("--json", action="store_true", help="emit JSON output")
     genesis_gate.add_argument(
-        "--exit-code", action="store_true", help="exit non-zero when the gate is blocked"
+        "--exit-code",
+        action="store_true",
+        help="exit non-zero when the epoch is blocked (for a deployment gate)",
     )
     lock = sub.add_parser(
         Command.LOCK.value, help="generate / check the SUITE.lock compatibility manifest"

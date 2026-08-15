@@ -37,6 +37,18 @@ SUCCESS_CASES = [
         argv=(*_CLI, "schedule", "list", "--json"),
         env=_HERMETIC_ENV,
     ),
+    SuccessCase(
+        name="invariant-probes-json-report",
+        argv=(*_CLI, "invariant-probes", "--json"),
+        env=_HERMETIC_ENV,
+        unset_env=("REGISTA_DSN",),
+    ),
+    SuccessCase(
+        name="genesis-gate-json-report",
+        argv=(*_CLI, "genesis-gate", "--json"),
+        env=_HERMETIC_ENV,
+        unset_env=("REGISTA_DSN",),
+    ),
 ]
 
 ERROR_CASES = [
