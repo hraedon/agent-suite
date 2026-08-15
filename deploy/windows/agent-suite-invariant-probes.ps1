@@ -26,13 +26,11 @@ try {
   $startBoundaryVerified = $false
   try {
     $startBoundary = [DateTimeOffset]::Parse($startBoundaryText, [System.Globalization.CultureInfo]::InvariantCulture)
-    $now = [DateTimeOffset]::Now
-    $startBoundaryVerified = ($startBoundary -ge $now.AddMinutes(-1)) -and ($startBoundary -le $now.AddMinutes(10))
+    $startBoundaryVerified = [Math]::Abs(($startBoundary - [DateTimeOffset]$startAt).TotalSeconds) -le 60
   } catch {
     try {
       $startBoundary = [DateTimeOffset]::Parse($startBoundaryText)
-      $now = [DateTimeOffset]::Now
-      $startBoundaryVerified = ($startBoundary -ge $now.AddMinutes(-1)) -and ($startBoundary -le $now.AddMinutes(10))
+      $startBoundaryVerified = [Math]::Abs(($startBoundary - [DateTimeOffset]$startAt).TotalSeconds) -le 60
     } catch {
       $startBoundaryVerified = $false
     }

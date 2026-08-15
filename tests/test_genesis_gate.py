@@ -211,6 +211,9 @@ def test_malformed_owner_probe_cannot_supply_a_passing_gate_check() -> None:
             "regista.model_observation_population_empty",
         ),
         ("event_count", 0.0, "regista.store_empty"),
+        # bool is a subclass of int and False == 0; the predicates must
+        # reject it via the exact `type(...) is int` check.
+        ("undeclared_agent_author_event_count", False, "regista.authors_declared"),
     ],
 )
 def test_each_store_predicate_has_a_deny_case(
@@ -580,6 +583,30 @@ def test_forged_report_ok_cannot_hide_a_failed_probe() -> None:
 
     assert gate.ok is False
     assert any(item.check_id == "probe.report" for item in gate.findings)
+
+
+def test_forged_non_dict_check_is_a_blocked_finding_not_a_crash() -> None:
+    passing = _run_bodies(_passing_bodies())
+    probe = passing.probes[0]
+    forged = type(probe)(
+        component=probe.component,
+        status=ProbeStatus.PASS,
+        checks=(*probe.checks, "not-a-dict"),  # type: ignore[arg-type]
+        detail="forged success",
+    )
+    report = type(passing)(ok=True, probes=(forged,))
+
+    gate = evaluate_genesis_gate(
+        report,
+        expected_store_fingerprint=_STORE_FINGERPRINT,
+        expected_project=_PROJECT,
+    )
+
+    assert gate.ok is False
+    assert any(
+        item.check_id == "probe.check_contract" and "non-object" in item.detail
+        for item in gate.findings
+    )
 
 
 def test_empty_probe_report_cannot_open_gate() -> None:

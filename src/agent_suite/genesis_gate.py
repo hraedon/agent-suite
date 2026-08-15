@@ -424,7 +424,7 @@ def _checks_by_component(
         probe.component: {
             check["id"]: check
             for check in probe.checks
-            if isinstance(check.get("id"), str)
+            if isinstance(check, dict) and isinstance(check.get("id"), str)
         }
         for probe in report.probes
     }

@@ -892,23 +892,29 @@ def _decode_capability_output(value: object) -> str | None:
     return None
 
 
-def _help_exposes_invariant_probe(stdout: object, stderr: object) -> bool | None:
+def _help_exposes_invariant_probe(
+    executable: str, stdout: object, stderr: object
+) -> bool | None:
     """Return whether parser help names the exact required command.
 
-    ``None`` means one of the streams was not valid text and is therefore a
-    malformed capability result.  Both streams are considered because the
-    supported parser implementations in the estate do not promise the same
-    help stream.
+    The usage line must name the component executable immediately followed by
+    ``invariants probe`` — prose elsewhere in an old CLI's help that merely
+    mentions the phrase is not evidence of the command.  ``None`` means one of
+    the streams was not valid text and is therefore a malformed capability
+    result.  Both streams are considered because the supported parser
+    implementations in the estate do not promise the same help stream.
     """
     out = _decode_capability_output(stdout)
     err = _decode_capability_output(stderr)
     if out is None or err is None:
         return None
     normalized = " ".join(f"{out}\n{err}".split()).lower()
-    return (
-        re.search(r"\busage:\s+.*\binvariants\s+probe(?:\s|\[)", normalized)
-        is not None
+    pattern = (
+        r"\busage:\s+(?:\S*[/\\])?"
+        + re.escape(executable.lower())
+        + r"\s+invariants\s+probe(?:\s|\[)"
     )
+    return re.search(pattern, normalized) is not None
 
 
 def _command_rejected_by_parser(stdout: object, stderr: object) -> bool:
@@ -997,7 +1003,9 @@ def preflight_invariant_probe_capabilities(
             )
             continue
 
-        help_state = _help_exposes_invariant_probe(completed.stdout, completed.stderr)
+        help_state = _help_exposes_invariant_probe(
+            spec.command[0], completed.stdout, completed.stderr
+        )
         if completed.returncode == 0 and help_state is True:
             status = CapabilityStatus.SUPPORTED
         elif completed.returncode != 0 and _command_rejected_by_parser(
@@ -1264,10 +1272,14 @@ def _windows_task_script(spec: ScheduleSpec, *, resolved: ResolvedCommand | None
         else "  $repetitionVerified = $null -eq $repetitionMinutes\n"
     )
     if spec.windows_start_immediately:
+        # Anchor the check at the boundary we requested ($startAt), never at
+        # read-back wall-clock time: a cold ScheduledTasks CIM provider can
+        # spend minutes in Register/Get (the 240s task timeout exists because
+        # that was observed), and a read-back anchor would reject a correctly
+        # registered task on exactly those hosts.
         start_boundary_check = (
-            "    $now = [DateTimeOffset]::Now\n"
-            "    $startBoundaryVerified = ($startBoundary -ge $now.AddMinutes(-1)) -and "
-            "($startBoundary -le $now.AddMinutes(10))\n"
+            "    $startBoundaryVerified = [Math]::Abs(($startBoundary - "
+            "[DateTimeOffset]$startAt).TotalSeconds) -le 60\n"
         )
     else:
         assert expected_hour is not None and expected_minute is not None
@@ -1855,22 +1867,29 @@ def install_schedules(
             if target is OSTarget.SYSTEMD
             else "may fail when the task fires"
         )
-        first_failure = (
-            f"cannot resolve {shlex.split(first_failed_spec.command)[0]!r} to an absolute "
-            f"path — refusing to register a schedule that {failure_mode}. "
-            f"{_UNRESOLVED_HINT}"
-        )
+
+        def _unresolved_detail(failed_spec: ScheduleSpec) -> str:
+            # Each unresolved schedule names ITS OWN executable; attributing
+            # every failure to the first unresolved command would lie about
+            # which command actually failed to resolve.
+            return (
+                f"cannot resolve {shlex.split(failed_spec.command)[0]!r} to an absolute "
+                f"path — refusing to register a schedule that {failure_mode}. "
+                f"{_UNRESOLVED_HINT}"
+            )
+
         return ScheduleReport(
             results=[
                 ScheduleResult(
                     kind=spec.kind,
                     status=InstallStatus.FAILED,
                     detail=(
-                        first_failure
+                        _unresolved_detail(spec)
                         if resolved is None
                         else (
                             "not attempted because schedule command resolution failed "
-                            f"for {first_failed_spec.name}: {first_failure}"
+                            f"for {first_failed_spec.name}: "
+                            f"{_unresolved_detail(first_failed_spec)}"
                         )
                     ),
                 )
@@ -2152,6 +2171,9 @@ def remove_schedules(
 
     results: list[ScheduleResult] = []
     removed_unit_files = False
+    # Results whose REMOVED verdict is contingent on a successful daemon-reload;
+    # tracked explicitly rather than re-identified by matching detail strings.
+    reload_dependent_results: list[ScheduleResult] = []
     for spec in schedules:
         if dry_run:
             files = generate_schedule_files(spec, os_target=target, unit_dir=unit_dir)
@@ -2230,13 +2252,13 @@ def remove_schedules(
                 )
                 continue
 
-            results.append(
-                ScheduleResult(
-                    kind=spec.kind,
-                    status=InstallStatus.REMOVED,
-                    detail="removed",
-                )
+            removed_result = ScheduleResult(
+                kind=spec.kind,
+                status=InstallStatus.REMOVED,
+                detail="removed",
             )
+            reload_dependent_results.append(removed_result)
+            results.append(removed_result)
         elif target is OSTarget.WINDOWS_TASK:
             script_dir = Path("C:/ProgramData/agent-suite/schedules")
             unregister_script = script_dir / f"unregister-{spec.name}.ps1"
@@ -2331,19 +2353,17 @@ def remove_schedules(
     # run it for ``schedule remove --dry-run``: a dry run may render and report
     # the planned paths, but must not touch the scheduler at all.
     if target is OSTarget.SYSTEMD and not dry_run and removed_unit_files:
+        reload_failure: str | None = None
         try:
             reloaded = runner(("systemctl", "daemon-reload"))
             if reloaded.returncode != 0:
-                detail = reloaded.stderr.strip()[:200] or f"exit {reloaded.returncode}"
-                for result in results:
-                    if result.status is InstallStatus.REMOVED and result.detail == "removed":
-                        result.status = InstallStatus.FAILED
-                        result.detail = f"unit files removed but daemon-reload failed: {detail}"
+                reload_failure = reloaded.stderr.strip()[:200] or f"exit {reloaded.returncode}"
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-            for result in results:
-                if result.status is InstallStatus.REMOVED and result.detail == "removed":
-                    result.status = InstallStatus.FAILED
-                    result.detail = f"unit files removed but daemon-reload failed: {exc}"
+            reload_failure = str(exc)
+        if reload_failure is not None:
+            for result in reload_dependent_results:
+                result.status = InstallStatus.FAILED
+                result.detail = f"unit files removed but daemon-reload failed: {reload_failure}"
 
     return ScheduleReport(results=results, os_target=target)
 

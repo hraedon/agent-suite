@@ -207,6 +207,15 @@ DSN, a project, or a key, never invokes the live probe callback, and does not
 copy child output (which could contain diagnostics or secret-bearing config)
 into the report. The same check runs for `--dry-run`, so a preview cannot claim
 that a timer will work when an installed component predates the required CLI.
+Two limits of that claim: the preflight proves *installer-context* parser
+capability, not fire-time reachability — the scheduled unit resolves the bare
+component names against its pinned system PATH, so components installed
+outside it (e.g. only under a `--bin-dir`) preflight green yet report MISSING
+on every run; and a preflight failure fails the **whole** install closed,
+including the backup/restore/doctor/chain-integrity schedules that do not
+depend on the probe verb. A stale regista or cairn therefore blocks every
+schedule install, loudly, until the component is upgraded — that collateral is
+deliberate.
 
 The schedules are:
 

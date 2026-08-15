@@ -1755,7 +1755,13 @@ def test_invariant_probe_windows_task_starts_after_install() -> None:
     script = _windows_task_script(spec)
     assert "$startAt = (Get-Date).AddMinutes(1)" in script
     assert ".Date.AddHours(2)" not in script
-    assert "$startBoundary -le $now.AddMinutes(10)" in script
+    # The read-back verification must be anchored at the requested boundary
+    # ($startAt), never at read-back wall-clock time: a cold ScheduledTasks
+    # provider can spend minutes in Register/Get, and a $now anchor would
+    # reject a correctly registered task on exactly those hosts (stack review
+    # B1, 2026-08-15).
+    assert "[DateTimeOffset]$startAt).TotalSeconds) -le 60" in script
+    assert "$now.AddMinutes(10)" not in script
 
 
 def test_windows_readback_accepts_immediate_invariant_probe_start() -> None:
@@ -1796,6 +1802,91 @@ def test_windows_readback_accepts_immediate_invariant_probe_start() -> None:
         "windows_action_verified",
         "windows_trigger_verified",
     ]
+
+
+def test_windows_readback_rejects_a_boundary_outside_the_immediate_window() -> None:
+    """A boundary far from registration time must fail the immediate check."""
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.INVARIANT_PROBES)
+    resolved = ResolvedCommand(
+        "C:/Python312/Scripts/agent-suite.exe", "invariant-probes --json --exit-code"
+    )
+    started_at = datetime.now().astimezone()
+    receipt = {
+        "verified": True,
+        "task_name": spec.name,
+        "execute": resolved.exec_path,
+        "arguments": resolved.arguments,
+        "trigger": "HOURLY",
+        "trigger_type": "MSFT_TaskTimeTrigger",
+        "trigger_time": (started_at + timedelta(minutes=20)).isoformat(),
+        "trigger_time_verified": True,
+        "repetition_interval": "PT5M",
+        "repetition_minutes": 5,
+        "repetition_verified": True,
+        "repetition_duration": "",
+        "repetition_duration_minutes": None,
+        "repetition_duration_verified": True,
+        "action_verified": True,
+        "trigger_verified": True,
+    }
+
+    checks, failure = _verify_windows_registration(
+        spec,
+        resolved,
+        _completed(stdout=json.dumps(receipt)),
+        registration_started_at=started_at,
+    )
+
+    assert checks == []
+    assert failure is not None
+    assert "trigger_time" in failure
+
+
+def test_remove_flips_removed_to_failed_when_daemon_reload_fails(
+    tmp_path: Path,
+) -> None:
+    """Unit files gone but systemd never told: that is not a clean removal."""
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    for spec in SCHEDULES:
+        (unit_dir / f"{spec.name}.service").write_text("stub", encoding="utf-8")
+        (unit_dir / f"{spec.name}.timer").write_text("stub", encoding="utf-8")
+    runner = StubRunner(
+        {
+            ("systemctl", "disable"): _completed(stdout=""),
+            ("systemctl", "daemon-reload"): _completed(returncode=1, stderr="denied"),
+        }
+    )
+
+    report = remove_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=False,
+        runner=runner,
+        unit_dir=unit_dir,
+    )
+
+    assert all(r.status is InstallStatus.FAILED for r in report.results)
+    assert all("daemon-reload failed" in r.detail for r in report.results)
+
+
+def test_install_dry_run_fails_closed_when_capability_preflight_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A preview must not claim a timer will work when the preflight fails."""
+    bindir = _fake_bin_dir(tmp_path)
+    (bindir / "regista").unlink()
+    _treat_as_system_scoped(monkeypatch, bindir)
+
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=True,
+        runner=StubRunner(),
+        which=_no_which,
+        search_dirs=(bindir,),
+    )
+
+    assert all(r.status is InstallStatus.FAILED for r in report.results)
+    assert any("invariants probe" in r.detail for r in report.results)
 
 
 def test_windows_weekly_trigger_includes_days_of_week():
