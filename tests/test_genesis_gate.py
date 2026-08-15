@@ -52,6 +52,7 @@ def _passing_bodies() -> dict[str, dict[str, object]]:
                 {"id": "regista.load_bearing_fields_refused", "status": "pass"},
                 {"id": "regista.closed_lineage_registry", "status": "pass"},
                 {"id": "regista.first_write_admission", "status": "pass"},
+                {"id": "regista.actor_boundary_signing", "status": "pass"},
             ],
         },
         "cairn": {
@@ -127,6 +128,60 @@ def test_each_required_behavior_has_a_deny_case(check_id: str) -> None:
     assert gate.ok is False
     finding = next(item for item in gate.findings if item.check_id == check_id)
     assert finding.status is ProbeStatus.FAIL
+
+
+def test_actor_boundary_signing_missing_blocks_gate() -> None:
+    bodies = _passing_bodies()
+    bodies["regista"]["checks"] = [
+        check
+        for check in bodies["regista"]["checks"]  # type: ignore[union-attr]
+        if check["id"] != "regista.actor_boundary_signing"
+    ]
+
+    gate = _evaluate(bodies)
+
+    assert gate.ok is False
+    finding = next(
+        item for item in gate.findings if item.check_id == "regista.actor_boundary_signing"
+    )
+    assert finding.status is ProbeStatus.FAIL
+    assert "absent" in finding.detail
+
+
+def test_actor_boundary_signing_failure_blocks_gate() -> None:
+    bodies = _passing_bodies()
+    signing = next(
+        check
+        for check in bodies["regista"]["checks"]  # type: ignore[union-attr]
+        if check["id"] == "regista.actor_boundary_signing"
+    )
+    signing["status"] = "fail"
+    bodies["regista"]["ok"] = False
+
+    gate = _evaluate(bodies)
+
+    assert gate.ok is False
+    finding = next(
+        item for item in gate.findings if item.check_id == "regista.actor_boundary_signing"
+    )
+    assert finding.status is ProbeStatus.FAIL
+    assert "reported failure" in finding.detail
+
+
+def test_malformed_owner_probe_cannot_supply_a_passing_gate_check() -> None:
+    bodies = _passing_bodies()
+    bodies["regista"]["checks"].append(  # type: ignore[union-attr]
+        {"id": "regista.closed_lineage_registry", "status": "pass"}
+    )
+
+    gate = _evaluate(bodies)
+
+    assert gate.ok is False
+    finding = next(
+        item for item in gate.findings if item.check_id == "regista.actor_boundary_signing"
+    )
+    assert finding.status is ProbeStatus.FAIL
+    assert "did not pass contract validation" in finding.detail
 
 
 @pytest.mark.parametrize(

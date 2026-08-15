@@ -118,6 +118,7 @@ PROBE_SPECS: tuple[ProbeSpec, ...] = (
                 "regista.load_bearing_fields_refused",
                 "regista.closed_lineage_registry",
                 "regista.first_write_admission",
+                "regista.actor_boundary_signing",
             }
         ),
     ),
@@ -144,6 +145,7 @@ GENESIS_REQUIRED_CHECK_OWNERS: Mapping[str, str] = {
     "regista.load_bearing_fields_refused": "regista",
     "regista.closed_lineage_registry": "regista",
     "regista.first_write_admission": "regista",
+    "regista.actor_boundary_signing": "regista",
     "cairn.runtime_model_observed": "cairn",
     "cairn.unavailable_model_named": "cairn",
     "cairn.observation_failure_nonblocking": "cairn",
@@ -481,6 +483,7 @@ def evaluate_genesis_gate(
     expected_project: str | None = None,
 ) -> GenesisGateReport:
     checks = _checks_by_component(probes)
+    probes_by_component = {probe.component: probe for probe in probes.probes}
     regista_checks = checks.get("regista", {})
     measurement_check = regista_checks.get("regista.store_invariant_measurements")
     findings, snapshot = _measurement_findings(
@@ -491,9 +494,16 @@ def evaluate_genesis_gate(
     for check_id in sorted(GENESIS_REQUIRED_CHECKS):
         owner = GENESIS_REQUIRED_CHECK_OWNERS[check_id]
         check = checks.get(owner, {}).get(check_id)
-        passed = check is not None and check.get("status") == "pass"
+        owner_probe = probes_by_component.get(owner)
+        owner_contract_valid = owner_probe is not None and owner_probe.status in {
+            ProbeStatus.PASS,
+            ProbeStatus.FAIL,
+        }
+        passed = owner_contract_valid and check is not None and check.get("status") == "pass"
         if check is None:
             detail = f"required behavioral probe is absent from {owner}"
+        elif not owner_contract_valid:
+            detail = f"{owner} probe did not pass contract validation"
         elif passed:
             detail = "behavioral probe passed"
         else:
