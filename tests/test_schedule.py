@@ -408,6 +408,17 @@ def test_same_postgres_database_parses_keyword_value_dsns(left: str, right: str)
     assert same_postgres_database(right, left)
 
 
+def test_postgres_database_fingerprint_excludes_credentials() -> None:
+    from agent_suite.config import postgres_database_fingerprint
+
+    left = "postgresql://first:secret@suite-db.example:5432/regista?sslmode=require"
+    right = "host=suite-db.example dbname=regista user=second password=other"
+
+    assert postgres_database_fingerprint(left) == postgres_database_fingerprint(right)
+    assert postgres_database_fingerprint(left).startswith("sha256:")  # type: ignore[union-attr]
+    assert postgres_database_fingerprint("not-a-postgres-dsn") is None
+
+
 @pytest.mark.parametrize(
     ("left", "right"),
     [
@@ -1422,7 +1433,7 @@ def test_chain_integrity_schedule_is_declared():
 
 def test_invariant_probe_schedule_is_declared() -> None:
     spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.INVARIANT_PROBES)
-    assert spec.command == "agent-suite invariant-probes --json"
+    assert spec.command == "agent-suite invariant-probes --json --exit-code"
     assert spec.on_calendar == "*:0/5"
     assert spec.windows_trigger == "HOURLY"
     assert spec.windows_repetition_minutes == 5

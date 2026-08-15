@@ -15,19 +15,15 @@ from agent_suite.genesis_gate import (
     run_invariant_probes,
 )
 
-_PASSING_SPECS = (
-    *PROBE_SPECS,
-    ProbeSpec(
-        "agent-notes",
-        ("agent-notes", "invariants", "probe", "--json"),
-        frozenset({"agent_notes.session_identity_resolvable"}),
-    ),
-)
+_PASSING_SPECS = PROBE_SPECS
+_STORE_FINGERPRINT = "sha256:" + "a" * 64
+_PROJECT = "throwaway"
 
 
 def _clean_measurement() -> dict[str, object]:
     return {
-        "project": "throwaway",
+        "project": _PROJECT,
+        "snapshot_id": "pg:10:20:",
         "event_count": 0,
         "declared_lineage_event_count": 0,
         "lineage_coverage": {"numerator": 0, "denominator": 0},
@@ -50,6 +46,7 @@ def _passing_bodies() -> dict[str, dict[str, object]]:
                 {
                     "id": "regista.store_invariant_measurements",
                     "status": "measured",
+                    "store_fingerprint": _STORE_FINGERPRINT,
                     "projects": [_clean_measurement()],
                 },
                 {"id": "regista.load_bearing_fields_refused", "status": "pass"},
@@ -96,9 +93,21 @@ def _run_bodies(bodies: dict[str, dict[str, object]]):
     )
 
 
+def _evaluate(bodies: dict[str, dict[str, object]]):
+    return evaluate_genesis_gate(
+        _run_bodies(bodies),
+        expected_store_fingerprint=_STORE_FINGERPRINT,
+        expected_project=_PROJECT,
+    )
+
+
 def test_throwaway_pass_fixture_opens_gate() -> None:
     probes = _run_bodies(_passing_bodies())
-    gate = evaluate_genesis_gate(probes)
+    gate = evaluate_genesis_gate(
+        probes,
+        expected_store_fingerprint=_STORE_FINGERPRINT,
+        expected_project=_PROJECT,
+    )
 
     assert probes.ok is True
     assert gate.ok is True
@@ -113,7 +122,7 @@ def test_each_required_behavior_has_a_deny_case(check_id: str) -> None:
             check for check in body["checks"] if check["id"] != check_id  # type: ignore[index]
         ]
 
-    gate = evaluate_genesis_gate(_run_bodies(bodies))
+    gate = _evaluate(bodies)
 
     assert gate.ok is False
     finding = next(item for item in gate.findings if item.check_id == check_id)
@@ -130,6 +139,18 @@ def test_each_required_behavior_has_a_deny_case(check_id: str) -> None:
         ("scheme_counts", {"hmac-sha256": 1}, "regista.asymmetric_only"),
         ("scheme_counts", None, "regista.asymmetric_only"),
         ("undeclared_agent_author_event_count", 1, "regista.authors_declared"),
+        ("declared_lineage_event_count", 1, "regista.lineage_population_empty"),
+        (
+            "lineage_coverage",
+            {"numerator": 1, "denominator": 1},
+            "regista.lineage_population_empty",
+        ),
+        ("distinct_lineage_tokens", ["glm"], "regista.lineage_population_empty"),
+        (
+            "model_observation_status_counts",
+            {"observed": 1},
+            "regista.model_observation_population_empty",
+        ),
         ("event_count", 0.0, "regista.store_empty"),
     ],
 )
@@ -142,7 +163,7 @@ def test_each_store_predicate_has_a_deny_case(
     measurement = bodies["regista"]["checks"][0]["projects"][0]  # type: ignore[index]
     measurement[field] = bad_value
 
-    gate = evaluate_genesis_gate(_run_bodies(bodies))
+    gate = _evaluate(bodies)
 
     assert gate.ok is False
     finding = next(item for item in gate.findings if item.check_id.startswith(finding_prefix))
@@ -157,7 +178,9 @@ def test_missing_executable_is_explicit() -> None:
 
 
 def test_malformed_json_fails_closed() -> None:
-    spec = ProbeSpec("component", ("component", "probe"), frozenset({"check"}))
+    spec = ProbeSpec(
+        "component", ("component", "probe"), frozenset({"component.check"})
+    )
     report = run_invariant_probes(
         specs=(spec,),
         installed=lambda _executable: True,
@@ -169,8 +192,14 @@ def test_malformed_json_fails_closed() -> None:
 
 
 def test_exit_code_and_body_must_agree() -> None:
-    spec = ProbeSpec("component", ("component", "probe"), frozenset({"check"}))
-    body = {"ok": True, "checks": [{"id": "check", "status": "pass"}]}
+    spec = ProbeSpec(
+        "component", ("component", "probe"), frozenset({"component.check"})
+    )
+    body = {
+        "component": "component",
+        "ok": True,
+        "checks": [{"id": "component.check", "status": "pass"}],
+    }
     report = run_invariant_probes(
         specs=(spec,),
         installed=lambda _executable: True,
@@ -189,12 +218,15 @@ def test_zero_declared_probes_cannot_pass() -> None:
 
 
 def test_duplicate_check_ids_are_malformed() -> None:
-    spec = ProbeSpec("component", ("component", "probe"), frozenset({"check"}))
+    spec = ProbeSpec(
+        "component", ("component", "probe"), frozenset({"component.check"})
+    )
     body = {
+        "component": "component",
         "ok": True,
         "checks": [
-            {"id": "check", "status": "pass"},
-            {"id": "check", "status": "pass"},
+            {"id": "component.check", "status": "pass"},
+            {"id": "component.check", "status": "pass"},
         ],
     }
 
@@ -205,3 +237,108 @@ def test_duplicate_check_ids_are_malformed() -> None:
     )
 
     assert report.probes[0].status is ProbeStatus.MALFORMED
+
+
+def test_empty_check_id_is_malformed() -> None:
+    spec = ProbeSpec("component", ("component", "probe"), frozenset())
+    body = {
+        "component": "component",
+        "ok": True,
+        "checks": [{"id": "", "status": "pass"}],
+    }
+
+    report = run_invariant_probes(
+        specs=(spec,),
+        installed=lambda _executable: True,
+        runner=lambda command: subprocess.CompletedProcess(command, 0, json.dumps(body), ""),
+    )
+
+    assert report.probes[0].status is ProbeStatus.MALFORMED
+
+
+def test_component_name_must_match_probe_spec() -> None:
+    bodies = _passing_bodies()
+    bodies["regista"]["component"] = "cairn"
+
+    report = _run_bodies(bodies)
+
+    regista = next(probe for probe in report.probes if probe.component == "regista")
+    assert regista.status is ProbeStatus.MALFORMED
+
+
+def test_probe_cannot_supply_another_components_check() -> None:
+    bodies = _passing_bodies()
+    bodies["cairn"]["checks"].append(  # type: ignore[union-attr]
+        {"id": "agent_notes.session_identity_resolvable", "status": "pass"}
+    )
+
+    report = _run_bodies(bodies)
+
+    cairn = next(probe for probe in report.probes if probe.component == "cairn")
+    assert cairn.status is ProbeStatus.MALFORMED
+
+
+def test_required_success_status_is_exact() -> None:
+    bodies = _passing_bodies()
+    bodies["regista"]["checks"][0]["status"] = "pass"  # type: ignore[index]
+
+    report = _run_bodies(bodies)
+
+    regista = next(probe for probe in report.probes if probe.component == "regista")
+    assert regista.status is ProbeStatus.MALFORMED
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value", "check_id"),
+    [
+        ("store_fingerprint", "sha256:" + "b" * 64, "regista.target_store_bound"),
+        ("project", "other-project", "regista.target_project_bound"),
+        ("snapshot_id", "", "regista.observation_snapshot_bound"),
+    ],
+)
+def test_measurement_binding_must_match_target(
+    field: str, bad_value: object, check_id: str
+) -> None:
+    bodies = deepcopy(_passing_bodies())
+    if field == "store_fingerprint":
+        bodies["regista"]["checks"][0][field] = bad_value  # type: ignore[index]
+    else:
+        measurement = bodies["regista"]["checks"][0]["projects"][0]  # type: ignore[index]
+        measurement[field] = bad_value
+
+    gate = _evaluate(bodies)
+
+    assert gate.ok is False
+    finding = next(item for item in gate.findings if item.check_id == check_id)
+    assert finding.status is ProbeStatus.FAIL
+
+
+def test_missing_expected_binding_cannot_open_gate() -> None:
+    gate = evaluate_genesis_gate(_run_bodies(_passing_bodies()))
+
+    assert gate.ok is False
+
+
+def test_gate_is_scoped_to_target_project_namespace() -> None:
+    bodies = _passing_bodies()
+    other = _clean_measurement()
+    other["project"] = "existing-project"
+    other["event_count"] = 12
+    bodies["regista"]["checks"][0]["projects"].append(other)  # type: ignore[index,union-attr]
+
+    gate = _evaluate(bodies)
+
+    assert gate.ok is True
+
+
+def test_duplicate_target_project_measurements_fail_closed() -> None:
+    bodies = _passing_bodies()
+    bodies["regista"]["checks"][0]["projects"].append(_clean_measurement())  # type: ignore[index,union-attr]
+
+    gate = _evaluate(bodies)
+
+    assert gate.ok is False
+    finding = next(
+        item for item in gate.findings if item.check_id == "regista.target_project_bound"
+    )
+    assert finding.status is ProbeStatus.FAIL

@@ -61,7 +61,9 @@ def _stub_genesis_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     probes = genesis_gate_mod.InvariantProbeReport(ok=True, probes=(probe,))
     gate = genesis_gate_mod.GenesisGateReport(ok=True, findings=(), probes=probes)
     monkeypatch.setattr(genesis_gate_mod, "run_invariant_probes", lambda: probes)
-    monkeypatch.setattr(genesis_gate_mod, "evaluate_genesis_gate", lambda _report: gate)
+    monkeypatch.setattr(
+        genesis_gate_mod, "evaluate_genesis_gate", lambda _report, **_kwargs: gate
+    )
 
 
 def _stub_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -327,7 +329,7 @@ def test_subcommands_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
             assert main([command.value]) == 0
 
 
-def test_invariant_probe_cli_failure_is_json_and_exit_one(
+def test_invariant_probe_cli_failure_is_json_and_exit_code_is_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -344,23 +346,27 @@ def test_invariant_probe_cli_failure_is_json_and_exit_one(
     )
     monkeypatch.setattr(genesis_gate_mod, "run_invariant_probes", lambda: report)
 
-    assert main(["invariant-probes", "--json"]) == 1
+    assert main(["invariant-probes", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["ok"] is False
+    assert main(["invariant-probes", "--json", "--exit-code"]) == 1
 
 
-def test_genesis_gate_cli_blocked_is_json_and_exit_one(
+def test_genesis_gate_cli_blocked_is_json_and_exit_code_is_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     probes = genesis_gate_mod.InvariantProbeReport(ok=True, probes=())
     report = genesis_gate_mod.GenesisGateReport(ok=False, findings=(), probes=probes)
     monkeypatch.setattr(genesis_gate_mod, "run_invariant_probes", lambda: probes)
-    monkeypatch.setattr(genesis_gate_mod, "evaluate_genesis_gate", lambda _probes: report)
+    monkeypatch.setattr(
+        genesis_gate_mod, "evaluate_genesis_gate", lambda _probes, **_kwargs: report
+    )
 
-    assert main(["genesis-gate", "--json"]) == 1
+    assert main(["genesis-gate", "--json"]) == 0
     body = json.loads(capsys.readouterr().out)
     assert body["ok"] is False
     assert body["epoch_may_open"] is False
+    assert main(["genesis-gate", "--json", "--exit-code"]) == 1
 
 
 def test_scheduled_restore_requires_dedicated_dsn_and_never_falls_back(

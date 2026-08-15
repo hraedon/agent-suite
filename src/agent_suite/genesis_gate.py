@@ -78,6 +78,10 @@ class GenesisGateReport:
     ok: bool
     findings: tuple[GateFinding, ...]
     probes: InvariantProbeReport
+    target_store_fingerprint: str | None = None
+    reported_store_fingerprint: str | None = None
+    target_project: str | None = None
+    observation_snapshot: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +89,12 @@ class GenesisGateReport:
             "kind": "genesis_gate",
             "ok": self.ok,
             "epoch_may_open": self.ok,
+            "binding": {
+                "expected_store_fingerprint": self.target_store_fingerprint,
+                "reported_store_fingerprint": self.reported_store_fingerprint,
+                "project": self.target_project,
+                "observation_snapshot": self.observation_snapshot,
+            },
             "findings": [finding.to_dict() for finding in self.findings],
             "probes": self.probes.to_dict(),
         }
@@ -105,7 +115,9 @@ PROBE_SPECS: tuple[ProbeSpec, ...] = (
         required_checks=frozenset(
             {
                 "regista.store_invariant_measurements",
+                "regista.load_bearing_fields_refused",
                 "regista.closed_lineage_registry",
+                "regista.first_write_admission",
             }
         ),
     ),
@@ -120,20 +132,24 @@ PROBE_SPECS: tuple[ProbeSpec, ...] = (
             }
         ),
     ),
+    ProbeSpec(
+        component="agent-notes",
+        command=("agent-notes", "invariants", "probe", "--json"),
+        required_checks=frozenset({"agent_notes.session_identity_resolvable"}),
+    ),
 )
 
 
-GENESIS_REQUIRED_CHECKS: frozenset[str] = frozenset(
-    {
-        "regista.load_bearing_fields_refused",
-        "regista.closed_lineage_registry",
-        "regista.first_write_admission",
-        "cairn.runtime_model_observed",
-        "cairn.unavailable_model_named",
-        "cairn.observation_failure_nonblocking",
-        "agent_notes.session_identity_resolvable",
-    }
-)
+GENESIS_REQUIRED_CHECK_OWNERS: Mapping[str, str] = {
+    "regista.load_bearing_fields_refused": "regista",
+    "regista.closed_lineage_registry": "regista",
+    "regista.first_write_admission": "regista",
+    "cairn.runtime_model_observed": "cairn",
+    "cairn.unavailable_model_named": "cairn",
+    "cairn.observation_failure_nonblocking": "cairn",
+    "agent_notes.session_identity_resolvable": "agent-notes",
+}
+GENESIS_REQUIRED_CHECKS: frozenset[str] = frozenset(GENESIS_REQUIRED_CHECK_OWNERS)
 
 
 def _default_runner(command: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
@@ -179,7 +195,11 @@ def _parse_probe_result(
             (),
             _status_detail(ProbeStatus.MALFORMED),
         )
-    if not isinstance(body, dict) or not isinstance(body.get("ok"), bool):
+    if (
+        not isinstance(body, dict)
+        or body.get("component") != spec.component
+        or not isinstance(body.get("ok"), bool)
+    ):
         return ProbeResult(
             spec.component,
             ProbeStatus.MALFORMED,
@@ -196,7 +216,9 @@ def _parse_probe_result(
         )
     checks = tuple(raw_checks)
     check_ids = {
-        check.get("id") for check in checks if isinstance(check.get("id"), str)
+        check.get("id")
+        for check in checks
+        if isinstance(check.get("id"), str) and bool(check["id"].strip())
     }
     if len(check_ids) != len(checks):
         return ProbeResult(
@@ -212,6 +234,34 @@ def _parse_probe_result(
             ProbeStatus.MALFORMED,
             checks,
             f"probe omitted required check IDs: {', '.join(missing)}",
+        )
+    component_prefix = spec.component.replace("-", "_") + "."
+    foreign = sorted(
+        check_id for check_id in check_ids if not check_id.startswith(component_prefix)
+    )
+    if foreign:
+        return ProbeResult(
+            spec.component,
+            ProbeStatus.MALFORMED,
+            checks,
+            f"probe emitted checks owned by another component: {', '.join(foreign)}",
+        )
+    required_statuses = {
+        check_id: "measured" if check_id == "regista.store_invariant_measurements" else "pass"
+        for check_id in spec.required_checks
+    }
+    by_id = {str(check["id"]): check for check in checks}
+    wrong_status = sorted(
+        check_id
+        for check_id, expected in required_statuses.items()
+        if by_id[check_id].get("status") != expected
+    )
+    if body["ok"] and wrong_status:
+        return ProbeResult(
+            spec.component,
+            ProbeStatus.MALFORMED,
+            checks,
+            f"probe required checks used the wrong success status: {', '.join(wrong_status)}",
         )
     failed_ids = [
         str(check["id"])
@@ -249,7 +299,7 @@ def run_invariant_probes(
             continue
         try:
             completed = runner(spec.command)
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.SubprocessError, UnicodeError):
             results.append(
                 ProbeResult(
                     spec.component,
@@ -266,42 +316,100 @@ def run_invariant_probes(
     )
 
 
-def _checks_by_id(report: InvariantProbeReport) -> dict[str, dict[str, Any]]:
+def _checks_by_component(
+    report: InvariantProbeReport,
+) -> dict[str, dict[str, dict[str, Any]]]:
     return {
-        check["id"]: check
+        probe.component: {
+            check["id"]: check
+            for check in probe.checks
+            if isinstance(check.get("id"), str)
+        }
         for probe in report.probes
-        for check in probe.checks
-        if isinstance(check.get("id"), str)
     }
 
 
-def _measurement_findings(check: Mapping[str, Any] | None) -> list[GateFinding]:
+def _measurement_findings(
+    check: Mapping[str, Any] | None,
+    *,
+    expected_store_fingerprint: str | None,
+    expected_project: str | None,
+) -> tuple[list[GateFinding], str | None]:
     if check is None:
-        return [
+        return ([
             GateFinding(
                 "regista.store_invariant_measurements",
                 ProbeStatus.FAIL,
                 "store invariant measurements are absent",
             )
-        ]
+        ], None)
     if check.get("status") != "measured" or check.get("errors"):
-        return [
+        return ([
             GateFinding(
                 "regista.store_invariant_measurements",
                 ProbeStatus.FAIL,
                 "one or more project measurements failed",
             )
-        ]
+        ], None)
+    binding_findings: list[GateFinding] = []
+    reported_store = check.get("store_fingerprint")
+    store_bound = (
+        expected_store_fingerprint is not None
+        and isinstance(reported_store, str)
+        and reported_store == expected_store_fingerprint
+    )
+    binding_findings.append(
+        GateFinding(
+            "regista.target_store_bound",
+            ProbeStatus.PASS if store_bound else ProbeStatus.FAIL,
+            "store fingerprint matches configured REGISTA_DSN"
+            if store_bound
+            else "store fingerprint is absent, unresolvable, or does not match REGISTA_DSN",
+        )
+    )
     projects = check.get("projects")
     if not isinstance(projects, list) or not projects:
-        return [
-            GateFinding(
-                "regista.store_invariant_measurements",
-                ProbeStatus.FAIL,
-                "no project measurements were returned",
-            )
-        ]
-    findings: list[GateFinding] = []
+        return (
+            [
+                *binding_findings,
+                GateFinding(
+                    "regista.store_invariant_measurements",
+                    ProbeStatus.FAIL,
+                    "no project measurements were returned",
+                ),
+            ],
+            None,
+        )
+    matching_projects = [
+        project
+        for project in projects
+        if isinstance(project, dict) and project.get("project") == expected_project
+    ]
+    project_bound = expected_project is not None and len(matching_projects) == 1
+    binding_findings.append(
+        GateFinding(
+            "regista.target_project_bound",
+            ProbeStatus.PASS if project_bound else ProbeStatus.FAIL,
+            "project measurement matches configured REGISTA_PROJECT"
+            if project_bound
+            else "configured REGISTA_PROJECT is absent or duplicated in measurements",
+        )
+    )
+    if not project_bound:
+        return binding_findings, None
+    project = matching_projects[0]
+    snapshot = project.get("snapshot_id")
+    snapshot_bound = isinstance(snapshot, str) and bool(snapshot.strip())
+    binding_findings.append(
+        GateFinding(
+            "regista.observation_snapshot_bound",
+            ProbeStatus.PASS if snapshot_bound else ProbeStatus.FAIL,
+            "measurement carries a non-empty observation snapshot"
+            if snapshot_bound
+            else "project measurement does not identify its observation snapshot",
+        )
+    )
+    findings: list[GateFinding] = binding_findings
 
     def exact_nonnegative_int(value: object) -> bool:
         return type(value) is int and value >= 0
@@ -311,6 +419,14 @@ def _measurement_findings(check: Mapping[str, Any] | None) -> list[GateFinding]:
             "store_empty",
             lambda row: type(row.get("event_count")) is int and row["event_count"] == 0,
             "event_count must be the integer zero",
+        ),
+        (
+            "lineage_population_empty",
+            lambda row: exact_nonnegative_int(row.get("declared_lineage_event_count"))
+            and row["declared_lineage_event_count"] == 0
+            and row.get("lineage_coverage") == {"numerator": 0, "denominator": 0}
+            and row.get("distinct_lineage_tokens") == [],
+            "lineage measurements must describe an empty pre-genesis population",
         ),
         (
             "lineage_tokens_resolvable",
@@ -340,37 +456,44 @@ def _measurement_findings(check: Mapping[str, Any] | None) -> list[GateFinding]:
             and row["undeclared_agent_author_event_count"] == 0,
             "undeclared agent authors exist",
         ),
+        (
+            "model_observation_population_empty",
+            lambda row: row.get("model_observation_status_counts") == {},
+            "model observation measurements must be empty before genesis",
+        ),
     )
-    for project in projects:
-        if not isinstance(project, dict) or not isinstance(project.get("project"), str):
-            findings.append(
-                GateFinding(
-                    "regista.store_invariant_measurements",
-                    ProbeStatus.FAIL,
-                    "project measurement is malformed",
-                )
+    for suffix, predicate, failure in predicates:
+        passed = predicate(project)
+        findings.append(
+            GateFinding(
+                f"regista.{suffix}:{project['project']}",
+                ProbeStatus.PASS if passed else ProbeStatus.FAIL,
+                "pass condition satisfied" if passed else failure,
             )
-            continue
-        for suffix, predicate, failure in predicates:
-            passed = predicate(project)
-            findings.append(
-                GateFinding(
-                    f"regista.{suffix}:{project['project']}",
-                    ProbeStatus.PASS if passed else ProbeStatus.FAIL,
-                    "pass condition satisfied" if passed else failure,
-                )
-            )
-    return findings
+        )
+    return findings, snapshot if snapshot_bound else None
 
 
-def evaluate_genesis_gate(probes: InvariantProbeReport) -> GenesisGateReport:
-    checks = _checks_by_id(probes)
-    findings = _measurement_findings(checks.get("regista.store_invariant_measurements"))
+def evaluate_genesis_gate(
+    probes: InvariantProbeReport,
+    *,
+    expected_store_fingerprint: str | None = None,
+    expected_project: str | None = None,
+) -> GenesisGateReport:
+    checks = _checks_by_component(probes)
+    regista_checks = checks.get("regista", {})
+    measurement_check = regista_checks.get("regista.store_invariant_measurements")
+    findings, snapshot = _measurement_findings(
+        measurement_check,
+        expected_store_fingerprint=expected_store_fingerprint,
+        expected_project=expected_project,
+    )
     for check_id in sorted(GENESIS_REQUIRED_CHECKS):
-        check = checks.get(check_id)
+        owner = GENESIS_REQUIRED_CHECK_OWNERS[check_id]
+        check = checks.get(owner, {}).get(check_id)
         passed = check is not None and check.get("status") == "pass"
         if check is None:
-            detail = "required behavioral probe is absent"
+            detail = f"required behavioral probe is absent from {owner}"
         elif passed:
             detail = "behavioral probe passed"
         else:
@@ -383,7 +506,20 @@ def evaluate_genesis_gate(probes: InvariantProbeReport) -> GenesisGateReport:
             )
         )
     ok = probes.ok and all(finding.status is ProbeStatus.PASS for finding in findings)
-    return GenesisGateReport(ok=ok, findings=tuple(findings), probes=probes)
+    return GenesisGateReport(
+        ok=ok,
+        findings=tuple(findings),
+        probes=probes,
+        target_store_fingerprint=expected_store_fingerprint,
+        reported_store_fingerprint=(
+            measurement_check.get("store_fingerprint")
+            if isinstance(measurement_check, dict)
+            and isinstance(measurement_check.get("store_fingerprint"), str)
+            else None
+        ),
+        target_project=expected_project,
+        observation_snapshot=snapshot,
+    )
 
 
 def format_invariant_probes(report: InvariantProbeReport) -> str:
@@ -395,7 +531,14 @@ def format_invariant_probes(report: InvariantProbeReport) -> str:
 
 def format_genesis_gate(report: GenesisGateReport) -> str:
     state = "PASS" if report.ok else "BLOCKED"
-    lines = [f"Genesis gate: {state}"]
+    lines = [
+        f"Genesis gate: {state}",
+        "  Binding: "
+        f"project={report.target_project or 'unconfigured'}, "
+        f"expected_store={report.target_store_fingerprint or 'unresolved'}, "
+        f"reported_store={report.reported_store_fingerprint or 'absent'}, "
+        f"snapshot={report.observation_snapshot or 'absent'}",
+    ]
     for finding in report.findings:
         lines.append(f"  [{finding.status.value.upper()}] {finding.check_id}: {finding.detail}")
     return "\n".join(lines)

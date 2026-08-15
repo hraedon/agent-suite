@@ -5,7 +5,7 @@ After=network-online.target postgresql.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/agent-suite invariant-probes --json
+ExecStart=/usr/local/bin/agent-suite invariant-probes --json --exit-code
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-/etc/agent-suite/suite.env
 User=root
