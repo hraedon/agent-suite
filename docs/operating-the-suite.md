@@ -187,6 +187,22 @@ variable names, not their values.
 `--dry-run` modes. If either required variable is absent, or the verification
 DSN resolves to the same PostgreSQL database as `REGISTA_DSN`, the affected
 schedules are reported `failed` and no schedule files/tasks are installed.
+The dry-run preflight is deliberately limited to local configuration and
+executable-path checks: it renders the artifacts but does not invoke
+`systemctl`, Task Scheduler, or any scheduled component command. Use
+`agent-suite lock --check` and `agent-suite doctor` to verify the installed
+version set and runtime dependencies before relying on a newly installed timer.
+
+When the invariant-probe schedule is included, installation also performs a
+parser-only capability preflight for both component commands:
+`regista invariants probe --help` and `cairn invariants probe --help`. The
+preflight runs before writing any schedule artifact, accepts only help output
+that names the exact command, and fails closed on a missing verb, timeout,
+malformed help, or another non-zero parser error. It never passes `--json`, a
+DSN, a project, or a key, never invokes the live probe callback, and does not
+copy child output (which could contain diagnostics or secret-bearing config)
+into the report. The same check runs for `--dry-run`, so a preview cannot claim
+that a timer will work when an installed component predates the required CLI.
 
 The schedules are:
 
@@ -196,7 +212,7 @@ The schedules are:
 | `agent-suite-restore-verify` | Weekly | `agent-suite restore --dir-env AGENT_SUITE_BACKUP_DIR --dsn-env AGENT_SUITE_VERIFY_RESTORE_DSN` | Restore the latest dump into scratch, then run `verify-restore` |
 | `agent-suite-doctor-alert` | Hourly | `agent-suite alert-check` | Periodic doctor + alert routing |
 | `agent-suite-chain-integrity` | Weekly | `cairn integrity` | Full chain replay; records the verdict doctor reports (cairn WI-030) |
-| `agent-suite-invariant-probes` | Every 5 minutes | `agent-suite invariant-probes --json` | Run component-owned lineage, model, identity, scheme and authorship measurements |
+| `agent-suite-invariant-probes` | Every 5 minutes | `agent-suite invariant-probes --json --exit-code` | Run component-owned lineage, model, identity, scheme and authorship measurements |
 
 `invariant-probes` and `genesis-gate` are deliberately separate. The scheduled
 command runs measurements continuously and fails only when a component probe is
@@ -209,9 +225,22 @@ in the gate, not scheduled subprocesses that can only fail. Each required check 
 `agent_suite.genesis_gate.GENESIS_REQUIRED_CHECKS`. Removing or weakening a
 check is a policy change, not a way to make a permanently red gate green.
 The umbrella validates component names, required check IDs, result shape and
-exit-code/body agreement, but component CLIs remain the trust boundary for the
-measurements they own; agent-suite does not independently reproduce their SQL
+the versioned child-report contract (component, `probe_version: 1`, namespaced
+check IDs, and exit-code/body agreement), but component CLIs remain the trust
+boundary for the measurements they own; agent-suite does not independently
+reproduce their SQL
 or harness observation.
+
+Both commands return the report with exit 0 by default when the read-only check
+ran successfully, even when the subject is blocked. Pass `--exit-code` when a
+deployment gate or scheduler must turn a blocked report into exit 1; the
+scheduled invariant-probe command includes that flag.
+
+For the first-write ceremony, use:
+
+```bash
+agent-suite genesis-gate --json --exit-code
+```
 
 The weekly restore is scheduled for 04:00 (after the daily 00:00/02:00 backup
 window on Linux/Windows respectively), so it does not race the dump that

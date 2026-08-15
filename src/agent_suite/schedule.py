@@ -79,6 +79,7 @@ from agent_suite.config import (
     same_postgres_database,
     system_suite_env_path,
 )
+from agent_suite.genesis_gate import PROBE_SPECS, ProbeSpec
 
 # ---------------------------------------------------------------------------
 # Injectable interfaces
@@ -104,6 +105,45 @@ def _default_runner(
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd, capture_output=True, text=True, timeout=timeout, check=False
+    )
+
+
+_CAPABILITY_ENV_PREFIXES = ("REGISTA_", "CAIRN_", "AGENT_NOTES_")
+_CAPABILITY_ENV_NAMES = frozenset(
+    {
+        "AGENT_SUITE_CONFIG",
+        "DATABASE_URL",
+        "PGDATABASE",
+        "PGHOST",
+        "PGPASSWORD",
+        "PGPORT",
+        "PGSERVICE",
+        "PGUSER",
+    }
+)
+
+
+def _capability_environment() -> dict[str, str]:
+    """Return an environment that cannot direct a help parser to a store."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name not in _CAPABILITY_ENV_NAMES
+        and not name.startswith(_CAPABILITY_ENV_PREFIXES)
+    }
+
+
+def _default_capability_runner(
+    cmd: tuple[str, ...], *, timeout: float = _DEFAULT_RUNNER_TIMEOUT_SECONDS
+) -> subprocess.CompletedProcess[str]:
+    """Run parser help with component/store configuration removed."""
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+        env=_capability_environment(),
     )
 
 
@@ -167,6 +207,29 @@ class InstallStatus(Enum):
     FAILED = "failed"
 
 
+class CapabilityStatus(Enum):
+    """The result of a parser-only component capability preflight."""
+
+    SUPPORTED = "supported"
+    MISSING = "missing"
+    TIMEOUT = "timeout"
+    MALFORMED = "malformed"
+    ERROR = "error"
+
+
+@dataclass(frozen=True)
+class CapabilityResult:
+    """One component's parser capability result.
+
+    The detail is deliberately a fixed, secret-free summary.  Help output and
+    component diagnostics are never copied into a schedule report.
+    """
+
+    component: str
+    status: CapabilityStatus
+    detail: str
+
+
 class ContextScope(Enum):
     """The closed set of invoking-context scopes (WI-038 box vs actor).
 
@@ -206,6 +269,7 @@ class ScheduleSpec:
     required_env: tuple[str, ...] = ()
     dedicated_dsn_env: str | None = None
     randomized_delay_seconds: int = 300
+    windows_start_immediately: bool = False
 
 
 SCHEDULES: tuple[ScheduleSpec, ...] = (
@@ -271,10 +335,11 @@ SCHEDULES: tuple[ScheduleSpec, ...] = (
         name="agent-suite-invariant-probes",
         description="Recurring evidentiary invariant measurements",
         on_calendar="*:0/5",
-        command="agent-suite invariant-probes --json",
+        command="agent-suite invariant-probes --json --exit-code",
         windows_trigger="HOURLY",
         windows_repetition_minutes=5,
         randomized_delay_seconds=30,
+        windows_start_immediately=True,
     ),
 )
 
@@ -782,6 +847,178 @@ def resolve_command(
     return None
 
 
+def _capability_status_detail(status: CapabilityStatus, component: str) -> str:
+    """Return a fixed, secret-free explanation for a capability result."""
+    match status:
+        case CapabilityStatus.SUPPORTED:
+            return f"{component} exposes invariants probe"
+        case CapabilityStatus.MISSING:
+            return f"{component} does not expose invariants probe"
+        case CapabilityStatus.TIMEOUT:
+            return f"{component} invariants probe capability preflight timed out"
+        case CapabilityStatus.MALFORMED:
+            return f"{component} invariants probe capability help was malformed"
+        case CapabilityStatus.ERROR:
+            return f"{component} invariants probe capability preflight failed"
+        case other:
+            assert_never(other)
+
+
+def _probe_help_argv(spec: ProbeSpec) -> tuple[str, ...] | None:
+    """Replace a JSON probe's output flag with parser-only ``--help``.
+
+    ``PROBE_SPECS`` is the shared declaration used by the actual invariant
+    runner.  Keeping the capability command derived from it prevents the
+    scheduler from silently probing a different verb.  The help flag is the
+    final argument so argparse/Click exits before the component callback can
+    resolve a DSN or touch a store.
+    """
+    if not spec.command or spec.command[-1] != "--json":
+        return None
+    return (*spec.command[:-1], "--help")
+
+
+def _decode_capability_output(value: object) -> str | None:
+    """Decode captured help output without ever returning undecodable bytes."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    return None
+
+
+def _help_exposes_invariant_probe(stdout: object, stderr: object) -> bool | None:
+    """Return whether parser help names the exact required command.
+
+    ``None`` means one of the streams was not valid text and is therefore a
+    malformed capability result.  Both streams are considered because the
+    supported parser implementations in the estate do not promise the same
+    help stream.
+    """
+    out = _decode_capability_output(stdout)
+    err = _decode_capability_output(stderr)
+    if out is None or err is None:
+        return None
+    normalized = " ".join(f"{out}\n{err}".split()).lower()
+    return (
+        re.search(r"\busage:\s+.*\binvariants\s+probe(?:\s|\[)", normalized)
+        is not None
+    )
+
+
+def _command_rejected_by_parser(stdout: object, stderr: object) -> bool:
+    """Recognize a parser's normal unknown-command response without logging it."""
+    out = _decode_capability_output(stdout)
+    err = _decode_capability_output(stderr)
+    if out is None or err is None:
+        return False
+    normalized = f"{out}\n{err}".lower()
+    return (
+        "invalid choice" in normalized
+        or "no such command" in normalized
+        or "unknown command" in normalized
+        or "unrecognized arguments" in normalized
+    ) and "invariant" in normalized
+
+
+def preflight_invariant_probe_capabilities(
+    *,
+    which: Which = _default_which,
+    search_dirs: tuple[Path, ...] | None = None,
+    runner: Runner = _default_capability_runner,
+) -> tuple[CapabilityResult, ...]:
+    """Check the component parsers without running an invariant probe.
+
+    This function deliberately executes only ``<component> invariants probe
+    --help``.  It passes no JSON flag, DSN, project, key, or store argument and
+    discards all child output after checking its shape.  A component that exits
+    before producing recognizable help is not treated as capable.
+    """
+    results: list[CapabilityResult] = []
+    for spec in PROBE_SPECS:
+        argv = _probe_help_argv(spec)
+        if argv is None:
+            results.append(
+                CapabilityResult(
+                    spec.component,
+                    CapabilityStatus.MALFORMED,
+                    _capability_status_detail(CapabilityStatus.MALFORMED, spec.component),
+                )
+            )
+            continue
+
+        resolved = resolve_command(
+            shlex.join(argv),
+            which=which,
+            search_dirs=search_dirs,
+        )
+        if resolved is None:
+            results.append(
+                CapabilityResult(
+                    spec.component,
+                    CapabilityStatus.MISSING,
+                    _capability_status_detail(CapabilityStatus.MISSING, spec.component),
+                )
+            )
+            continue
+
+        command = (resolved.exec_path, *shlex.split(resolved.arguments))
+        try:
+            completed = runner(command)
+        except subprocess.TimeoutExpired:
+            status = CapabilityStatus.TIMEOUT
+            results.append(
+                CapabilityResult(
+                    spec.component, status, _capability_status_detail(status, spec.component)
+                )
+            )
+            continue
+        except UnicodeDecodeError:
+            status = CapabilityStatus.MALFORMED
+            results.append(
+                CapabilityResult(
+                    spec.component, status, _capability_status_detail(status, spec.component)
+                )
+            )
+            continue
+        except OSError:
+            status = CapabilityStatus.ERROR
+            results.append(
+                CapabilityResult(
+                    spec.component, status, _capability_status_detail(status, spec.component)
+                )
+            )
+            continue
+
+        help_state = _help_exposes_invariant_probe(completed.stdout, completed.stderr)
+        if completed.returncode == 0 and help_state is True:
+            status = CapabilityStatus.SUPPORTED
+        elif completed.returncode != 0 and _command_rejected_by_parser(
+            completed.stdout, completed.stderr
+        ):
+            status = CapabilityStatus.MISSING
+        elif completed.returncode == 0:
+            status = CapabilityStatus.MALFORMED
+        else:
+            status = CapabilityStatus.ERROR
+        results.append(
+            CapabilityResult(
+                spec.component, status, _capability_status_detail(status, spec.component)
+            )
+        )
+    return tuple(results)
+
+
+def _systemd_exec_start(resolved: ResolvedCommand) -> str:
+    """Render a systemd command line with the executable safely quoted."""
+    return shlex.join([resolved.exec_path, *shlex.split(resolved.arguments)])
+
+
 def _systemd_service(spec: ScheduleSpec, *, resolved: ResolvedCommand | None = None) -> str:
     """Generate a systemd service unit file for a schedule.
 
@@ -797,7 +1034,7 @@ def _systemd_service(spec: ScheduleSpec, *, resolved: ResolvedCommand | None = N
     renders before ``EnvironmentFile`` so ``suite.env`` can still override it.
     """
     effective = resolved or reference_command(spec)
-    command = effective.exec_start
+    command = _systemd_exec_start(effective)
     return (
         f"[Unit]\n"
         f"Description={spec.description}\n"
@@ -907,8 +1144,8 @@ def _windows_time_parts(value: str) -> tuple[int, int]:
     return hour, minute
 
 
-def _parse_windows_start_boundary(value: object) -> tuple[int, int] | None:
-    """Read Task Scheduler's ISO StartBoundary without trusting its timezone."""
+def _parse_windows_start_boundary_datetime(value: object) -> datetime | None:
+    """Read Task Scheduler's StartBoundary without trusting its timezone."""
     if not isinstance(value, str):
         return None
     text = value.strip()
@@ -935,7 +1172,13 @@ def _parse_windows_start_boundary(value: object) -> tuple[int, int] | None:
             return None
     if parsed is None:
         return None
-    return parsed.hour, parsed.minute
+    return parsed
+
+
+def _parse_windows_start_boundary(value: object) -> tuple[int, int] | None:
+    """Read Task Scheduler's StartBoundary as local clock components."""
+    parsed = _parse_windows_start_boundary_datetime(value)
+    return (parsed.hour, parsed.minute) if parsed is not None else None
 
 
 def _windows_task_script(spec: ScheduleSpec, *, resolved: ResolvedCommand | None = None) -> str:
@@ -966,33 +1209,71 @@ def _windows_task_script(spec: ScheduleSpec, *, resolved: ResolvedCommand | None
         )
     )
     trigger_kind = _powershell_single_quote(spec.windows_trigger.upper())
-    expected_hour, expected_minute = _windows_time_parts(spec.windows_time)
+    expected_hour: int | None
+    expected_minute: int | None
+    if spec.windows_start_immediately:
+        expected_hour = expected_minute = None
+    else:
+        expected_hour, expected_minute = _windows_time_parts(spec.windows_time)
     trigger_expr = _windows_trigger_expr(
         spec.windows_trigger,
         repetition_minutes=spec.windows_repetition_minutes,
     )
     if spec.windows_repetition_minutes is not None:
-        trigger_setup = (
-            f"  $startAt = (Get-Date).Date.AddHours({expected_hour})\n"
-            f"  if ($startAt -le (Get-Date)) {{\n"
-            f"    $startAt = $startAt.AddDays(1)\n"
-            f"  }}\n"
-            f"  # Omit -RepetitionDuration: Task Scheduler represents indefinite\n"
-            f"  # repetition by leaving Repetition.Duration unset.\n"
-            f"  $trigger = New-ScheduledTaskTrigger {trigger_expr} "
-            f"-At $startAt{repetition_argument}\n"
-        )
+        if spec.windows_start_immediately:
+            trigger_setup = (
+                "  # Start shortly after registration so a newly installed probe does "
+                "not wait for the next wall-clock day.\n"
+                "  $startAt = (Get-Date).AddMinutes(1)\n"
+                "  # Omit -RepetitionDuration: Task Scheduler represents indefinite\n"
+                "  # repetition by leaving Repetition.Duration unset.\n"
+                f"  $trigger = New-ScheduledTaskTrigger {trigger_expr} "
+                f"-At $startAt{repetition_argument}\n"
+            )
+        else:
+            trigger_setup = (
+                f"  $startAt = (Get-Date).Date.AddHours({expected_hour})\n"
+                f"  if ($startAt -le (Get-Date)) {{\n"
+                f"    $startAt = $startAt.AddDays(1)\n"
+                f"  }}\n"
+                f"  # Omit -RepetitionDuration: Task Scheduler represents indefinite\n"
+                f"  # repetition by leaving Repetition.Duration unset.\n"
+                f"  $trigger = New-ScheduledTaskTrigger {trigger_expr} "
+                f"-At $startAt{repetition_argument}\n"
+            )
     else:
-        trigger_setup = (
-            f"  $trigger = New-ScheduledTaskTrigger {trigger_expr} "
-            f"-At {spec.windows_time}{repetition_argument}\n"
-        )
+        if spec.windows_start_immediately:
+            trigger_setup = (
+                "  # Start shortly after registration so a newly installed task does "
+                "not wait for the next wall-clock day.\n"
+                "  $startAt = (Get-Date).AddMinutes(1)\n"
+                f"  $trigger = New-ScheduledTaskTrigger {trigger_expr} "
+                f"-At $startAt{repetition_argument}\n"
+            )
+        else:
+            trigger_setup = (
+                f"  $trigger = New-ScheduledTaskTrigger {trigger_expr} "
+                f"-At {spec.windows_time}{repetition_argument}\n"
+            )
     repetition_check = (
         f"  $repetitionVerified = $repetitionMinutes -eq "
         f"{spec.windows_repetition_minutes}\n"
         if spec.windows_repetition_minutes is not None
         else "  $repetitionVerified = $null -eq $repetitionMinutes\n"
     )
+    if spec.windows_start_immediately:
+        start_boundary_check = (
+            "    $now = [DateTimeOffset]::Now\n"
+            "    $startBoundaryVerified = ($startBoundary -ge $now.AddMinutes(-1)) -and "
+            "($startBoundary -le $now.AddMinutes(10))\n"
+        )
+    else:
+        assert expected_hour is not None and expected_minute is not None
+        start_boundary_check = (
+            f"    $startBoundaryVerified = ($startBoundary.Hour -eq {expected_hour}) -and "
+            f"($startBoundary.Minute -eq {expected_minute})\n"
+        )
+    fallback_start_boundary_check = start_boundary_check.replace("    ", "      ")
     return (
         f"# {spec.description}\n"
         f"# Generated by `agent-suite schedule install` — do not edit by hand.\n"
@@ -1019,13 +1300,11 @@ def _windows_task_script(spec: ScheduleSpec, *, resolved: ResolvedCommand | None
         f"  try {{\n"
         f"    $startBoundary = [DateTimeOffset]::Parse($startBoundaryText, "
         f"[System.Globalization.CultureInfo]::InvariantCulture)\n"
-        f"    $startBoundaryVerified = ($startBoundary.Hour -eq {expected_hour}) -and "
-        f"($startBoundary.Minute -eq {expected_minute})\n"
+        f"{start_boundary_check}"
         f"  }} catch {{\n"
         f"    try {{\n"
         f"      $startBoundary = [DateTimeOffset]::Parse($startBoundaryText)\n"
-        f"      $startBoundaryVerified = ($startBoundary.Hour -eq {expected_hour}) -and "
-        f"($startBoundary.Minute -eq {expected_minute})\n"
+        f"{fallback_start_boundary_check}"
         f"    }} catch {{\n"
         f"      $startBoundaryVerified = $false\n"
         f"    }}\n"
@@ -1184,6 +1463,8 @@ def _verify_windows_registration(
     spec: ScheduleSpec,
     resolved: ResolvedCommand,
     result: subprocess.CompletedProcess[str],
+    *,
+    registration_started_at: datetime | None = None,
 ) -> tuple[list[str], str | None]:
     """Validate the receipt emitted after a Windows task was registered.
 
@@ -1230,13 +1511,31 @@ def _verify_windows_registration(
                 f"expected {expected!r}, got {actual!r}"
             )
 
-    expected_time = _windows_time_parts(spec.windows_time)
-    actual_time = _parse_windows_start_boundary(receipt.get("trigger_time"))
-    if actual_time != expected_time:
-        return [], (
-            "registered task verification mismatch for trigger_time: "
-            f"expected {expected_time!r}, got {actual_time!r}"
-        )
+    if spec.windows_start_immediately:
+        actual_boundary = _parse_windows_start_boundary_datetime(receipt.get("trigger_time"))
+        if actual_boundary is None:
+            return [], (
+                "registered task verification mismatch for trigger_time: "
+                "start boundary is not a parseable timestamp"
+            )
+        started_at = registration_started_at or datetime.now().astimezone()
+        if actual_boundary.tzinfo is None:
+            actual_boundary = actual_boundary.replace(tzinfo=started_at.tzinfo)
+        delta_seconds = (actual_boundary - started_at).total_seconds()
+        if delta_seconds < -60 or delta_seconds > 600:
+            return [], (
+                "registered task verification mismatch for trigger_time: "
+                f"expected a start within ten minutes of registration, got "
+                f"{actual_boundary.isoformat()}"
+            )
+    else:
+        expected_time = _windows_time_parts(spec.windows_time)
+        actual_time = _parse_windows_start_boundary(receipt.get("trigger_time"))
+        if actual_time != expected_time:
+            return [], (
+                "registered task verification mismatch for trigger_time: "
+                f"expected {expected_time!r}, got {actual_time!r}"
+            )
     if spec.windows_repetition_minutes is not None:
         actual_repetition = receipt.get("repetition_minutes")
         if actual_repetition != spec.windows_repetition_minutes:
@@ -1365,8 +1664,8 @@ def _verify_installed_unit(
 
 
 _UNRESOLVED_HINT = (
-    "install the component CLIs on a system PATH (docs/install-linux.md §2) or "
-    "pass --bin-dir; systemd will not search the invoking user's PATH"
+    "install the component CLIs on a system-scoped PATH (see the platform install guide) or "
+    "pass --bin-dir; scheduled tasks must not rely on the invoking user's PATH"
 )
 
 
@@ -1534,25 +1833,86 @@ def install_schedules(
         ]
         return ScheduleReport(results=preflight_results, os_target=target)
 
-    results: list[ScheduleResult] = []
-    for spec in schedules:
-        resolved = resolve_command(spec.command, which=which, search_dirs=search_dirs)
+    # Resolve every scheduled command before any artifact is written.  This is
+    # also the boundary before the component capability check below: a broken
+    # suite CLI is reported as such, rather than being obscured by a secondary
+    # component-parser failure.
+    resolved_commands: list[ResolvedCommand | None] = [
+        resolve_command(spec.command, which=which, search_dirs=search_dirs)
+        for spec in schedules
+    ]
+    unresolved = [
+        (spec, resolved)
+        for spec, resolved in zip(schedules, resolved_commands, strict=True)
+        if resolved is None
+    ]
+    if unresolved:
+        first_failed_spec, _ = unresolved[0]
+        failure_mode = (
+            "would fail 203/EXEC on systemd"
+            if target is OSTarget.SYSTEMD
+            else "may fail when the task fires"
+        )
+        first_failure = (
+            f"cannot resolve {shlex.split(first_failed_spec.command)[0]!r} to an absolute "
+            f"path — refusing to register a schedule that {failure_mode}. "
+            f"{_UNRESOLVED_HINT}"
+        )
+        return ScheduleReport(
+            results=[
+                ScheduleResult(
+                    kind=spec.kind,
+                    status=InstallStatus.FAILED,
+                    detail=(
+                        first_failure
+                        if resolved is None
+                        else (
+                            "not attempted because schedule command resolution failed "
+                            f"for {first_failed_spec.name}: {first_failure}"
+                        )
+                    ),
+                )
+                for spec, resolved in zip(schedules, resolved_commands, strict=True)
+            ],
+            os_target=target,
+        )
 
-        if resolved is None:
-            if target is OSTarget.SYSTEMD:
-                results.append(
+    capability_runner = _default_capability_runner if runner is _default_runner else runner
+    if any(spec.kind is ScheduleKind.INVARIANT_PROBES for spec in schedules):
+        capabilities = preflight_invariant_probe_capabilities(
+            which=which,
+            search_dirs=search_dirs,
+            runner=capability_runner,
+        )
+        capability_failures = [
+            result for result in capabilities if result.status is not CapabilityStatus.SUPPORTED
+        ]
+        if capability_failures:
+            first_failure = capability_failures[0].detail
+            return ScheduleReport(
+                results=[
                     ScheduleResult(
                         kind=spec.kind,
                         status=InstallStatus.FAILED,
                         detail=(
-                            f"cannot resolve {shlex.split(spec.command)[0]!r} to an absolute "
-                            f"path — refusing to write a unit that would fail 203/EXEC. "
-                            f"{_UNRESOLVED_HINT}"
+                            first_failure
+                            if spec.kind is ScheduleKind.INVARIANT_PROBES
+                            else (
+                                "not attempted because invariant-probe capability "
+                                f"preflight failed: {first_failure}"
+                            )
                         ),
                     )
-                )
-                continue
-            resolved = reference_command(spec, os_target=target)
+                    for spec in schedules
+                ],
+                os_target=target,
+            )
+
+    results: list[ScheduleResult] = []
+    for spec, resolved in zip(schedules, resolved_commands, strict=True):
+        # The all-command preflight above returned on every ``None``; this
+        # assertion keeps the invariant explicit for strict type checking.
+        assert resolved is not None
 
         # WI-038: record HOW this install was invoked — the box (the machine the
         # scheduled unit runs in, system-scoped) vs the actor (the process that
@@ -1560,9 +1920,12 @@ def install_schedules(
         # operator run.
         ctx = invoking_context_for(resolved, probe=system_scope_probe)
 
-        # Pre-write gate: absolute, present, executable.
+        # Pre-write gate: absolute, present, executable.  Task Scheduler also
+        # needs a real executable path: unlike a shell it does not turn a
+        # missing absolute action into a useful lookup, and a successful task
+        # registration would otherwise only prove that the string was stored.
         reason = check_exec_start_runnable(resolved)
-        if reason is not None and target is OSTarget.SYSTEMD:
+        if reason is not None:
             results.append(
                 ScheduleResult(
                     kind=spec.kind,
@@ -1707,6 +2070,7 @@ def install_schedules(
                 "-File",
                 str(script_path),
             )
+            registration_started_at = datetime.now().astimezone()
             try:
                 registration = _run_powershell_task(runner, register_cmd)
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
@@ -1724,7 +2088,10 @@ def install_schedules(
                 continue
 
             post_checks, verify_failure = _verify_windows_registration(
-                spec, resolved, registration
+                spec,
+                resolved,
+                registration,
+                registration_started_at=registration_started_at,
             )
             verified.extend(post_checks)
             if verify_failure is not None:
@@ -1782,6 +2149,7 @@ def remove_schedules(
         )
 
     results: list[ScheduleResult] = []
+    removed_unit_files = False
     for spec in schedules:
         if dry_run:
             files = generate_schedule_files(spec, os_target=target, unit_dir=unit_dir)
@@ -1799,17 +2167,66 @@ def remove_schedules(
             disable_cmd: tuple[str, ...] = (
                 "systemctl", "disable", "--now", f"{spec.name}.timer",
             )
+            managed_paths = tuple(
+                unit_dir / f"{spec.name}{suffix}" for suffix in (".service", ".timer")
+            )
+            if not any(path.exists() for path in managed_paths):
+                results.append(
+                    ScheduleResult(
+                        kind=spec.kind,
+                        status=InstallStatus.REMOVED,
+                        detail="not installed",
+                    )
+                )
+                continue
             try:
-                runner(disable_cmd)
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                pass
+                disabled = runner(disable_cmd)
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+                results.append(
+                    ScheduleResult(
+                        kind=spec.kind,
+                        status=InstallStatus.FAILED,
+                        detail=f"could not disable scheduled unit: {exc}",
+                    )
+                )
+                continue
+            if disabled.returncode != 0:
+                detail = disabled.stderr.strip()[:200] or f"exit {disabled.returncode}"
+                results.append(
+                    ScheduleResult(
+                        kind=spec.kind,
+                        status=InstallStatus.FAILED,
+                        detail=f"systemctl disable failed: {detail}",
+                    )
+                )
+                continue
 
+            unlink_errors: list[str] = []
             for suffix in (".service", ".timer"):
                 path = unit_dir / f"{spec.name}{suffix}"
                 try:
+                    had_path = path.exists() or path.is_symlink()
                     path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    unlink_errors.append(f"{path}: {exc}")
+                else:
+                    # A partial unlink still changes systemd's view of the
+                    # unit directory.  Remember it before processing the
+                    # second file so daemon-reload is not skipped when the
+                    # second unlink fails.
+                    if had_path:
+                        removed_unit_files = True
+
+            if unlink_errors:
+                results.append(
+                    ScheduleResult(
+                        kind=spec.kind,
+                        status=InstallStatus.FAILED,
+                        detail="failed to remove scheduled unit files: "
+                        + "; ".join(unlink_errors),
+                    )
+                )
+                continue
 
             results.append(
                 ScheduleResult(
@@ -1908,11 +2325,23 @@ def remove_schedules(
         else:
             assert_never(target)
 
-    if target is OSTarget.SYSTEMD:
+    # ``daemon-reload`` is itself an OS-side operation.  In particular, do not
+    # run it for ``schedule remove --dry-run``: a dry run may render and report
+    # the planned paths, but must not touch the scheduler at all.
+    if target is OSTarget.SYSTEMD and not dry_run and removed_unit_files:
         try:
-            runner(("systemctl", "daemon-reload"))
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            pass
+            reloaded = runner(("systemctl", "daemon-reload"))
+            if reloaded.returncode != 0:
+                detail = reloaded.stderr.strip()[:200] or f"exit {reloaded.returncode}"
+                for result in results:
+                    if result.status is InstallStatus.REMOVED and result.detail == "removed":
+                        result.status = InstallStatus.FAILED
+                        result.detail = f"unit files removed but daemon-reload failed: {detail}"
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            for result in results:
+                if result.status is InstallStatus.REMOVED and result.detail == "removed":
+                    result.status = InstallStatus.FAILED
+                    result.detail = f"unit files removed but daemon-reload failed: {exc}"
 
     return ScheduleReport(results=results, os_target=target)
 

@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 from collections.abc import Mapping
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -23,6 +24,7 @@ from agent_suite.schedule import (
     SUITE_ENV_PATH,
     SYSTEM_BIN_DIRS,
     SYSTEM_PATH,
+    CapabilityStatus,
     ContextScope,
     InstallStatus,
     OSTarget,
@@ -31,6 +33,7 @@ from agent_suite.schedule import (
     ScheduleReport,
     ScheduleResult,
     ScopeContext,
+    _capability_environment,
     _systemd_service,
     _systemd_timer,
     _verify_windows_registration,
@@ -43,6 +46,7 @@ from agent_suite.schedule import (
     install_schedules,
     invoking_context_for,
     is_system_scoped_bin_dir,
+    preflight_invariant_probe_capabilities,
     reference_command,
     remove_schedules,
     resolve_command,
@@ -77,6 +81,9 @@ class StubRunner:
                 if isinstance(out, Exception):
                     raise out
                 return out
+        if cmd[-3:] == ("invariants", "probe", "--help"):
+            component = Path(cmd[0]).stem
+            return _completed(stdout=f"Usage: {component} invariants probe [OPTIONS]\n")
         return _completed(stdout="", returncode=0)
 
 
@@ -92,8 +99,9 @@ def _fake_bin_dir(tmp_path: Path, *, executable: bool = True) -> Path:
     """
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
-    for spec in SCHEDULES:
-        exe = bindir / _command_name(spec)
+    executable_names = {_command_name(spec) for spec in SCHEDULES} | {"regista"}
+    for name in executable_names:
+        exe = bindir / name
         if not exe.exists():
             exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             exe.chmod(0o755 if executable else 0o644)
@@ -549,6 +557,171 @@ def test_generated_files_use_suite_env_not_hardcoded_config() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _invariant_probe_spec():  # type: ignore[no-untyped-def]
+    return next(s for s in SCHEDULES if s.kind is ScheduleKind.INVARIANT_PROBES)
+
+
+def test_invariant_capability_preflight_accepts_parser_help(tmp_path: Path) -> None:
+    bindir = _fake_bin_dir(tmp_path)
+    runner = StubRunner()
+
+    results = preflight_invariant_probe_capabilities(
+        which=_no_which,
+        search_dirs=(bindir,),
+        runner=runner,
+    )
+
+    assert [result.status for result in results] == [
+        CapabilityStatus.SUPPORTED,
+        CapabilityStatus.SUPPORTED,
+    ]
+    assert runner.calls
+    assert all(command[-3:] == ("invariants", "probe", "--help") for command in runner.calls)
+    assert all("--json" not in command for command in runner.calls)
+
+
+def test_capability_help_environment_omits_component_store_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REGISTA_DSN", "postgresql://secret.example/db")
+    monkeypatch.setenv("CAIRN_CONTENT_KEY_REF", "vault:secret/data/content")
+    monkeypatch.setenv("AGENT_NOTES_DSN", "postgresql://secret.example/notes")
+
+    environment = _capability_environment()
+
+    assert "REGISTA_DSN" not in environment
+    assert "CAIRN_CONTENT_KEY_REF" not in environment
+    assert "AGENT_NOTES_DSN" not in environment
+
+
+def test_invariant_capability_preflight_reports_missing_component_cli(tmp_path: Path) -> None:
+    bindir = _fake_bin_dir(tmp_path)
+    (bindir / "regista").unlink()
+
+    results = preflight_invariant_probe_capabilities(
+        which=_no_which,
+        search_dirs=(bindir,),
+        runner=StubRunner(),
+    )
+
+    regista = next(result for result in results if result.component == "regista")
+    assert regista.status is CapabilityStatus.MISSING
+    assert "does not expose" in regista.detail
+
+
+def test_invariant_capability_preflight_reports_parser_missing_verb(tmp_path: Path) -> None:
+    bindir = _fake_bin_dir(tmp_path)
+    runner = StubRunner(
+        {
+            (str(bindir / "regista"), "invariants", "probe", "--help"): _completed(
+                returncode=2,
+                stderr=(
+                    "invalid choice: 'invariants' (choose from version, doctor)"
+                ),
+            )
+        }
+    )
+
+    results = preflight_invariant_probe_capabilities(
+        which=_no_which,
+        search_dirs=(bindir,),
+        runner=runner,
+    )
+
+    regista = next(result for result in results if result.component == "regista")
+    assert regista.status is CapabilityStatus.MISSING
+
+
+def test_invariant_capability_preflight_reports_timeout(tmp_path: Path) -> None:
+    bindir = _fake_bin_dir(tmp_path)
+    runner = StubRunner(
+        {
+            (str(bindir / "regista"), "invariants", "probe", "--help"): subprocess.TimeoutExpired(
+                "regista", 1
+            )
+        }
+    )
+
+    results = preflight_invariant_probe_capabilities(
+        which=_no_which,
+        search_dirs=(bindir,),
+        runner=runner,
+    )
+
+    regista = next(result for result in results if result.component == "regista")
+    assert regista.status is CapabilityStatus.TIMEOUT
+    assert "timed out" in regista.detail
+
+
+def test_invariant_capability_preflight_rejects_malformed_help(tmp_path: Path) -> None:
+    bindir = _fake_bin_dir(tmp_path)
+    runner = StubRunner(
+        {
+            (str(bindir / "regista"), "invariants", "probe", "--help"): _completed(
+                stdout="not parser help"
+            )
+        }
+    )
+
+    results = preflight_invariant_probe_capabilities(
+        which=_no_which,
+        search_dirs=(bindir,),
+        runner=runner,
+    )
+
+    regista = next(result for result in results if result.component == "regista")
+    assert regista.status is CapabilityStatus.MALFORMED
+    assert "malformed" in regista.detail
+
+
+def test_invariant_capability_preflight_rejects_error_without_child_output(
+    tmp_path: Path,
+) -> None:
+    bindir = _fake_bin_dir(tmp_path)
+    runner = StubRunner(
+        {
+            (str(bindir / "regista"), "invariants", "probe", "--help"): _completed(
+                returncode=1,
+                stderr="REGISTA_DSN=postgresql://secret.example/db",
+            )
+        }
+    )
+
+    results = preflight_invariant_probe_capabilities(
+        which=_no_which,
+        search_dirs=(bindir,),
+        runner=runner,
+    )
+
+    regista = next(result for result in results if result.component == "regista")
+    assert regista.status is CapabilityStatus.ERROR
+    assert "secret.example" not in regista.detail
+    assert "REGISTA_DSN" not in regista.detail
+
+
+def test_schedule_install_capability_failure_writes_nothing(tmp_path: Path) -> None:
+    bindir = _fake_bin_dir(tmp_path)
+    (bindir / "regista").unlink()
+    unit_dir = tmp_path / "systemd"
+    runner = StubRunner()
+
+    report = install_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=False,
+        runner=runner,
+        which=_no_which,
+        search_dirs=(bindir,),
+        schedules=(_invariant_probe_spec(),),
+        unit_dir=unit_dir,
+    )
+
+    assert report.results[0].status is InstallStatus.FAILED
+    assert "regista" in report.results[0].detail
+    assert not unit_dir.exists()
+    assert all(command[-3:] == ("invariants", "probe", "--help") for command in runner.calls)
+    assert not any(command[:1] == ("systemctl",) for command in runner.calls)
+
+
 def test_install_dry_run_prints_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bindir = _fake_bin_dir(tmp_path)
     _treat_as_system_scoped(monkeypatch, bindir)
@@ -675,6 +848,18 @@ def test_every_generated_execstart_is_an_absolute_path() -> None:
             )
 
 
+def test_systemd_execstart_quotes_paths_with_spaces() -> None:
+    resolved = ResolvedCommand("/opt/agent suite/bin/agent-suite", "invariant-probes")
+    unit = _systemd_service(SCHEDULES[0], resolved=resolved)
+    exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+
+    assert shlex.split(exec_line.removeprefix("ExecStart=")) == [
+        resolved.exec_path,
+        "invariant-probes",
+    ]
+    assert "'/opt/agent suite/bin/agent-suite'" in exec_line
+
+
 def test_shipped_reference_units_have_absolute_existing_prefix() -> None:
     """The units under deploy/systemd/ are absolute and use the documented prefix.
 
@@ -770,6 +955,25 @@ def test_install_refuses_to_write_a_unit_it_cannot_resolve(tmp_path: Path) -> No
     assert all(r.status is InstallStatus.FAILED for r in report.results)
     assert all("203/EXEC" in r.detail for r in report.results)
     assert list(unit_dir.iterdir()) == []
+
+
+def test_windows_install_refuses_an_unresolved_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Task Scheduler action must name a real executable, not a bare fallback."""
+    monkeypatch.chdir(tmp_path)
+    report = install_schedules(
+        os_target=OSTarget.WINDOWS_TASK,
+        dry_run=True,
+        runner=StubRunner(),
+        which=_no_which,
+        search_dirs=(tmp_path / "empty",),
+        schedules=(SCHEDULES[0],),
+    )
+    result = report.results[0]
+    assert result.status is InstallStatus.FAILED
+    assert "cannot resolve" in result.detail
 
 
 @pytest.mark.skipif(
@@ -1193,6 +1397,109 @@ def test_remove_is_idempotent(tmp_path: Path) -> None:
     assert all(r.status is InstallStatus.REMOVED for r in report.results)
 
 
+def test_remove_idempotent_does_not_fail_when_reload_is_unavailable(tmp_path: Path) -> None:
+    """A no-op removal does not need a systemd reload."""
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    runner = StubRunner(
+        {("systemctl", "daemon-reload"): _completed(returncode=1, stderr="denied")}
+    )
+
+    report = remove_schedules(
+        os_target=OSTarget.SYSTEMD,
+        runner=runner,
+        unit_dir=unit_dir,
+    )
+
+    assert all(r.status is InstallStatus.REMOVED for r in report.results)
+    assert not any(command[:2] == ("systemctl", "daemon-reload") for command in runner.calls)
+
+
+def test_remove_dry_run_does_not_touch_systemd_or_files(tmp_path: Path) -> None:
+    """A removal plan must not even reload systemd (H1)."""
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    spec = SCHEDULES[0]
+    service = unit_dir / f"{spec.name}.service"
+    timer = unit_dir / f"{spec.name}.timer"
+    service.write_text("unit", encoding="utf-8")
+    timer.write_text("timer", encoding="utf-8")
+    runner = StubRunner()
+
+    report = remove_schedules(
+        os_target=OSTarget.SYSTEMD,
+        dry_run=True,
+        runner=runner,
+        schedules=(spec,),
+        unit_dir=unit_dir,
+    )
+
+    assert report.results[0].status is InstallStatus.REMOVED
+    assert runner.calls == []
+    assert service.read_text(encoding="utf-8") == "unit"
+    assert timer.read_text(encoding="utf-8") == "timer"
+
+
+def test_remove_does_not_claim_success_when_systemd_disable_fails(tmp_path: Path) -> None:
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    spec = SCHEDULES[0]
+    service = unit_dir / f"{spec.name}.service"
+    timer = unit_dir / f"{spec.name}.timer"
+    service.write_text("unit", encoding="utf-8")
+    timer.write_text("timer", encoding="utf-8")
+    runner = StubRunner(
+        {
+            ("systemctl", "disable"): _completed(returncode=1, stderr="permission denied"),
+        }
+    )
+
+    report = remove_schedules(
+        os_target=OSTarget.SYSTEMD,
+        runner=runner,
+        schedules=(spec,),
+        unit_dir=unit_dir,
+    )
+
+    assert report.results[0].status is InstallStatus.FAILED
+    assert "permission denied" in report.results[0].detail
+    assert service.exists() and timer.exists()
+
+
+def test_remove_reloads_systemd_after_partial_unit_file_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed second unlink must not leave systemd with a stale first half."""
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    spec = SCHEDULES[0]
+    service = unit_dir / f"{spec.name}.service"
+    timer = unit_dir / f"{spec.name}.timer"
+    service.write_text("unit", encoding="utf-8")
+    timer.write_text("timer", encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def unlink(path: Path, *, missing_ok: bool = False) -> None:
+        if path == timer:
+            raise OSError("simulated partial removal")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    runner = StubRunner({("systemctl", "disable"): _completed()})
+
+    report = remove_schedules(
+        os_target=OSTarget.SYSTEMD,
+        runner=runner,
+        schedules=(spec,),
+        unit_dir=unit_dir,
+    )
+
+    assert report.results[0].status is InstallStatus.FAILED
+    assert not service.exists()
+    assert timer.exists()
+    assert any(command == ("systemctl", "daemon-reload") for command in runner.calls)
+
+
 def test_windows_remove_executes_and_verifies_unregistration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1422,12 +1729,62 @@ def test_chain_integrity_schedule_is_declared():
 
 def test_invariant_probe_schedule_is_declared() -> None:
     spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.INVARIANT_PROBES)
-    assert spec.command == "agent-suite invariant-probes --json"
+    assert spec.command == "agent-suite invariant-probes --json --exit-code"
     assert spec.on_calendar == "*:0/5"
     assert spec.windows_trigger == "HOURLY"
     assert spec.windows_repetition_minutes == 5
     assert spec.randomized_delay_seconds == 30
+    assert spec.windows_start_immediately is True
     assert spec.name == "agent-suite-invariant-probes"
+
+
+def test_invariant_probe_windows_task_starts_after_install() -> None:
+    """A five-minute probe must not wait until the next 02:00 wall-clock run."""
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.INVARIANT_PROBES)
+    script = _windows_task_script(spec)
+    assert "$startAt = (Get-Date).AddMinutes(1)" in script
+    assert ".Date.AddHours(2)" not in script
+    assert "$startBoundary -le $now.AddMinutes(10)" in script
+
+
+def test_windows_readback_accepts_immediate_invariant_probe_start() -> None:
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.INVARIANT_PROBES)
+    resolved = ResolvedCommand(
+        "C:/Python312/Scripts/agent-suite.exe", "invariant-probes --json --exit-code"
+    )
+    started_at = datetime.now().astimezone()
+    receipt = {
+        "verified": True,
+        "task_name": spec.name,
+        "execute": resolved.exec_path,
+        "arguments": resolved.arguments,
+        "trigger": "HOURLY",
+        "trigger_type": "MSFT_TaskTimeTrigger",
+        "trigger_time": (started_at + timedelta(minutes=1)).isoformat(),
+        "trigger_time_verified": True,
+        "repetition_interval": "PT5M",
+        "repetition_minutes": 5,
+        "repetition_verified": True,
+        "repetition_duration": "",
+        "repetition_duration_minutes": None,
+        "repetition_duration_verified": True,
+        "action_verified": True,
+        "trigger_verified": True,
+    }
+
+    checks, failure = _verify_windows_registration(
+        spec,
+        resolved,
+        _completed(stdout=json.dumps(receipt)),
+        registration_started_at=started_at,
+    )
+
+    assert failure is None
+    assert checks == [
+        "windows_task_registered",
+        "windows_action_verified",
+        "windows_trigger_verified",
+    ]
 
 
 def test_windows_weekly_trigger_includes_days_of_week():
@@ -1805,8 +2162,9 @@ def _mock_windows(monkeypatch: pytest.MonkeyPatch, *, userprofile: str) -> None:
 
 def _fake_bins_in(bindir: Path) -> Path:
     bindir.mkdir(parents=True, exist_ok=True)
-    for spec in SCHEDULES:
-        exe = bindir / _command_name(spec)
+    executable_names = {_command_name(spec) for spec in SCHEDULES} | {"regista"}
+    for name in executable_names:
+        exe = bindir / name
         if not exe.exists():
             exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             exe.chmod(0o755)

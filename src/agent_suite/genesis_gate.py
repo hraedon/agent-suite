@@ -1,3 +1,9 @@
+"""Read-only component probes and the pre-genesis admission verdict.
+
+The component CLIs own the measurements.  This module only validates their
+versioned report shape and composes the measurements into a fail-closed gate.
+"""
+
 from __future__ import annotations
 
 import json
@@ -15,6 +21,11 @@ class ProbeStatus(StrEnum):
     MISSING = "missing"
     MALFORMED = "malformed"
     ERROR = "error"
+
+
+PROBE_REPORT_VERSION = 1
+GENESIS_GATE_REPORT_VERSION = 1
+_PROBE_CHECK_STATUSES = frozenset({"pass", "measured", "fail"})
 
 
 @dataclass(frozen=True)
@@ -52,7 +63,7 @@ class InvariantProbeReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "report_version": 1,
+            "report_version": PROBE_REPORT_VERSION,
             "kind": "invariant_probes",
             "ok": self.ok,
             "probes": [probe.to_dict() for probe in self.probes],
@@ -81,7 +92,7 @@ class GenesisGateReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "report_version": 1,
+            "report_version": GENESIS_GATE_REPORT_VERSION,
             "kind": "genesis_gate",
             "ok": self.ok,
             "epoch_may_open": self.ok,
@@ -166,12 +177,30 @@ def _status_detail(status: ProbeStatus) -> str:
             assert_never(unreachable)
 
 
+def _component_namespace(component: str) -> str:
+    """Return the check-ID namespace used by *component* reports."""
+    return component.replace("-", "_")
+
+
 def _parse_probe_result(
     spec: ProbeSpec,
     completed: subprocess.CompletedProcess[str],
 ) -> ProbeResult:
+    output = completed.stdout
+    if isinstance(output, bytes):
+        try:
+            output = output.decode("utf-8")
+        except UnicodeDecodeError:
+            return ProbeResult(
+                spec.component,
+                ProbeStatus.MALFORMED,
+                (),
+                "probe output was not valid UTF-8",
+            )
+    if not isinstance(output, str):
+        output = None
     try:
-        body = json.loads(completed.stdout)
+        body = json.loads(output)
     except (TypeError, json.JSONDecodeError):
         return ProbeResult(
             spec.component,
@@ -186,6 +215,23 @@ def _parse_probe_result(
             (),
             _status_detail(ProbeStatus.MALFORMED),
         )
+    if body.get("component") != spec.component:
+        return ProbeResult(
+            spec.component,
+            ProbeStatus.MALFORMED,
+            (),
+            f"probe component must be {spec.component!r}",
+        )
+    if (
+        type(body.get("probe_version")) is not int
+        or body.get("probe_version") != PROBE_REPORT_VERSION
+    ):
+        return ProbeResult(
+            spec.component,
+            ProbeStatus.MALFORMED,
+            (),
+            f"unsupported or missing probe_version (expected {PROBE_REPORT_VERSION})",
+        )
     raw_checks = body.get("checks")
     if not isinstance(raw_checks, list) or not all(isinstance(check, dict) for check in raw_checks):
         return ProbeResult(
@@ -195,9 +241,26 @@ def _parse_probe_result(
             _status_detail(ProbeStatus.MALFORMED),
         )
     checks = tuple(raw_checks)
-    check_ids = {
-        check.get("id") for check in checks if isinstance(check.get("id"), str)
-    }
+    namespace = f"{_component_namespace(spec.component)}."
+    check_ids: set[str] = set()
+    for check in checks:
+        check_id = check.get("id")
+        status = check.get("status")
+        if (
+            not isinstance(check_id, str)
+            or not check_id
+            or check_id != check_id.strip()
+            or not check_id.startswith(namespace)
+            or not isinstance(status, str)
+            or status not in _PROBE_CHECK_STATUSES
+        ):
+            return ProbeResult(
+                spec.component,
+                ProbeStatus.MALFORMED,
+                checks,
+                "probe checks must have unique namespaced IDs and known statuses",
+            )
+        check_ids.add(check_id)
     if len(check_ids) != len(checks):
         return ProbeResult(
             spec.component,
@@ -213,6 +276,13 @@ def _parse_probe_result(
             checks,
             f"probe omitted required check IDs: {', '.join(missing)}",
         )
+    if completed.returncode not in (0, 1):
+        return ProbeResult(
+            spec.component,
+            ProbeStatus.ERROR,
+            checks,
+            f"probe exited with unsupported status {completed.returncode}",
+        )
     failed_ids = [
         str(check["id"])
         for check in checks
@@ -221,11 +291,14 @@ def _parse_probe_result(
     checks_pass = not failed_ids
     process_agrees = (completed.returncode == 0) == body["ok"]
     status = ProbeStatus.PASS if body["ok"] and checks_pass and process_agrees else ProbeStatus.FAIL
-    detail = (
-        f"failed checks: {', '.join(failed_ids)}"
-        if status is ProbeStatus.FAIL and failed_ids
-        else _status_detail(status)
-    )
+    if status is ProbeStatus.FAIL and failed_ids:
+        detail = f"failed checks: {', '.join(failed_ids)}"
+    elif status is ProbeStatus.FAIL and not body["ok"]:
+        detail = "probe reported ok=false"
+    elif status is ProbeStatus.FAIL:
+        detail = "probe exit code disagreed with its ok field"
+    else:
+        detail = _status_detail(status)
     return ProbeResult(spec.component, status, checks, detail)
 
 
@@ -237,6 +310,37 @@ def run_invariant_probes(
 ) -> InvariantProbeReport:
     results: list[ProbeResult] = []
     for spec in specs:
+        if not isinstance(spec.component, str) or not spec.component.strip():
+            results.append(
+                ProbeResult(
+                    str(spec.component),
+                    ProbeStatus.MALFORMED,
+                    (),
+                    "probe specification must declare a non-empty component",
+                )
+            )
+            continue
+        namespace = f"{_component_namespace(spec.component)}."
+        if (
+            not spec.command
+            or not all(isinstance(part, str) and part for part in spec.command)
+            or not spec.required_checks
+            or any(
+                not isinstance(check_id, str)
+                or not check_id.startswith(namespace)
+                or check_id == namespace
+                for check_id in spec.required_checks
+            )
+        ):
+            results.append(
+                ProbeResult(
+                    spec.component,
+                    ProbeStatus.MALFORMED,
+                    (),
+                    "probe specification must declare a command and namespaced checks",
+                )
+            )
+            continue
         if not installed(spec.command[0]):
             results.append(
                 ProbeResult(
@@ -249,6 +353,16 @@ def run_invariant_probes(
             continue
         try:
             completed = runner(spec.command)
+        except UnicodeDecodeError:
+            results.append(
+                ProbeResult(
+                    spec.component,
+                    ProbeStatus.MALFORMED,
+                    (),
+                    "probe output was not valid UTF-8",
+                )
+            )
+            continue
         except (OSError, subprocess.TimeoutExpired):
             results.append(
                 ProbeResult(
@@ -271,8 +385,69 @@ def _checks_by_id(report: InvariantProbeReport) -> dict[str, dict[str, Any]]:
         check["id"]: check
         for probe in report.probes
         for check in probe.checks
-        if isinstance(check.get("id"), str)
+        if isinstance(check, dict) and isinstance(check.get("id"), str)
     }
+
+
+def _probe_contract_findings(report: InvariantProbeReport) -> list[GateFinding]:
+    """Reject forged, duplicated, or otherwise unscoped check identifiers.
+
+    Normal subprocess results are checked by :func:`_parse_probe_result`, but
+    the evaluator is also a public pure function.  Rechecking ownership here
+    prevents a caller from satisfying (for example) a ``regista.*`` gate with
+    a check copied into an unrelated component's result.
+    """
+    findings: list[GateFinding] = []
+    seen: dict[str, str] = {}
+    for probe in report.probes:
+        namespace = f"{_component_namespace(probe.component)}."
+        for check in probe.checks:
+            if not isinstance(check, dict):
+                findings.append(
+                    GateFinding(
+                        "probe.check_contract",
+                        ProbeStatus.FAIL,
+                        f"{probe.component} returned a non-object check",
+                    )
+                )
+                continue
+            check_id = check.get("id")
+            if (
+                not isinstance(check_id, str)
+                or not check_id
+                or check_id != check_id.strip()
+                or not check_id.startswith(namespace)
+                or check.get("status") not in _PROBE_CHECK_STATUSES
+            ):
+                findings.append(
+                    GateFinding(
+                        "probe.check_contract",
+                        ProbeStatus.FAIL,
+                        f"{probe.component} returned an invalid or foreign check ID",
+                    )
+                )
+                continue
+            if check.get("status") == "fail":
+                findings.append(
+                    GateFinding(
+                        "probe.check_status",
+                        ProbeStatus.FAIL,
+                        f"{probe.component} returned a failed check {check_id!r}",
+                    )
+                )
+            previous = seen.get(check_id)
+            if previous is not None:
+                findings.append(
+                    GateFinding(
+                        "probe.check_contract",
+                        ProbeStatus.FAIL,
+                        f"check ID {check_id!r} was returned by both {previous} and "
+                        f"{probe.component}",
+                    )
+                )
+            else:
+                seen[check_id] = probe.component
+    return findings
 
 
 def _measurement_findings(check: Mapping[str, Any] | None) -> list[GateFinding]:
@@ -284,7 +459,13 @@ def _measurement_findings(check: Mapping[str, Any] | None) -> list[GateFinding]:
                 "store invariant measurements are absent",
             )
         ]
-    if check.get("status") != "measured" or check.get("errors"):
+    errors = check.get("errors")
+    if (
+        check.get("status") != "measured"
+        or not isinstance(errors, list)
+        or not all(isinstance(error, dict) for error in errors)
+        or errors
+    ):
         return [
             GateFinding(
                 "regista.store_invariant_measurements",
@@ -302,6 +483,7 @@ def _measurement_findings(check: Mapping[str, Any] | None) -> list[GateFinding]:
             )
         ]
     findings: list[GateFinding] = []
+    project_names: set[str] = set()
 
     def exact_nonnegative_int(value: object) -> bool:
         return type(value) is int and value >= 0
@@ -311,6 +493,23 @@ def _measurement_findings(check: Mapping[str, Any] | None) -> list[GateFinding]:
             "store_empty",
             lambda row: type(row.get("event_count")) is int and row["event_count"] == 0,
             "event_count must be the integer zero",
+        ),
+        (
+            "lineage_counts_empty",
+            lambda row: type(row.get("declared_lineage_event_count")) is int
+            and row["declared_lineage_event_count"] == 0
+            and isinstance(row.get("lineage_coverage"), dict)
+            and type(row["lineage_coverage"].get("numerator")) is int
+            and type(row["lineage_coverage"].get("denominator")) is int
+            and row["lineage_coverage"]["numerator"] == 0
+            and row["lineage_coverage"]["denominator"] == 0,
+            "lineage coverage must be the exact empty-store shape",
+        ),
+        (
+            "lineage_tokens_empty",
+            lambda row: isinstance(row.get("distinct_lineage_tokens"), list)
+            and row["distinct_lineage_tokens"] == [],
+            "distinct lineage tokens must be empty",
         ),
         (
             "lineage_tokens_resolvable",
@@ -333,6 +532,12 @@ def _measurement_findings(check: Mapping[str, Any] | None) -> list[GateFinding]:
             "scheme_counts must be an empty object before genesis",
         ),
         (
+            "model_observations_empty",
+            lambda row: isinstance(row.get("model_observation_status_counts"), dict)
+            and row["model_observation_status_counts"] == {},
+            "model-observation statuses must be empty before genesis",
+        ),
+        (
             "authors_declared",
             lambda row: exact_nonnegative_int(
                 row.get("undeclared_agent_author_event_count")
@@ -342,7 +547,11 @@ def _measurement_findings(check: Mapping[str, Any] | None) -> list[GateFinding]:
         ),
     )
     for project in projects:
-        if not isinstance(project, dict) or not isinstance(project.get("project"), str):
+        if (
+            not isinstance(project, dict)
+            or not isinstance(project.get("project"), str)
+            or not project["project"].strip()
+        ):
             findings.append(
                 GateFinding(
                     "regista.store_invariant_measurements",
@@ -351,11 +560,22 @@ def _measurement_findings(check: Mapping[str, Any] | None) -> list[GateFinding]:
                 )
             )
             continue
+        project_name = project["project"]
+        if project_name in project_names:
+            findings.append(
+                GateFinding(
+                    "regista.store_invariant_measurements",
+                    ProbeStatus.FAIL,
+                    f"project measurement is duplicated: {project_name}",
+                )
+            )
+            continue
+        project_names.add(project_name)
         for suffix, predicate, failure in predicates:
             passed = predicate(project)
             findings.append(
                 GateFinding(
-                    f"regista.{suffix}:{project['project']}",
+                    f"regista.{suffix}:{project_name}",
                     ProbeStatus.PASS if passed else ProbeStatus.FAIL,
                     "pass condition satisfied" if passed else failure,
                 )
@@ -365,7 +585,8 @@ def _measurement_findings(check: Mapping[str, Any] | None) -> list[GateFinding]:
 
 def evaluate_genesis_gate(probes: InvariantProbeReport) -> GenesisGateReport:
     checks = _checks_by_id(probes)
-    findings = _measurement_findings(checks.get("regista.store_invariant_measurements"))
+    findings = _probe_contract_findings(probes)
+    findings.extend(_measurement_findings(checks.get("regista.store_invariant_measurements")))
     for check_id in sorted(GENESIS_REQUIRED_CHECKS):
         check = checks.get(check_id)
         passed = check is not None and check.get("status") == "pass"
@@ -382,7 +603,16 @@ def evaluate_genesis_gate(probes: InvariantProbeReport) -> GenesisGateReport:
                 detail,
             )
         )
-    ok = probes.ok and all(finding.status is ProbeStatus.PASS for finding in findings)
+    probe_health = bool(probes.probes) and probes.ok and all(probe.ok for probe in probes.probes)
+    if not probe_health:
+        findings.append(
+            GateFinding(
+                "probe.report",
+                ProbeStatus.FAIL,
+                "one or more component probes did not complete successfully",
+            )
+        )
+    ok = probe_health and all(finding.status is ProbeStatus.PASS for finding in findings)
     return GenesisGateReport(ok=ok, findings=tuple(findings), probes=probes)
 
 

@@ -45,12 +45,14 @@ def _passing_bodies() -> dict[str, dict[str, object]]:
     return {
         "regista": {
             "component": "regista",
+            "probe_version": 1,
             "ok": True,
             "checks": [
                 {
                     "id": "regista.store_invariant_measurements",
                     "status": "measured",
                     "projects": [_clean_measurement()],
+                    "errors": [],
                 },
                 {"id": "regista.load_bearing_fields_refused", "status": "pass"},
                 {"id": "regista.closed_lineage_registry", "status": "pass"},
@@ -59,6 +61,7 @@ def _passing_bodies() -> dict[str, dict[str, object]]:
         },
         "cairn": {
             "component": "cairn",
+            "probe_version": 1,
             "ok": True,
             "checks": [
                 {"id": "cairn.runtime_model_observed", "status": "pass"},
@@ -68,6 +71,7 @@ def _passing_bodies() -> dict[str, dict[str, object]]:
         },
         "agent-notes": {
             "component": "agent-notes",
+            "probe_version": 1,
             "ok": True,
             "checks": [
                 {"id": "agent_notes.session_identity_resolvable", "status": "pass"},
@@ -157,7 +161,7 @@ def test_missing_executable_is_explicit() -> None:
 
 
 def test_malformed_json_fails_closed() -> None:
-    spec = ProbeSpec("component", ("component", "probe"), frozenset({"check"}))
+    spec = ProbeSpec("component", ("component", "probe"), frozenset({"component.check"}))
     report = run_invariant_probes(
         specs=(spec,),
         installed=lambda _executable: True,
@@ -168,9 +172,50 @@ def test_malformed_json_fails_closed() -> None:
     assert report.probes[0].status is ProbeStatus.MALFORMED
 
 
+def test_undecodable_probe_output_is_a_deterministic_malformed_result() -> None:
+    spec = ProbeSpec("component", ("component", "probe"), frozenset({"component.check"}))
+
+    report = run_invariant_probes(
+        specs=(spec,),
+        installed=lambda _executable: True,
+        runner=lambda command: subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=b"\xff\xfe",
+            stderr="",
+        ),
+    )
+
+    assert report.ok is False
+    assert report.probes[0].status is ProbeStatus.MALFORMED
+    assert report.probes[0].detail == "probe output was not valid UTF-8"
+
+
+def test_runner_decode_error_does_not_leak_the_child_bytes() -> None:
+    spec = ProbeSpec("component", ("component", "probe"), frozenset({"component.check"}))
+
+    def runner(_command: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+        raise UnicodeDecodeError("utf-8", b"secret-ish bytes", 0, 1, "invalid start byte")
+
+    report = run_invariant_probes(
+        specs=(spec,),
+        installed=lambda _executable: True,
+        runner=runner,
+    )
+
+    assert report.probes[0].status is ProbeStatus.MALFORMED
+    assert "secret-ish" not in report.probes[0].detail
+    assert report.probes[0].detail == "probe output was not valid UTF-8"
+
+
 def test_exit_code_and_body_must_agree() -> None:
-    spec = ProbeSpec("component", ("component", "probe"), frozenset({"check"}))
-    body = {"ok": True, "checks": [{"id": "check", "status": "pass"}]}
+    spec = ProbeSpec("component", ("component", "probe"), frozenset({"component.check"}))
+    body = {
+        "component": "component",
+        "probe_version": 1,
+        "ok": True,
+        "checks": [{"id": "component.check", "status": "pass"}],
+    }
     report = run_invariant_probes(
         specs=(spec,),
         installed=lambda _executable: True,
@@ -188,13 +233,30 @@ def test_zero_declared_probes_cannot_pass() -> None:
     assert report.probes == ()
 
 
+@pytest.mark.parametrize(
+    "spec",
+    [
+        ProbeSpec("component", (), frozenset({"component.check"})),
+        ProbeSpec("component", ("component", "probe"), frozenset()),
+        ProbeSpec("component", ("component", "probe"), frozenset({"check"})),
+    ],
+)
+def test_invalid_probe_specs_cannot_green(spec: ProbeSpec) -> None:
+    report = run_invariant_probes(specs=(spec,))
+
+    assert report.ok is False
+    assert report.probes[0].status is ProbeStatus.MALFORMED
+
+
 def test_duplicate_check_ids_are_malformed() -> None:
-    spec = ProbeSpec("component", ("component", "probe"), frozenset({"check"}))
+    spec = ProbeSpec("component", ("component", "probe"), frozenset({"component.check"}))
     body = {
+        "component": "component",
+        "probe_version": 1,
         "ok": True,
         "checks": [
-            {"id": "check", "status": "pass"},
-            {"id": "check", "status": "pass"},
+            {"id": "component.check", "status": "pass"},
+            {"id": "component.check", "status": "pass"},
         ],
     }
 
@@ -205,3 +267,136 @@ def test_duplicate_check_ids_are_malformed() -> None:
     )
 
     assert report.probes[0].status is ProbeStatus.MALFORMED
+
+
+def test_boolean_probe_version_is_not_an_integer_version() -> None:
+    bodies = _passing_bodies()
+    bodies["regista"]["probe_version"] = True
+
+    report = _run_bodies(bodies)
+
+    regista = next(probe for probe in report.probes if probe.component == "regista")
+    assert regista.status is ProbeStatus.MALFORMED
+
+
+def test_gate_rejects_a_failed_extra_check_even_when_probe_status_is_forged() -> None:
+    passing = _run_bodies(_passing_bodies())
+    probe = passing.probes[0]
+    forged = type(probe)(
+        component=probe.component,
+        status=ProbeStatus.PASS,
+        checks=(*probe.checks, {"id": "regista.extra", "status": "fail"}),
+        detail="forged success",
+    )
+    report = type(passing)(ok=True, probes=(forged,))
+
+    gate = evaluate_genesis_gate(report)
+
+    assert gate.ok is False
+    assert any(item.check_id == "probe.check_status" for item in gate.findings)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda body: body.pop("component"),
+        lambda body: body.__setitem__("component", "cairn"),
+        lambda body: body.pop("probe_version"),
+        lambda body: body.__setitem__("probe_version", 2),
+        lambda body: body["checks"][0].__setitem__("id", "foreign.check"),
+        lambda body: body["checks"][0].__setitem__("id", ""),
+        lambda body: body["checks"][0].__setitem__("status", "unknown"),
+    ],
+)
+def test_child_report_contract_is_strict(
+    mutation,
+) -> None:  # type: ignore[no-untyped-def]
+    bodies = _passing_bodies()
+    mutation(bodies["regista"])
+    report = _run_bodies(bodies)
+
+    regista = next(probe for probe in report.probes if probe.component == "regista")
+    assert regista.status is ProbeStatus.MALFORMED
+    assert report.ok is False
+
+
+def test_measurement_errors_field_is_required() -> None:
+    bodies = _passing_bodies()
+    bodies["regista"]["checks"][0].pop("errors")  # type: ignore[index]
+
+    gate = evaluate_genesis_gate(_run_bodies(bodies))
+
+    assert gate.ok is False
+    finding = next(
+        item
+        for item in gate.findings
+        if item.check_id == "regista.store_invariant_measurements"
+    )
+    assert finding.status is ProbeStatus.FAIL
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("declared_lineage_event_count", 1),
+        ("lineage_coverage", {"numerator": 0, "denominator": 1}),
+        ("distinct_lineage_tokens", ["glm"]),
+        ("model_observation_status_counts", {"observed": 1}),
+    ],
+)
+def test_empty_store_requires_all_measurement_fields_to_be_empty(
+    field: str,
+    bad_value: object,
+) -> None:
+    bodies = deepcopy(_passing_bodies())
+    measurement = bodies["regista"]["checks"][0]["projects"][0]  # type: ignore[index]
+    measurement[field] = bad_value
+
+    gate = evaluate_genesis_gate(_run_bodies(bodies))
+
+    assert gate.ok is False
+    assert any(
+        finding.status is ProbeStatus.FAIL
+        and finding.check_id.startswith("regista.")
+        for finding in gate.findings
+    )
+
+
+def test_gate_rejects_check_id_copied_between_component_reports() -> None:
+    bodies = _passing_bodies()
+    bodies["cairn"]["checks"].append(  # type: ignore[union-attr]
+        {"id": "regista.first_write_admission", "status": "pass"}
+    )
+
+    gate = evaluate_genesis_gate(_run_bodies(bodies))
+
+    assert gate.ok is False
+    assert any(item.check_id == "probe.check_contract" for item in gate.findings)
+
+
+def test_gate_rejects_a_non_object_check_without_crashing() -> None:
+    probe = type(_run_bodies(_passing_bodies()).probes[0])(
+        component="regista",
+        status=ProbeStatus.PASS,
+        checks=(object(),),  # type: ignore[arg-type]
+        detail="forged",
+    )
+    report = type(_run_bodies(_passing_bodies()))(ok=True, probes=(probe,))
+
+    gate = evaluate_genesis_gate(report)
+
+    assert gate.ok is False
+    assert any(item.check_id == "probe.check_contract" for item in gate.findings)
+
+
+def test_gate_does_not_trust_a_forged_aggregate_ok_flag() -> None:
+    probe = _run_bodies(_passing_bodies()).probes[0]
+    forged = type(probe)(
+        component=probe.component,
+        status=ProbeStatus.FAIL,
+        checks=probe.checks,
+        detail="forged failure",
+    )
+    report = type(_run_bodies(_passing_bodies()))(ok=True, probes=(forged,))
+
+    assert evaluate_genesis_gate(report).ok is False
