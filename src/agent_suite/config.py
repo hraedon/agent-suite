@@ -19,6 +19,7 @@ The per-user file is at ``~/.config/agent-suite/suite.env`` (Linux) or
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from collections.abc import Mapping
@@ -183,6 +184,15 @@ def same_postgres_database(left: str, right: str) -> bool:
     left_identity = _postgres_database_identity(left)
     right_identity = _postgres_database_identity(right)
     return left_identity is not None and left_identity == right_identity
+
+
+def postgres_database_fingerprint(dsn: str) -> str | None:
+    """Return a credential-free stable fingerprint for a PostgreSQL target."""
+    identity = _postgres_database_identity(dsn)
+    if identity is None:
+        return None
+    material = "\0".join((identity[0], identity[1], str(identity[2]), identity[3]))
+    return f"sha256:{hashlib.sha256(material.encode('utf-8')).hexdigest()}"
 
 
 @dataclass(frozen=True)

@@ -29,6 +29,8 @@ PREFLIGHT_ALIAS = "preflight"
 
 class Command(Enum):
     DOCTOR = "doctor"
+    INVARIANT_PROBES = "invariant-probes"
+    GENESIS_GATE = "genesis-gate"
     LOCK = "lock"
     BOOTSTRAP = "bootstrap"
     ONBOARD = "onboard"
@@ -109,6 +111,22 @@ def _build_parser() -> argparse.ArgumentParser:
             "fail when an installed artifact cannot be cryptographically bound "
             "to the release manifest (platform qualification; off by default)"
         ),
+    )
+    invariant_probes = sub.add_parser(
+        Command.INVARIANT_PROBES.value,
+        help="run component-owned evidentiary invariant measurements",
+    )
+    invariant_probes.add_argument("--json", action="store_true", help="emit JSON output")
+    invariant_probes.add_argument(
+        "--exit-code", action="store_true", help="exit non-zero when any probe fails"
+    )
+    genesis_gate = sub.add_parser(
+        Command.GENESIS_GATE.value,
+        help="evaluate whether an empty store may open its evidentiary epoch",
+    )
+    genesis_gate.add_argument("--json", action="store_true", help="emit JSON output")
+    genesis_gate.add_argument(
+        "--exit-code", action="store_true", help="exit non-zero when the gate is blocked"
     )
     lock = sub.add_parser(
         Command.LOCK.value, help="generate / check the SUITE.lock compatibility manifest"
@@ -608,6 +626,43 @@ def main(argv: list[str] | None = None) -> int:
         raw_command = Command.PREFLIGHT_WINDOWS.value
     command = Command(raw_command)
     match command:
+        case Command.INVARIANT_PROBES:
+            import json as _json
+
+            from agent_suite.genesis_gate import (
+                format_invariant_probes,
+                run_invariant_probes,
+            )
+
+            invariant_report = run_invariant_probes()
+            if args.json:
+                print(_json.dumps(invariant_report.to_dict(), indent=2, default=str))
+            else:
+                print(format_invariant_probes(invariant_report))
+            return 1 if args.exit_code and not invariant_report.ok else 0
+        case Command.GENESIS_GATE:
+            import json as _json
+
+            from agent_suite.config import postgres_database_fingerprint
+            from agent_suite.genesis_gate import (
+                evaluate_genesis_gate,
+                format_genesis_gate,
+                run_invariant_probes,
+            )
+
+            dsn = os.environ.get("REGISTA_DSN")
+            genesis_report = evaluate_genesis_gate(
+                run_invariant_probes(),
+                expected_store_fingerprint=(
+                    postgres_database_fingerprint(dsn) if dsn is not None else None
+                ),
+                expected_project=os.environ.get("REGISTA_PROJECT"),
+            )
+            if args.json:
+                print(_json.dumps(genesis_report.to_dict(), indent=2, default=str))
+            else:
+                print(format_genesis_gate(genesis_report))
+            return 1 if args.exit_code and not genesis_report.ok else 0
         case Command.DOCTOR:
             import json as _json
 

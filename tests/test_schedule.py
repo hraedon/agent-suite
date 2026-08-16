@@ -183,7 +183,12 @@ def test_every_agent_suite_schedule_command_uses_production_cli_grammar() -> Non
             assert words[0] == "cairn", spec.command
             continue
         parsed = parser.parse_args(words[1:])
-        assert parsed.command in {"backup", "restore", "alert-check"}, spec.command
+        assert parsed.command in {
+            "backup",
+            "restore",
+            "alert-check",
+            "invariant-probes",
+        }, spec.command
 
 
 def test_backup_and_restore_verify_are_distinct_cadences() -> None:
@@ -401,6 +406,17 @@ def test_same_postgres_database_parses_keyword_value_dsns(left: str, right: str)
 
     assert same_postgres_database(left, right)
     assert same_postgres_database(right, left)
+
+
+def test_postgres_database_fingerprint_excludes_credentials() -> None:
+    from agent_suite.config import postgres_database_fingerprint
+
+    left = "postgresql://first:secret@suite-db.example:5432/regista?sslmode=require"
+    right = "host=suite-db.example dbname=regista user=second password=other"
+
+    assert postgres_database_fingerprint(left) == postgres_database_fingerprint(right)
+    assert postgres_database_fingerprint(left).startswith("sha256:")  # type: ignore[union-attr]
+    assert postgres_database_fingerprint("not-a-postgres-dsn") is None
 
 
 @pytest.mark.parametrize(
@@ -1413,6 +1429,16 @@ def test_chain_integrity_schedule_is_declared():
     assert spec.on_calendar == "weekly"
     assert spec.windows_trigger == "WEEKLY"
     assert spec.name == "agent-suite-chain-integrity"
+
+
+def test_invariant_probe_schedule_is_declared() -> None:
+    spec = next(s for s in SCHEDULES if s.kind is ScheduleKind.INVARIANT_PROBES)
+    assert spec.command == "agent-suite invariant-probes --json --exit-code"
+    assert spec.on_calendar == "*:0/5"
+    assert spec.windows_trigger == "HOURLY"
+    assert spec.windows_repetition_minutes == 5
+    assert spec.randomized_delay_seconds == 30
+    assert spec.name == "agent-suite-invariant-probes"
 
 
 def test_windows_weekly_trigger_includes_days_of_week():
