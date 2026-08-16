@@ -3,10 +3,8 @@
 # Re-run `agent-suite schedule install` to regenerate.
 try {
   $action = New-ScheduledTaskAction -Execute 'agent-suite' -Argument 'invariant-probes --json --exit-code'
-  $startAt = (Get-Date).Date.AddHours(2)
-  if ($startAt -le (Get-Date)) {
-    $startAt = $startAt.AddDays(1)
-  }
+  # Start shortly after registration so a newly installed probe does not wait for the next wall-clock day.
+  $startAt = (Get-Date).AddMinutes(1)
   # Omit -RepetitionDuration: Task Scheduler represents indefinite
   # repetition by leaving Repetition.Duration unset.
   $trigger = New-ScheduledTaskTrigger -Once -At $startAt -RepetitionInterval (New-TimeSpan -Minutes 5)
@@ -28,11 +26,11 @@ try {
   $startBoundaryVerified = $false
   try {
     $startBoundary = [DateTimeOffset]::Parse($startBoundaryText, [System.Globalization.CultureInfo]::InvariantCulture)
-    $startBoundaryVerified = ($startBoundary.Hour -eq 2) -and ($startBoundary.Minute -eq 0)
+    $startBoundaryVerified = [Math]::Abs(($startBoundary - [DateTimeOffset]$startAt).TotalSeconds) -le 60
   } catch {
     try {
       $startBoundary = [DateTimeOffset]::Parse($startBoundaryText)
-      $startBoundaryVerified = ($startBoundary.Hour -eq 2) -and ($startBoundary.Minute -eq 0)
+      $startBoundaryVerified = [Math]::Abs(($startBoundary - [DateTimeOffset]$startAt).TotalSeconds) -le 60
     } catch {
       $startBoundaryVerified = $false
     }
