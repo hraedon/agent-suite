@@ -213,6 +213,33 @@ def test_lifecycle_roles_match_canonical_workflow() -> None:
     )
 
 
+def test_lifecycle_workflow_version_and_validator_params() -> None:
+    """Snapshot of the v3 fields so the stdlib-only CI job also guards them.
+
+    The live cross-reference below skips without an installed regista, so an
+    accidental revert of these exact fields would otherwise stay green in the
+    default lint-and-test job (WI-073 review finding 5).
+    """
+    fixture = _load_fixture("lifecycle")
+    assert fixture["workflow_version"] == 3
+    by_key = {
+        (t["name"], t["from"], t["to"]): t
+        for t in fixture["transitions"]  # type: ignore[index, union-attr]
+    }
+    rc = by_key[("request_changes", "in_review", "in_progress")]
+    assert rc["validator"] == "adversarial_review"
+    assert rc["validator_params"] == {"finding_only": True}
+    assert (
+        by_key[("adversarial_pass", "in_review", "in_human_review")].get("validator_params") is None
+    )
+    for key in (
+        ("accept", "in_human_review", "done"),
+        ("reject", "in_human_review", "in_progress"),
+    ):
+        assert by_key[key]["validator"] == "human_gate"
+        assert by_key[key]["validator_params"] == {"require_human": False}
+
+
 def test_lifecycle_terminal_states() -> None:
     fixture = _load_fixture("lifecycle")
     terminal = set(fixture["terminal_states"])  # type: ignore[arg-type]
@@ -371,6 +398,9 @@ def test_lifecycle_fixture_matches_installed_regista_canonical_workflow() -> Non
     fixture_version = fixture["workflow_version"]
     installed_version = canonical["version"]
     assert isinstance(fixture_version, int)
+    assert isinstance(installed_version, int), (
+        f"canonical workflow version is not an int: {installed_version!r}"
+    )
     if installed_version < fixture_version:
         # The fixture documents the contract the estate is moving to; the
         # pinned regista lags until SUITE.lock advances (agent-suite WI-072
@@ -398,6 +428,38 @@ def test_lifecycle_fixture_matches_installed_regista_canonical_workflow() -> Non
 
     assert {r["name"] for r in canonical["roles"]} == set(fixture["roles"])  # type: ignore[arg-type]
 
+    # Fail closed on canonical fields this projection does not compare
+    # (WI-073 review finding 2): a new per-state/per-transition/per-type field
+    # in regista must fail here loudly and force a conscious fixture
+    # extension, not stay silently unrepresented. work_item_types'
+    # custom_fields are a documented exclusion — the contract's stated scope
+    # is which type names exist, not their field schemas.
+    known_state_keys = {"name", "initial", "terminal"}
+    for state in canonical["states"]:
+        assert set(state) <= known_state_keys, (
+            f"canonical state {state.get('name')!r} carries uncompared keys: "
+            f"{sorted(set(state) - known_state_keys)}"
+        )
+    known_transition_keys = {
+        "name",
+        "from",
+        "to",
+        "allowed_roles",
+        "validator",
+        "validator_params",
+    }
+    for t in canonical["transitions"]:
+        assert set(t) <= known_transition_keys, (
+            f"canonical transition {t.get('name')!r} carries uncompared keys: "
+            f"{sorted(set(t) - known_transition_keys)}"
+        )
+    known_type_keys = {"name", "custom_fields"}
+    for wit in canonical.get("work_item_types", ()):
+        assert set(wit) <= known_type_keys, (
+            f"canonical work_item_type {wit.get('name')!r} carries uncompared "
+            f"keys: {sorted(set(wit) - known_type_keys)}"
+        )
+
     def transition_map(
         transitions: list[dict[str, object]],
     ) -> dict[tuple[str, str, str], tuple[frozenset[str], object, object]]:
@@ -408,7 +470,9 @@ def test_lifecycle_fixture_matches_installed_regista_canonical_workflow() -> Non
             out[key] = (
                 frozenset(t.get("allowed_roles", ())),  # type: ignore[arg-type]
                 t.get("validator"),
-                t.get("validator_params"),
+                # Absent and explicitly-empty params mean the same thing
+                # (WI-073 review finding 3) — normalize both to {}.
+                t.get("validator_params") or {},
             )
         return out
 
