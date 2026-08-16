@@ -115,8 +115,7 @@ def test_health_tier_values_match_code() -> None:
     contract_tiers = set(fixture["tier_values"])  # type: ignore[arg-type]
     code_tiers = _enum_values(Tier)
     assert contract_tiers == code_tiers, (
-        f"tier_values mismatch — "
-        f"contract={sorted(contract_tiers)}, code={sorted(code_tiers)}"
+        f"tier_values mismatch — contract={sorted(contract_tiers)}, code={sorted(code_tiers)}"
     )
 
 
@@ -190,8 +189,13 @@ def test_lifecycle_states_match_canonical_workflow() -> None:
     fixture = _load_fixture("lifecycle")
     contract_states = set(fixture["states"])  # type: ignore[arg-type]
     expected_states = {
-        "open", "in_progress", "blocked", "deferred",
-        "in_review", "in_human_review", "done",
+        "open",
+        "in_progress",
+        "blocked",
+        "deferred",
+        "in_review",
+        "in_human_review",
+        "done",
     }
     assert contract_states == expected_states, (
         f"lifecycle states mismatch — "
@@ -231,16 +235,10 @@ def test_lifecycle_transitions_referential_integrity() -> None:
         key = (name, from_state, to_state)
         assert key not in seen, f"duplicate transition {key!r}"
         seen.add(key)
-        assert from_state in states, (
-            f"transition {name!r} has invalid 'from': {from_state!r}"
-        )
-        assert to_state in states, (
-            f"transition {name!r} has invalid 'to': {to_state!r}"
-        )
+        assert from_state in states, f"transition {name!r} has invalid 'from': {from_state!r}"
+        assert to_state in states, f"transition {name!r} has invalid 'to': {to_state!r}"
         for role in t.get("allowed_roles", []):  # type: ignore[union-attr]
-            assert role in roles, (
-                f"transition {name!r} has invalid role: {role!r}"
-            )
+            assert role in roles, f"transition {name!r} has invalid role: {role!r}"
 
 
 def test_identity_actor_kinds_match_lifecycle_roles() -> None:
@@ -278,8 +276,12 @@ def test_notification_delivery_modes() -> None:
     fixture = _load_fixture("notification")
     delivery_modes = set(fixture["delivery_modes"])  # type: ignore[arg-type]
     expected = {
-        "live_wake", "silent_inject", "next_session",
-        "managed_session", "webhook", "email",
+        "live_wake",
+        "silent_inject",
+        "next_session",
+        "managed_session",
+        "webhook",
+        "email",
     }
     assert delivery_modes == expected, (
         f"notification delivery_modes mismatch — "
@@ -346,3 +348,89 @@ def test_validate_contracts_script_passes() -> None:
         f"validate-contracts.py failed (exit {result.returncode}):\n{result.stderr}"
     )
     assert "PASS" in result.stdout, f"Expected PASS in stdout, got: {result.stdout}"
+
+
+# ---------------------------------------------------------------------------
+# Live cross-reference — lifecycle fixture vs installed regista (WI-073)
+# ---------------------------------------------------------------------------
+# The snapshot assertions above document expected values but cannot catch the
+# fixture drifting from what regista actually serves. This test can: it parses
+# regista.canonical_workflow_yaml() and compares version, validator assignment,
+# and validator_params. It runs wherever regista is importable (interop CI,
+# rc-build venvs, dev checkouts) and skips in the stdlib-only lint-and-test job.
+
+
+def test_lifecycle_fixture_matches_installed_regista_canonical_workflow() -> None:
+    regista = pytest.importorskip("regista", reason="regista not installed (stdlib-only CI job)")
+    if not hasattr(regista, "canonical_workflow_yaml"):
+        pytest.skip("installed regista predates canonical_workflow_yaml")
+    yaml = pytest.importorskip("yaml", reason="pyyaml unavailable (comes with regista's deps)")
+    canonical = yaml.safe_load(regista.canonical_workflow_yaml())
+    fixture = _load_fixture("lifecycle")
+
+    fixture_version = fixture["workflow_version"]
+    installed_version = canonical["version"]
+    assert isinstance(fixture_version, int)
+    if installed_version < fixture_version:
+        # The fixture documents the contract the estate is moving to; the
+        # pinned regista lags until SUITE.lock advances (agent-suite WI-072
+        # ordering). This branch must disappear at the lock advance — the
+        # comparison below then runs strict, every time.
+        pytest.skip(
+            f"pinned regista serves canonical v{installed_version}; fixture "
+            f"documents v{fixture_version} — strict comparison activates at "
+            "the SUITE.lock advance"
+        )
+    assert installed_version == fixture_version, (
+        f"STALE FIXTURE: installed regista serves canonical "
+        f"v{installed_version} but data/contracts/lifecycle.json documents "
+        f"v{fixture_version} — reconcile the contract (WI-073 drift class)"
+    )
+
+    assert canonical["name"] == fixture["workflow_name"]
+
+    canonical_states = {s["name"] for s in canonical["states"]}
+    assert canonical_states == set(fixture["states"])  # type: ignore[arg-type]
+    canonical_terminal = {s["name"] for s in canonical["states"] if s.get("terminal")}
+    assert canonical_terminal == set(fixture["terminal_states"])  # type: ignore[arg-type]
+    canonical_initial = [s["name"] for s in canonical["states"] if s.get("initial")]
+    assert canonical_initial == [fixture["initial_state"]]
+
+    assert {r["name"] for r in canonical["roles"]} == set(fixture["roles"])  # type: ignore[arg-type]
+
+    def transition_map(
+        transitions: list[dict[str, object]],
+    ) -> dict[tuple[str, str, str], tuple[frozenset[str], object, object]]:
+        out: dict[tuple[str, str, str], tuple[frozenset[str], object, object]] = {}
+        for t in transitions:
+            key = (str(t["name"]), str(t["from"]), str(t["to"]))
+            assert key not in out, f"duplicate transition {key!r}"
+            out[key] = (
+                frozenset(t.get("allowed_roles", ())),  # type: ignore[arg-type]
+                t.get("validator"),
+                t.get("validator_params"),
+            )
+        return out
+
+    canonical_transitions = transition_map(canonical["transitions"])
+    fixture_transitions = transition_map(fixture["transitions"])  # type: ignore[arg-type]
+    assert canonical_transitions.keys() == fixture_transitions.keys(), (
+        "transition sets differ — "
+        f"only-in-regista={sorted(canonical_transitions.keys() - fixture_transitions.keys())}, "
+        f"only-in-fixture={sorted(fixture_transitions.keys() - canonical_transitions.keys())}"
+    )
+    for key, (roles, validator, params) in canonical_transitions.items():
+        f_roles, f_validator, f_params = fixture_transitions[key]
+        assert roles == f_roles, f"{key}: allowed_roles differ"
+        assert validator == f_validator, (
+            f"{key}: validator assignment differs — regista={validator!r}, fixture={f_validator!r}"
+        )
+        assert params == f_params, (
+            f"{key}: validator_params differ — regista={params!r}, fixture={f_params!r}"
+        )
+
+    canonical_types = {t["name"] for t in canonical.get("work_item_types", ())}
+    assert canonical_types == set(fixture["work_item_types"])  # type: ignore[arg-type]
+
+    review_validators = {v for _, v, _ in fixture_transitions.values() if v is not None}
+    assert review_validators == set(fixture["review_gates"])  # type: ignore[arg-type]
