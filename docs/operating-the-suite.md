@@ -196,15 +196,23 @@ The schedules are:
 | `agent-suite-restore-verify` | Weekly | `agent-suite restore --dir-env AGENT_SUITE_BACKUP_DIR --dsn-env AGENT_SUITE_VERIFY_RESTORE_DSN` | Restore the latest dump into scratch, then run `verify-restore` |
 | `agent-suite-doctor-alert` | Hourly | `agent-suite alert-check` | Periodic doctor + alert routing |
 | `agent-suite-chain-integrity` | Weekly | `cairn integrity` | Full chain replay; records the verdict doctor reports (cairn WI-030) |
-| `agent-suite-invariant-probes` | Every 5 minutes | `agent-suite invariant-probes --json --exit-code` | Run component-owned lineage, model, identity, scheme and authorship measurements |
+| `agent-suite-invariant-probes` | Every 5 minutes | `agent-suite invariant-probes --json --exit-code` | Run component-owned lineage, model, identity, scheme, authorship and signing measurements |
 
 `invariant-probes` and `genesis-gate` are deliberately separate. The scheduled
 command runs measurements continuously and fails only when a component probe is
 missing, malformed or reports a failed behavioral invariant. `genesis-gate`
 applies the stricter empty-target-project and first-write preconditions and is a manual
 ceremony command; it is expected to remain `BLOCKED` until regista implements
-transactional first-write admission and agent-notes contributes its resolvable
-session-scoped identity probe. Missing component probes fail the scheduled run
+actor-boundary signing (Plan 023 R-10, the first correctness fix) and
+transactional first-write admission, and agent-notes contributes its resolvable
+session-scoped identity probe. Actor-boundary signing is a required, component-owned
+behavioral probe (`regista.actor_boundary_signing`): until regista emits a passing
+proof that signing happens at the actor boundary and no service holds a keyset able
+to sign as arbitrary principals, the gate stays blocked and the epoch may not open.
+The proof must behaviorally attempt an unbound-principal signing request and observe
+the named refusal; key-binding configuration or key-file inspection is not evidence
+that the service cannot perform the action.
+Missing component probes fail the scheduled run
 and are also named blockers in the gate. Each required check is a closed, tested set in
 `agent_suite.genesis_gate.GENESIS_REQUIRED_CHECKS`. Removing or weakening a
 check is a policy change, not a way to make a permanently red gate green.
