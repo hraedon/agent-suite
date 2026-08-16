@@ -7,6 +7,7 @@ from copy import deepcopy
 import pytest
 
 from agent_suite.genesis_gate import (
+    GENESIS_REQUIRED_CHECK_OWNERS,
     GENESIS_REQUIRED_CHECKS,
     PROBE_SPECS,
     ProbeSpec,
@@ -607,6 +608,86 @@ def test_forged_non_dict_check_is_a_blocked_finding_not_a_crash() -> None:
         item.check_id == "probe.check_contract" and "non-object" in item.detail
         for item in gate.findings
     )
+
+
+@pytest.mark.parametrize("bad_status", [[1], {"value": "pass"}, 7])
+def test_non_string_check_status_is_malformed_not_a_traceback(bad_status: object) -> None:
+    bodies = _passing_bodies()
+    bodies["regista"]["checks"][1]["status"] = bad_status  # type: ignore[index]
+
+    report = _run_bodies(bodies)
+
+    regista = next(probe for probe in report.probes if probe.component == "regista")
+    assert regista.status is ProbeStatus.MALFORMED
+    assert "known status" in regista.detail
+    assert report.ok is False
+
+
+def test_forged_unhashable_check_status_is_a_blocked_finding_not_a_crash() -> None:
+    passing = _run_bodies(_passing_bodies())
+    probe = passing.probes[0]
+    forged = type(probe)(
+        component=probe.component,
+        status=ProbeStatus.PASS,
+        checks=(*probe.checks, {"id": "regista.forged", "status": [1]}),
+        detail="forged success",
+    )
+    report = type(passing)(ok=True, probes=(forged,))
+
+    gate = evaluate_genesis_gate(
+        report,
+        expected_store_fingerprint=_STORE_FINGERPRINT,
+        expected_project=_PROJECT,
+    )
+
+    assert gate.ok is False
+    assert any(item.check_id == "probe.check_contract" for item in gate.findings)
+
+
+def test_duplicate_component_entries_are_rejected_not_last_wins() -> None:
+    passing = _run_bodies(_passing_bodies())
+    incomplete = type(passing.probes[0])(
+        component="regista",
+        status=ProbeStatus.PASS,
+        checks=(),
+        detail="forged incomplete duplicate",
+    )
+    report = type(passing)(ok=True, probes=(incomplete, *passing.probes))
+
+    gate = evaluate_genesis_gate(
+        report,
+        expected_store_fingerprint=_STORE_FINGERPRINT,
+        expected_project=_PROJECT,
+    )
+
+    assert gate.ok is False
+    assert any(
+        item.check_id == "probe.component_contract"
+        and item.status is ProbeStatus.FAIL
+        and "duplicate" in item.detail
+        for item in gate.findings
+    )
+
+
+def test_fail_owner_probe_detail_never_claims_a_pass() -> None:
+    bodies = _passing_bodies()
+    # The probe self-reports failure while every individual check passes.
+    bodies["regista"]["ok"] = False
+
+    gate = _evaluate(bodies)
+
+    assert gate.ok is False
+    assert any(item.check_id == "probe.report" for item in gate.findings)
+    regista_findings = [
+        item
+        for item in gate.findings
+        if item.check_id in GENESIS_REQUIRED_CHECKS
+        and GENESIS_REQUIRED_CHECK_OWNERS[item.check_id] == "regista"
+    ]
+    assert regista_findings
+    for finding in regista_findings:
+        assert finding.status is ProbeStatus.FAIL
+        assert "passed" not in finding.detail
 
 
 def test_empty_probe_report_cannot_open_gate() -> None:
