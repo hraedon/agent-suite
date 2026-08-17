@@ -20,6 +20,83 @@ from urllib.parse import urlparse
 import pytest
 
 # ---------------------------------------------------------------------------
+# WI-075 meta-guard — the code under test must live in THIS repo
+# ---------------------------------------------------------------------------
+#
+# In a freshly created worktree the project venv may lack pytest (the dev
+# extra was never synced). `uv run pytest` then silently falls back to a
+# PATH pytest whose site-packages can hold editable installs of suite
+# components pointing at the PRIMARY checkout — tests collected from the
+# worktree run against /projects/agent-suite's code, and "verified" claims
+# are false in either direction. Same fails-open class as WI-026's silent
+# skip: a green run that never exercised the change.
+#
+# The guard refuses to start the session unless ``agent_suite`` imports from
+# under this repo root. Deliberately testing an installed distribution is the
+# one legitimate exception — set AGENT_SUITE_TEST_INSTALLED=1 to say so.
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+_TEST_INSTALLED_ENV = "AGENT_SUITE_TEST_INSTALLED"
+
+
+class CodeUnderTestError(RuntimeError):
+    """The imported module does not come from the repo being tested."""
+
+
+def require_code_under_test(
+    repo_root: Path, module_file: str | None, module_name: str
+) -> Path:
+    """Prove ``module_name`` (imported from ``module_file``) lives under
+    ``repo_root``; return the resolved module path.
+
+    Pure so the falsifier tests in ``test_code_under_test_guard.py`` can
+    exercise the deny case directly (process-calibration §5: a guard that
+    cannot be shown to reject anything is a tautology).
+    """
+    if module_file is None:
+        raise CodeUnderTestError(
+            f"{module_name} has no __file__ — cannot prove which code is under test"
+        )
+    resolved = Path(module_file).resolve()
+    root = repo_root.resolve()
+    if not resolved.is_relative_to(root):
+        raise CodeUnderTestError(
+            f"{module_name} imports from {resolved}, OUTSIDE the repo under test "
+            f"({root}). You are almost certainly running a PATH pytest against "
+            f"another checkout's code (WI-075). Fix: run "
+            f"`uv run --frozen --extra dev pytest` from the repo root. To "
+            f"deliberately test an installed distribution instead, set "
+            f"{_TEST_INSTALLED_ENV}=1."
+        )
+    return resolved
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if os.environ.get(_TEST_INSTALLED_ENV) == "1":
+        # Deliberate installed-dist mode — but an ambient export (e.g. in a
+        # shell profile) would silently disable the guard for every session,
+        # so say so loudly on every run it affects.
+        import warnings
+
+        warnings.warn(
+            f"{_TEST_INSTALLED_ENV}=1: the WI-075 code-under-test guard is "
+            "DISABLED for this session — tests may run against an installed "
+            "distribution, not this checkout",
+            stacklevel=1,
+        )
+        return
+    import agent_suite
+
+    try:
+        require_code_under_test(
+            REPO_ROOT, getattr(agent_suite, "__file__", None), "agent_suite"
+        )
+    except CodeUnderTestError as exc:
+        raise pytest.UsageError(str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # Prerequisite gating — building blocks for module-level skip decisions
 # ---------------------------------------------------------------------------
 

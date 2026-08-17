@@ -71,6 +71,45 @@ Override the root with `WORKTREE_ROOT` and the projects root with
   `git worktree remove /projects/.worktrees/<name>/<repo>` and delete the branch
   if it's done. `git worktree prune` cleans up removed-by-hand trees.
 
+## Test environment (WI-075)
+
+A worktree is a fresh checkout with **no `.venv`**. Before 2026-08-16 that made
+`uv run pytest` in a new worktree a trap: uv synced an env without the dev
+extra, found no `pytest` in it, and silently fell back to whatever `pytest` was
+on PATH — on the dev boxes, historically a user-site install whose editable
+packages pointed at the **primary** checkouts. Tests collected from the
+worktree ran against `/projects/<repo>`'s code, so a worktree's uncommitted
+changes were never under test and "verified" claims could be false in either
+direction (WI-075, reproduced 2026-08-15).
+
+Three layers now defend this:
+
+1. **Provisioning** — `scripts/agent-worktree` runs `uv sync --frozen`
+   (plus `--extra dev` when the repo's `pyproject.toml` declares that extra,
+   matching CI) in the new worktree. Override with `WORKTREE_SYNC_ARGS`
+   (e.g. `--all-extras`), or set `WORKTREE_SYNC_ARGS=skip` to opt out.
+2. **The canonical invocation** — in any worktree, run tests as
+
+   ```bash
+   uv run --frozen --extra dev pytest
+   ```
+
+   In an **unprovisioned** env, bare `uv run pytest` finds no project pytest
+   and depends on PATH luck — that is the WI-075 trap. In a *provisioned*
+   env it is safe (uv run's implicit sync is inexact: it adds missing
+   default packages but does not strip extras — which is why CI's
+   `uv sync --frozen --extra dev` + bare `uv run pytest` is sound). The
+   canonical invocation works in both states; prefer it in worktrees so
+   correctness never depends on provisioning history.
+3. **The conftest meta-guard** — agent-suite's `tests/conftest.py` refuses to
+   start a session when `agent_suite` imports from outside the repo root being
+   tested, naming WI-075 and the fix in the error. Deliberately testing an
+   installed distribution is the opt-out: `AGENT_SUITE_TEST_INSTALLED=1`.
+
+Keep shared dev boxes free of user-site (`pip install --user`) installs of
+suite components and of a bare `pytest` on PATH — layer 3 catches the silent
+mode, but only for repos that carry the guard.
+
 ## Enforcement (per `docs/process-calibration.md` §4)
 
 Honestly **layer 3/4**: nothing forces a foreign harness to use a worktree, so

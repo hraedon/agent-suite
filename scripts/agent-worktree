@@ -110,6 +110,52 @@ if [[ -x "$wt/scripts/install-git-hooks.sh" ]]; then
     log "warning: install-git-hooks.sh failed in $wt (pre-commit gate not wired)"
 fi
 
+# ---- provision the project environment (WI-075) ------------------------------
+# A fresh worktree has no .venv. A bare `uv run pytest` there either fails to
+# spawn or — worse — silently falls back to a PATH pytest whose site-packages
+# can import the PRIMARY checkout's code, so tests collected here run against
+# /projects/<repo> instead of this worktree. Sync the env the way CI does
+# (--extra dev when the repo declares one) so the first test run is honest.
+# Override the sync arguments with WORKTREE_SYNC_ARGS (e.g. "--all-extras");
+# set WORKTREE_SYNC_ARGS=skip to skip provisioning entirely.
+if [[ "${WORKTREE_SYNC_ARGS:-}" != "skip" && -f "$wt/uv.lock" ]] && command -v uv >/dev/null 2>&1; then
+  sync_args=(--frozen)
+  if [[ -n "${WORKTREE_SYNC_ARGS:-}" ]]; then
+    read -r -a override_args <<<"$WORKTREE_SYNC_ARGS"
+    sync_args+=("${override_args[@]}")
+  elif command -v python3 >/dev/null 2>&1 && python3 - "$wt/pyproject.toml" 2>/dev/null <<'PY'
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        data = tomllib.load(f)
+except OSError:
+    sys.exit(1)
+sys.exit(0 if "dev" in data.get("project", {}).get("optional-dependencies", {}) else 1)
+PY
+  then
+    sync_args+=(--extra dev)
+  elif ! python3 -c 'import tomllib' >/dev/null 2>&1 \
+      && grep -Eq '^dev *= *\[' "$wt/pyproject.toml" 2>/dev/null; then
+    # python3 < 3.11 has no tomllib; fall back to a shape-match so the dev
+    # extra is still provisioned rather than silently dropped.
+    sync_args+=(--extra dev)
+  fi
+  if ( cd "$wt" && uv sync "${sync_args[@]}" ) >&2; then
+    log "env: uv sync ${sync_args[*]} — project venv provisioned"
+  else
+    # Fail loudly (exit 3): repos without agent-suite's conftest guard have
+    # no backstop, and an unprovisioned worktree is exactly the WI-075 trap.
+    # The path still prints so a deliberate operator can proceed; scripted
+    # callers see the nonzero exit. Opt out with WORKTREE_SYNC_ARGS=skip.
+    log "ERROR: uv sync ${sync_args[*]} FAILED in $wt — provision manually before"
+    log "ERROR: running tests; an unprovisioned worktree can silently test the"
+    log "ERROR: primary checkout via a PATH pytest (WI-075)"
+    log "ready (UNPROVISIONED): $repo_name @ $branch"
+    echo "$wt"
+    exit 3
+  fi
+fi
+
 log "ready: $repo_name @ $branch"
 log "next:  cd $wt"
 echo "$wt"
