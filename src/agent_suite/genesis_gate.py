@@ -432,6 +432,10 @@ def _checks_by_component(
             if isinstance(check, dict) and isinstance(check.get("id"), str)
         }
         for probe in report.probes
+        # Non-str components cannot be dict keys (unhashable forgeries would
+        # crash the public evaluator); _probe_contract_findings rejects them
+        # with a blocking finding, so excluding them here stays fail-closed.
+        if isinstance(probe.component, str)
     }
 
 
@@ -451,6 +455,19 @@ def _probe_contract_findings(report: InvariantProbeReport) -> list[GateFinding]:
     seen: dict[str, str] = {}
     seen_components: set[str] = set()
     for probe in report.probes:
+        if not isinstance(probe.component, str) or not probe.component.strip():
+            # Guard BEFORE any hashing or .replace(): a forged report can
+            # carry an unhashable component (same class as the unhashable
+            # check status this change eliminates) — named finding, never a
+            # traceback.
+            findings.append(
+                GateFinding(
+                    "probe.component_contract",
+                    ProbeStatus.FAIL,
+                    f"component name must be a non-empty string, got {probe.component!r}",
+                )
+            )
+            continue
         if probe.component in seen_components:
             findings.append(
                 GateFinding(
@@ -499,13 +516,14 @@ def _probe_contract_findings(report: InvariantProbeReport) -> list[GateFinding]:
                 )
             previous = seen.get(check_id)
             if previous is not None:
+                detail = (
+                    f"check ID {check_id!r} was returned more than once by {previous}"
+                    if previous == probe.component
+                    else f"check ID {check_id!r} was returned by both {previous} and "
+                    f"{probe.component}"
+                )
                 findings.append(
-                    GateFinding(
-                        "probe.check_contract",
-                        ProbeStatus.FAIL,
-                        f"check ID {check_id!r} was returned by both {previous} and "
-                        f"{probe.component}",
-                    )
+                    GateFinding("probe.check_contract", ProbeStatus.FAIL, detail)
                 )
             else:
                 seen[check_id] = probe.component
@@ -670,7 +688,11 @@ def evaluate_genesis_gate(
     expected_project: str | None = None,
 ) -> GenesisGateReport:
     checks = _checks_by_component(probes)
-    probes_by_component = {probe.component: probe for probe in probes.probes}
+    probes_by_component = {
+        probe.component: probe
+        for probe in probes.probes
+        if isinstance(probe.component, str)
+    }
     regista_checks = checks.get("regista", {})
     measurement_check = regista_checks.get("regista.store_invariant_measurements")
     findings = _probe_contract_findings(probes)
@@ -684,10 +706,12 @@ def evaluate_genesis_gate(
         owner = GENESIS_REQUIRED_CHECK_OWNERS[check_id]
         check = checks.get(owner, {}).get(check_id)
         owner_probe = probes_by_component.get(owner)
-        owner_contract_valid = owner_probe is not None and owner_probe.status in {
+        # Tuple, not set: membership by == instead of hash, so a forged
+        # unhashable status can never raise out of the public evaluator.
+        owner_contract_valid = owner_probe is not None and owner_probe.status in (
             ProbeStatus.PASS,
             ProbeStatus.FAIL,
-        }
+        )
         owner_passed = owner_probe is not None and owner_probe.status is ProbeStatus.PASS
         passed = owner_passed and check is not None and check.get("status") == "pass"
         if check is None:

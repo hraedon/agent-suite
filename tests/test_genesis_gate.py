@@ -699,3 +699,69 @@ def test_empty_probe_report_cannot_open_gate() -> None:
 
     assert empty.ok is False
     assert any(item.check_id == "probe.report" for item in empty.findings)
+
+
+def test_forged_unhashable_component_is_a_blocked_finding_not_a_crash() -> None:
+    """Ceremony B1 (deepseek-v4-flash): the duplicate-detection code itself
+    hashed probe.component unguarded — a forged report carrying a list/dict
+    component crashed the public evaluator with the exact TypeError class
+    WI-076 eliminates for check statuses. Now: named finding, gate blocked."""
+    passing = _run_bodies(_passing_bodies())
+    probe = passing.probes[0]
+    forged = type(probe)(
+        component=["regista"],
+        status=ProbeStatus.PASS,
+        checks=probe.checks,
+        detail="forged unhashable component",
+    )
+    report = type(passing)(ok=True, probes=(forged, *passing.probes))
+
+    gate = evaluate_genesis_gate(
+        report,
+        expected_store_fingerprint=_STORE_FINGERPRINT,
+        expected_project=_PROJECT,
+    )
+
+    assert gate.ok is False
+    assert any(
+        item.check_id == "probe.component_contract"
+        and "non-empty string" in item.detail
+        for item in gate.findings
+    )
+
+
+@pytest.mark.parametrize("placement", ["before", "after", "triple"])
+def test_duplicate_component_is_rejected_in_every_ordering(placement: str) -> None:
+    """Ceremony N4: pin the orderings beyond the original bypass shape —
+    duplicate after the complete entry, and triple duplicates (the second
+    occurrence never enters seen_components; correctness relies on the first
+    remaining there)."""
+    passing = _run_bodies(_passing_bodies())
+    incomplete = type(passing.probes[0])(
+        component="regista",
+        status=ProbeStatus.PASS,
+        checks=(),
+        detail="forged incomplete duplicate",
+    )
+    if placement == "before":
+        probes = (incomplete, *passing.probes)
+    elif placement == "after":
+        probes = (*passing.probes, incomplete)
+    else:
+        probes = (incomplete, *passing.probes, incomplete)
+    report = type(passing)(ok=True, probes=probes)
+
+    gate = evaluate_genesis_gate(
+        report,
+        expected_store_fingerprint=_STORE_FINGERPRINT,
+        expected_project=_PROJECT,
+    )
+
+    assert gate.ok is False
+    duplicates = [
+        item
+        for item in gate.findings
+        if item.check_id == "probe.component_contract" and "duplicate" in item.detail
+    ]
+    expected = 2 if placement == "triple" else 1
+    assert len(duplicates) == expected
