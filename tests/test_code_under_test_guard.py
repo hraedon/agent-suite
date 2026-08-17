@@ -55,8 +55,73 @@ def test_symlinked_repo_root_still_allows(tmp_path: Path) -> None:
     module.parent.mkdir(parents=True)
     module.write_text("")
     link_root = tmp_path / "link"
-    link_root.symlink_to(real_root, target_is_directory=True)
+    try:
+        link_root.symlink_to(real_root, target_is_directory=True)
+    except OSError:  # pragma: no cover - Windows without developer mode
+        pytest.skip("symlinks not permitted on this host")
     resolved = require_code_under_test(
         link_root, str(link_root / "src" / "agent_suite" / "__init__.py"), "agent_suite"
     )
     assert resolved == module.resolve()
+
+
+def test_hook_wiring_end_to_end_wrong_source_exits_4(tmp_path: Path) -> None:
+    """Ceremony NB-1 (deepseek-v4-flash): the pure-function falsifiers cannot
+    catch a broken pytest_configure wiring. Force the wrong agent_suite via
+    PYTHONPATH (which precedes venv site-packages) and prove the SESSION
+    refuses: exit 4 with the named message. WI-026 precedent: the gate must
+    be shown to run, not assumed."""
+    import os
+    import subprocess
+    import sys
+
+    fake_pkg = tmp_path / "agent_suite"
+    fake_pkg.mkdir()
+    (fake_pkg / "__init__.py").write_text("__version__ = '0.0.0'\n")
+
+    env = {k: v for k, v in os.environ.items() if k != "AGENT_SUITE_TEST_INSTALLED"}
+    env["PYTHONPATH"] = str(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 4, proc.stdout + proc.stderr
+    combined = proc.stdout + proc.stderr
+    assert "OUTSIDE the repo under test" in combined
+    assert "WI-075" in combined
+
+
+def test_hook_wiring_end_to_end_right_source_collects(tmp_path: Path) -> None:
+    """Positive control for the end-to-end falsifier: without the forged
+    PYTHONPATH the same invocation collects normally (guard stays quiet)."""
+    import os
+    import subprocess
+    import sys
+
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("AGENT_SUITE_TEST_INSTALLED", "PYTHONPATH")
+    }
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "tests/test_architecture.py",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr

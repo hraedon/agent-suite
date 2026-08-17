@@ -74,6 +74,17 @@ def require_code_under_test(
 
 def pytest_configure(config: pytest.Config) -> None:
     if os.environ.get(_TEST_INSTALLED_ENV) == "1":
+        # Deliberate installed-dist mode — but an ambient export (e.g. in a
+        # shell profile) would silently disable the guard for every session,
+        # so say so loudly on every run it affects.
+        import warnings
+
+        warnings.warn(
+            f"{_TEST_INSTALLED_ENV}=1: the WI-075 code-under-test guard is "
+            "DISABLED for this session — tests may run against an installed "
+            "distribution, not this checkout",
+            stacklevel=1,
+        )
         return
     import agent_suite
 

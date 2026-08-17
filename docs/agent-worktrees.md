@@ -94,8 +94,13 @@ Three layers now defend this:
    uv run --frozen --extra dev pytest
    ```
 
-   Bare `uv run pytest` re-syncs the env *without* extras and depends on
-   PATH luck; don't use it in worktrees.
+   In an **unprovisioned** env, bare `uv run pytest` finds no project pytest
+   and depends on PATH luck — that is the WI-075 trap. In a *provisioned*
+   env it is safe (uv run's implicit sync is inexact: it adds missing
+   default packages but does not strip extras — which is why CI's
+   `uv sync --frozen --extra dev` + bare `uv run pytest` is sound). The
+   canonical invocation works in both states; prefer it in worktrees so
+   correctness never depends on provisioning history.
 3. **The conftest meta-guard** — agent-suite's `tests/conftest.py` refuses to
    start a session when `agent_suite` imports from outside the repo root being
    tested, naming WI-075 and the fix in the error. Deliberately testing an
