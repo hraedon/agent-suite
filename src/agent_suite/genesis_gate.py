@@ -261,7 +261,11 @@ def _parse_probe_result(
             _status_detail(ProbeStatus.MALFORMED),
         )
     checks = tuple(raw_checks)
-    if any(check.get("status") not in _PROBE_CHECK_STATUSES for check in checks):
+    if any(
+        not isinstance(check.get("status"), str)
+        or check.get("status") not in _PROBE_CHECK_STATUSES
+        for check in checks
+    ):
         return ProbeResult(
             spec.component,
             ProbeStatus.MALFORMED,
@@ -326,7 +330,8 @@ def _parse_probe_result(
     failed_ids = [
         str(check["id"])
         for check in checks
-        if check.get("status") not in {"pass", "measured"}
+        if not isinstance(check.get("status"), str)
+        or check.get("status") not in {"pass", "measured"}
     ]
     checks_pass = not failed_ids
     process_agrees = (completed.returncode == 0) == body["ok"]
@@ -427,6 +432,10 @@ def _checks_by_component(
             if isinstance(check, dict) and isinstance(check.get("id"), str)
         }
         for probe in report.probes
+        # Non-str components cannot be dict keys (unhashable forgeries would
+        # crash the public evaluator); _probe_contract_findings rejects them
+        # with a blocking finding, so excluding them here stays fail-closed.
+        if isinstance(probe.component, str)
     }
 
 
@@ -437,11 +446,38 @@ def _probe_contract_findings(report: InvariantProbeReport) -> list[GateFinding]:
     the evaluator is also a public pure function.  Rechecking ownership here
     prevents a caller from satisfying (for example) a ``regista.*`` gate with
     a check copied into an unrelated component's result, and from hiding a
-    failed check behind a hand-built passing ``ProbeResult``.
+    failed check behind a hand-built passing ``ProbeResult``.  Duplicate
+    component entries are rejected by name: the evaluator indexes probes by
+    component, so a silent last-wins merge would let a redundant entry be
+    discarded instead of refused.
     """
     findings: list[GateFinding] = []
     seen: dict[str, str] = {}
+    seen_components: set[str] = set()
     for probe in report.probes:
+        if not isinstance(probe.component, str) or not probe.component.strip():
+            # Guard BEFORE any hashing or .replace(): a forged report can
+            # carry an unhashable component (same class as the unhashable
+            # check status this change eliminates) — named finding, never a
+            # traceback.
+            findings.append(
+                GateFinding(
+                    "probe.component_contract",
+                    ProbeStatus.FAIL,
+                    f"component name must be a non-empty string, got {probe.component!r}",
+                )
+            )
+            continue
+        if probe.component in seen_components:
+            findings.append(
+                GateFinding(
+                    "probe.component_contract",
+                    ProbeStatus.FAIL,
+                    f"duplicate component {probe.component!r} in the probe report",
+                )
+            )
+        else:
+            seen_components.add(probe.component)
         namespace = probe.component.replace("-", "_") + "."
         for check in probe.checks:
             if not isinstance(check, dict):
@@ -459,6 +495,7 @@ def _probe_contract_findings(report: InvariantProbeReport) -> list[GateFinding]:
                 or not check_id
                 or check_id != check_id.strip()
                 or not check_id.startswith(namespace)
+                or not isinstance(check.get("status"), str)
                 or check.get("status") not in _PROBE_CHECK_STATUSES
             ):
                 findings.append(
@@ -479,13 +516,14 @@ def _probe_contract_findings(report: InvariantProbeReport) -> list[GateFinding]:
                 )
             previous = seen.get(check_id)
             if previous is not None:
+                detail = (
+                    f"check ID {check_id!r} was returned more than once by {previous}"
+                    if previous == probe.component
+                    else f"check ID {check_id!r} was returned by both {previous} and "
+                    f"{probe.component}"
+                )
                 findings.append(
-                    GateFinding(
-                        "probe.check_contract",
-                        ProbeStatus.FAIL,
-                        f"check ID {check_id!r} was returned by both {previous} and "
-                        f"{probe.component}",
-                    )
+                    GateFinding("probe.check_contract", ProbeStatus.FAIL, detail)
                 )
             else:
                 seen[check_id] = probe.component
@@ -650,7 +688,11 @@ def evaluate_genesis_gate(
     expected_project: str | None = None,
 ) -> GenesisGateReport:
     checks = _checks_by_component(probes)
-    probes_by_component = {probe.component: probe for probe in probes.probes}
+    probes_by_component = {
+        probe.component: probe
+        for probe in probes.probes
+        if isinstance(probe.component, str)
+    }
     regista_checks = checks.get("regista", {})
     measurement_check = regista_checks.get("regista.store_invariant_measurements")
     findings = _probe_contract_findings(probes)
@@ -664,15 +706,20 @@ def evaluate_genesis_gate(
         owner = GENESIS_REQUIRED_CHECK_OWNERS[check_id]
         check = checks.get(owner, {}).get(check_id)
         owner_probe = probes_by_component.get(owner)
-        owner_contract_valid = owner_probe is not None and owner_probe.status in {
+        # Tuple, not set: membership by == instead of hash, so a forged
+        # unhashable status can never raise out of the public evaluator.
+        owner_contract_valid = owner_probe is not None and owner_probe.status in (
             ProbeStatus.PASS,
             ProbeStatus.FAIL,
-        }
-        passed = owner_contract_valid and check is not None and check.get("status") == "pass"
+        )
+        owner_passed = owner_probe is not None and owner_probe.status is ProbeStatus.PASS
+        passed = owner_passed and check is not None and check.get("status") == "pass"
         if check is None:
             detail = f"required behavioral probe is absent from {owner}"
         elif not owner_contract_valid:
             detail = f"{owner} probe did not pass contract validation"
+        elif not owner_passed:
+            detail = f"{owner} probe reported failure"
         elif passed:
             detail = "behavioral probe passed"
         else:
