@@ -82,9 +82,13 @@ def interop_dsn() -> Generator[_InteropDsn, None, None]:
             "Docker or INTEROP_DSN"
         )
 
-    pg = _EphemeralPostgres(
-        port="5434", container_name_prefix="agent-suite-restore"
-    )
+    # No fixed port: _EphemeralPostgres allocates one dynamically and retries
+    # on a bind race. The old ``port="5434"`` argument was removed from that
+    # class when it gained dynamic allocation, so this fixture raised TypeError
+    # for anyone whose environment took this branch (pg_dump present and
+    # INTEROP_DSN unset) — never CI, which always sets INTEROP_DSN, which is
+    # why it went unnoticed.
+    pg = _EphemeralPostgres(container_name_prefix="agent-suite-restore")
     pg.start()
     try:
         yield _InteropDsn(pg.dsn)
