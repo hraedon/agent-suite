@@ -31,7 +31,6 @@ from tests.conftest import (
     _docker_available,
     _dsn_available,
     _EphemeralPostgres,
-    _generate_hmac_key,
     _InteropDsn,
     _regista_available,
 )
@@ -103,33 +102,60 @@ def _pg_env(dsn_info: _InteropDsn) -> dict[str, str]:
     return env
 
 
-def test_restore_drill_verifies_intact(interop_dsn: _InteropDsn) -> None:
+def test_restore_drill_verifies_intact(
+    interop_dsn: _InteropDsn, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Dump the store, restore to a fresh database, and verify-restore.
 
     Drives a work-item through the canonical workflow to ``done``, dumps the
     project schema with ``pg_dump``, restores it into a fresh ``restored_db``
     database on the same server, and runs ``verify_restore`` against the
     restored DSN — proving the restored backup is cryptographically intact.
+
+    WI-077: provisioning now opens a v6 epoch, because regista 0.6.0 refuses an
+    ordinary write before genesis. See ``conftest``'s "v6 epoch provisioning"
+    section for what that entails. The drill's own claim is unchanged, and is
+    strictly better exercised: what gets dumped and restored is now a chain
+    whose row columns are covered by the signed envelope, so a restore that
+    survives ``verify_restore`` is a stronger statement than it was under v5.
     """
     import psycopg
     import regista as regista_pkg
     from regista import Regista
     from regista.testing import drop_project_schema
 
+    from tests.conftest import (
+        V6_ACCEPTOR_PRINCIPAL,
+        V6_AGENT_PRINCIPAL,
+        V6_BOOTSTRAP_PRINCIPAL,
+        V6_REVIEWER_MODEL_LINEAGE,
+        V6_REVIEWER_PRINCIPAL,
+        _generate_v6_keyset,
+        _open_v6_epoch,
+        _set_v6_producer_env,
+    )
+
     project = f"restore_{uuid.uuid4().hex[:8]}"
-    agent = "restore-agent"
-    reviewer = "restore-reviewer"
-    acceptor = "restore-acceptor"
+    agent = V6_AGENT_PRINCIPAL
+    reviewer = V6_REVIEWER_PRINCIPAL
+    acceptor = V6_ACCEPTOR_PRINCIPAL
+    actors = (agent, reviewer, acceptor)
     restored_db = f"restored_{uuid.uuid4().hex[:8]}"
 
+    _set_v6_producer_env(monkeypatch)
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        key_path = Path(tmpdir) / "hmac_keys.json"
-        _generate_hmac_key(key_path)
-        key_path_str = str(key_path)
+        keyset = _generate_v6_keyset(
+            Path(tmpdir), (V6_BOOTSTRAP_PRINCIPAL, *actors)
+        )
+        key_path_str = keyset.path
         dump_path = Path(tmpdir) / "store_dump.sql"
 
         sub = Regista.create_project(interop_dsn.dsn, project, key_path_str)
         try:
+            # Genesis before register_workflow: post-genesis the registration is
+            # a signed event, not just a registry row (V6-ENVELOPE.md §1.9).
+            _open_v6_epoch(sub, keyset, principals=actors)
             sub.register_workflow(regista_pkg.canonical_workflow_yaml())
             sub.register_actor_role(agent, "agent")
             sub.register_actor_role(reviewer, "human")
@@ -157,7 +183,11 @@ def test_restore_drill_verifies_intact(interop_dsn: _InteropDsn) -> None:
             sub.transition(
                 wi.work_item_id, "adversarial_pass", reviewer,
                 actor_kind="human", actor_metadata=human_meta,
-                payload={"review_note": "Restore drill: looks correct."},
+                payload={
+                    "review_note": "Restore drill: looks correct.",
+                    # Mandatory inside the v6 epoch (regista WI-307).
+                    "reviewer_claims": {"model_lineage": V6_REVIEWER_MODEL_LINEAGE},
+                },
             )
             sub.transition(
                 wi.work_item_id, "accept", acceptor,
