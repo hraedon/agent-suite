@@ -186,7 +186,18 @@ class _EphemeralPostgres:
                     f"POSTGRES_PASSWORD={self._password}",
                     "-p",
                     f"127.0.0.1:{self._port}:5432",
-                    "postgres:16-alpine",
+                    # Must track data/support-matrix.json's postgres_version
+                    # (18+) and ci.yml's service image (pgvector:pg18). It said
+                    # 16 while both of those said 18, so a local run exercised a
+                    # different major version than CI and the declared support
+                    # floor — and pg_dump 17+ against a 16 server fails outright
+                    # ("unrecognized configuration parameter
+                    # transaction_timeout"), which silently red-mained the
+                    # pg_dump-dependent modules for anyone with a current client.
+                    # Plain postgres rather than pgvector: nothing reached
+                    # through this fixture needs the extension (only agent-notes
+                    # does, and its smoke module takes its DSN separately).
+                    "postgres:18-alpine",
                 ],
                 capture_output=True,
                 text=True,
