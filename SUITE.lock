@@ -3,10 +3,10 @@
 
 [suite]
 release = "1.0.0-dev"
-regista_library_version = "0.5.5"
-regista_schema_version = 44
-regista_workflow_version = "2"
-regista_envelope_version = 5
+regista_library_version = "0.6.0"
+regista_schema_version = 49
+regista_workflow_version = "3"
+regista_envelope_version = 6
 
 [components.agent-capability-broker]
 repo = "hraedon/agent-capability-broker"
@@ -35,8 +35,8 @@ revision = "02737deb2ba55ba40463d37677a25f82f169d9bb"
 
 [components.regista]
 repo = "hraedon/regista"
-version = "0.5.5"
-revision = "375f1a1b4b808d4693493a8e98e7bfbe4bb0d278"
+version = "0.6.0"
+revision = "a34e3d68216f3fa9f52ba80d1d4b6d9cbd6bba16"
 
 [memory_provider]
 provider_name = "hindsight"
