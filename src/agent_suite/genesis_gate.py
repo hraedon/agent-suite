@@ -26,6 +26,26 @@ class ProbeStatus(StrEnum):
 PROBE_REPORT_VERSION = 1
 GENESIS_GATE_REPORT_VERSION = 1
 _PROBE_CHECK_STATUSES = frozenset({"pass", "measured", "fail"})
+_ACTOR_BOUNDARY_CHECK_ID = "regista.actor_boundary_signing"
+_ACTOR_BOUNDARY_CLAIM = "r10.no_arbitrary_principal.project_v6"
+_ACTOR_BOUNDARY_BASIS = "behavioral_attempt_ephemeral_epoch"
+_ACTOR_BOUNDARY_PATHS = frozenset(
+    {
+        "regista._genesis.append_v6_genesis",
+        "regista._v6_writer.append_v6_event",
+    }
+)
+_ACTOR_BOUNDARY_SHARED_CONSUMERS = frozenset(
+    {"regista._trust_log_writer.append_trust_log_event"}
+)
+_ACTOR_BOUNDARY_EXCLUSIONS = frozenset(
+    {
+        "regista._cli.cmd_trust_init_log",
+        "regista._cli.cmd_trust_delegate_registrar",
+        "regista._cli._resolve_trust_root_actor",
+        "regista._trust_log_writer.write_trust_genesis",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -205,6 +225,38 @@ def _status_detail(status: ProbeStatus) -> str:
             assert_never(unreachable)
 
 
+def _actor_boundary_contract_error(check: dict[str, Any]) -> str | None:
+    """Validate the exact scoped R-10 claim the gate is accepting.
+
+    A passing check ID alone is not evidence: regista's frozen trust-domain
+    contract leaves the offline-root Bootstrap-A actor mapping as WI-320. The
+    gate accepts the service-held-keyset claim only for the paths behaviorally
+    exercised by the probe, and requires the residual to remain explicit.
+    """
+    if check.get("claim") != _ACTOR_BOUNDARY_CLAIM:
+        return f"{_ACTOR_BOUNDARY_CHECK_ID} omitted or changed its scoped claim"
+    if check.get("basis") != _ACTOR_BOUNDARY_BASIS:
+        return f"{_ACTOR_BOUNDARY_CHECK_ID} omitted or changed its evidence basis"
+    fields = (
+        ("paths_proven", _ACTOR_BOUNDARY_PATHS),
+        ("shared_boundary_consumers", _ACTOR_BOUNDARY_SHARED_CONSUMERS),
+        ("excluded_paths", _ACTOR_BOUNDARY_EXCLUSIONS),
+    )
+    for field, expected in fields:
+        value = check.get(field)
+        if (
+            not isinstance(value, list)
+            or not all(isinstance(item, str) for item in value)
+            or frozenset(value) != expected
+            or len(value) != len(expected)
+        ):
+            return f"{_ACTOR_BOUNDARY_CHECK_ID} declared an unexpected {field} set"
+    reason = check.get("exclusion_reason")
+    if not isinstance(reason, str) or "WI-320" not in reason:
+        return f"{_ACTOR_BOUNDARY_CHECK_ID} did not name the WI-320 residual"
+    return None
+
+
 def _parse_probe_result(
     spec: ProbeSpec,
     completed: subprocess.CompletedProcess[str],
@@ -308,6 +360,16 @@ def _parse_probe_result(
         for check_id in spec.required_checks
     }
     by_id = {str(check["id"]): check for check in checks}
+    boundary = by_id.get(_ACTOR_BOUNDARY_CHECK_ID)
+    if boundary is not None:
+        contract_error = _actor_boundary_contract_error(boundary)
+        if contract_error is not None:
+            return ProbeResult(
+                spec.component,
+                ProbeStatus.MALFORMED,
+                checks,
+                contract_error,
+            )
     wrong_status = sorted(
         check_id
         for check_id, expected in required_statuses.items()
@@ -713,13 +775,25 @@ def evaluate_genesis_gate(
             ProbeStatus.FAIL,
         )
         owner_passed = owner_probe is not None and owner_probe.status is ProbeStatus.PASS
-        passed = owner_passed and check is not None and check.get("status") == "pass"
+        scoped_contract_error = (
+            _actor_boundary_contract_error(check)
+            if check_id == _ACTOR_BOUNDARY_CHECK_ID and check is not None
+            else None
+        )
+        passed = (
+            owner_passed
+            and check is not None
+            and check.get("status") == "pass"
+            and scoped_contract_error is None
+        )
         if check is None:
             detail = f"required behavioral probe is absent from {owner}"
         elif not owner_contract_valid:
             detail = f"{owner} probe did not pass contract validation"
         elif not owner_passed:
             detail = f"{owner} probe reported failure"
+        elif scoped_contract_error is not None:
+            detail = scoped_contract_error
         elif passed:
             detail = "behavioral probe passed"
         else:

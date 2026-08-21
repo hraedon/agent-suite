@@ -55,7 +55,26 @@ def _passing_bodies() -> dict[str, dict[str, object]]:
                 {"id": "regista.load_bearing_fields_refused", "status": "pass"},
                 {"id": "regista.closed_lineage_registry", "status": "pass"},
                 {"id": "regista.first_write_admission", "status": "pass"},
-                {"id": "regista.actor_boundary_signing", "status": "pass"},
+                {
+                    "id": "regista.actor_boundary_signing",
+                    "status": "pass",
+                    "claim": "r10.no_arbitrary_principal.project_v6",
+                    "basis": "behavioral_attempt_ephemeral_epoch",
+                    "paths_proven": [
+                        "regista._genesis.append_v6_genesis",
+                        "regista._v6_writer.append_v6_event",
+                    ],
+                    "shared_boundary_consumers": [
+                        "regista._trust_log_writer.append_trust_log_event"
+                    ],
+                    "excluded_paths": [
+                        "regista._cli.cmd_trust_init_log",
+                        "regista._cli.cmd_trust_delegate_registrar",
+                        "regista._cli._resolve_trust_root_actor",
+                        "regista._trust_log_writer.write_trust_genesis",
+                    ],
+                    "exclusion_reason": "WI-320 remains explicit",
+                },
             ],
         },
         "cairn": {
@@ -171,6 +190,34 @@ def test_actor_boundary_signing_failure_blocks_gate() -> None:
     )
     assert finding.status is ProbeStatus.FAIL
     assert "reported failure" in finding.detail
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("claim", None),
+        ("claim", "r10.full"),
+        ("basis", "configuration_inspection"),
+        ("paths_proven", ["regista._v6_writer.append_v6_event"]),
+        ("shared_boundary_consumers", []),
+        ("excluded_paths", []),
+        ("exclusion_reason", "residual omitted"),
+    ],
+)
+def test_actor_boundary_scope_contract_fails_closed(field: str, bad_value: object) -> None:
+    bodies = _passing_bodies()
+    signing = next(
+        check
+        for check in bodies["regista"]["checks"]  # type: ignore[union-attr]
+        if check["id"] == "regista.actor_boundary_signing"
+    )
+    signing[field] = bad_value
+
+    probes = _run_bodies(bodies)
+    regista = next(probe for probe in probes.probes if probe.component == "regista")
+
+    assert regista.status is ProbeStatus.MALFORMED
+    assert "actor_boundary_signing" in regista.detail
 
 
 def test_malformed_owner_probe_cannot_supply_a_passing_gate_check() -> None:
@@ -642,6 +689,42 @@ def test_forged_unhashable_check_status_is_a_blocked_finding_not_a_crash() -> No
 
     assert gate.ok is False
     assert any(item.check_id == "probe.check_contract" for item in gate.findings)
+
+
+def test_forged_bare_actor_boundary_check_cannot_bypass_parser() -> None:
+    passing = _run_bodies(_passing_bodies())
+    probes = []
+    for probe in passing.probes:
+        checks = tuple(
+            {"id": check["id"], "status": check["status"]}
+            if check.get("id") == "regista.actor_boundary_signing"
+            else check
+            for check in probe.checks
+        )
+        probes.append(
+            type(probe)(
+                component=probe.component,
+                status=probe.status,
+                checks=checks,
+                detail=probe.detail,
+            )
+        )
+    report = type(passing)(ok=True, probes=tuple(probes))
+
+    gate = evaluate_genesis_gate(
+        report,
+        expected_store_fingerprint=_STORE_FINGERPRINT,
+        expected_project=_PROJECT,
+    )
+
+    assert gate.ok is False
+    finding = next(
+        item
+        for item in gate.findings
+        if item.check_id == "regista.actor_boundary_signing"
+    )
+    assert finding.status is ProbeStatus.FAIL
+    assert "scoped claim" in finding.detail
 
 
 def test_duplicate_component_entries_are_rejected_not_last_wins() -> None:
