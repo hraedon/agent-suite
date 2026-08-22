@@ -18,6 +18,7 @@ from agent_suite.backup import (
     RestoreStep,
     RestoreStepResult,
     _mask_dsn,
+    _split_dsn_password,
     classify_pg_restore,
     format_backup_text,
     format_restore_text,
@@ -72,6 +73,36 @@ _DSN = "postgresql://DB-SERVICE-ACCOUNT:secretpw@suite-db.example:5432/regista"
 _DUMP_OK = _completed(stdout="", returncode=0)
 
 _RESTORE_OK = _completed(stdout="", returncode=0)
+
+
+def test_split_uri_dsn_preserves_username_and_decodes_password() -> None:
+    dsn = (
+        "postgresql://DB-SERVICE-ACCOUNT:p%40ss%3Aword@suite-db.example:5432/"
+        "regista?sslmode=require"
+    )
+
+    safe_dsn, password = _split_dsn_password(dsn)
+
+    assert safe_dsn == (
+        "postgresql://DB-SERVICE-ACCOUNT@suite-db.example:5432/"
+        "regista?sslmode=require"
+    )
+    assert password == "p@ss:word"
+
+
+def test_split_uri_dsn_preserves_ipv6_host() -> None:
+    safe_dsn, password = _split_dsn_password(
+        "postgresql://svc:secret@[2001:db8::1]:5432/regista"
+    )
+
+    assert safe_dsn == "postgresql://svc@[2001:db8::1]:5432/regista"
+    assert password == "secret"
+
+
+def test_split_uri_dsn_without_password_is_unchanged() -> None:
+    dsn = "postgresql://svc@suite-db.example:5432/regista"
+
+    assert _split_dsn_password(dsn) == (dsn, None)
 
 
 @pytest.fixture(autouse=True)
