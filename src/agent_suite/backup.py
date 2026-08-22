@@ -62,6 +62,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Protocol, assert_never
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from agent_suite.evidence import run_evidence_export
 from agent_suite.verify_restore import verify_restore
@@ -181,15 +182,20 @@ def classify_pg_restore(
 
 def _split_dsn_password(dsn: str) -> tuple[str, str | None]:
     if "://" in dsn:
-        scheme, rest = dsn.split("://", 1)
-        if "@" in rest:
-            creds, host_part = rest.split("@", 1)
-            password: str | None = None
-            if ":" in creds:
-                _, _, pw = creds.partition(":")
-                password = pw
-            safe_dsn = f"{scheme}://{host_part}"
-            return safe_dsn, password
+        parsed = urlsplit(dsn)
+        if parsed.password is not None:
+            hostname = parsed.hostname or ""
+            if ":" in hostname:
+                hostname = f"[{hostname}]"
+            if parsed.port is not None:
+                hostname = f"{hostname}:{parsed.port}"
+            netloc = hostname
+            if parsed.username is not None:
+                netloc = f"{parsed.username}@{netloc}"
+            safe_dsn = urlunsplit(
+                (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+            )
+            return safe_dsn, unquote(parsed.password)
     elif "=" in dsn and " " in dsn:
         parts = dsn.split()
         password = None
