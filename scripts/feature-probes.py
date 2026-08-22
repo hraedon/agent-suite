@@ -759,9 +759,7 @@ def _probe_agent_notes_project_discovery() -> ProbeOutcome:
     has_cwd_discovery = _sibling_has_attr(
         "agent_notes.core.project_discovery", "discover_project"
     )
-    has_principal = _sibling_has_attr(
-        "agent_notes.core.actor", "resolve_principal_id"
-    )
+    has_actor = _sibling_has_attr("agent_notes.core.actor", "resolve_actor")
     has_test = _sibling_test_exists("agent-notes", "test_project_discovery.py")
     evidence_parts = [
         f"agent_notes/core/face_factory.py={'present' if has_face else 'absent'}",
@@ -769,12 +767,12 @@ def _probe_agent_notes_project_discovery() -> ProbeOutcome:
         f"agent_notes/cli/workspace.py={'present' if has_cli_workspace else 'absent'}",
         f"db.resolve_project (path -> project)={'present' if has_resolve_project else 'missing'}",
         f"cwd discovery={'present' if has_cwd_discovery else 'missing'}",
-        f"actor.resolve_principal_id={'present' if has_principal else 'missing'}",
+        f"actor.resolve_actor={'present' if has_actor else 'missing'}",
         f"tests/test_project_discovery.py={'present' if has_test else 'missing'}",
     ]
     if not has_face:
         return ProbeOutcome(ProbeResult.ABSENT, "; ".join(evidence_parts))
-    if not has_principal:
+    if not has_actor:
         return ProbeOutcome(
             ProbeResult.PARTIAL,
             "; ".join(evidence_parts) + "; no per-user identity resolution",

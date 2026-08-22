@@ -78,7 +78,7 @@
       "title": "Key rotation safety",
       "maturity": "provisional",
       "enforcing_components": ["regista", "agent-suite"],
-      "maturity_note": "Revocation detection is now exercised end-to-end through the real store at the principal-binding layer: suite interop revokes a principal's Ed25519 key and asserts its past event fails verify_event_principal_binding with key-revoked (tests/test_interop.py::test_drive_work_item_per_principal_ed25519_to_done). Stronger than the prior in-memory detached-event proof. Still provisional: a full rotate (new key signs new events while the old key's events verify under the old key, and replay(verify_principal_binding=True) over a mixed pre/post-rotation chain) is not yet a CI assertion."
+      "maturity_note": "The v6 proof is chain-ordered and non-retroactive: a signed principal_key_acceptance_revoked makes the principal's next write fail with KEY_ACCEPTANCE_REVOKED, while events written before the revocation remain valid because their acceptance was live when they were signed (tests/test_adversarial_corpus.py::test_adversarial_mutation[REVOKED_KEY]). The projection-registry verifier is explicitly refused for v6 and is not evidence for this claim. Still provisional: a full rotate (new key signs new events while the old key's earlier events remain valid, and replay(verify_principal_binding=True) succeeds over the mixed pre/post-rotation chain) is not yet a CI assertion."
     },
     {
       "id": "CL-011",

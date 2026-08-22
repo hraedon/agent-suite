@@ -74,13 +74,14 @@ def _drive_to_done(proj: RegistaProject) -> str:
         wi.work_item_id, "submit_for_review", proj.agent,
         actor_kind="agent", actor_metadata=proj.agent_meta,
     )
+    # The shared fixture uses one producer lineage and acknowledges that fact.
     sub.transition(
         wi.work_item_id,
         "adversarial_pass",
         proj.reviewer,
         actor_kind="human",
         actor_metadata=proj.human_meta,
-        payload={"review_note": "Cross-lineage review: looks correct."},
+        payload=proj.review_payload("Cross-lineage review: looks correct."),
     )
     sub.transition(
         wi.work_item_id,
@@ -179,11 +180,20 @@ def _mutate_payload_change(proj: RegistaProject) -> None:
         conn.commit()
         try:
             report = proj.sub.replay(work_item_id=wi_id)
-            assert report.replayed_drift > 0, (
-                f"Payload change not detected: drift={report.replayed_drift}, "
-                f"halted={report.halted}, warnings={report.warnings}"
+            # WI-077 / v6: the row's ``payload`` column is now reconciled
+            # against the signed canonical envelope, so this is refused at
+            # verification (halt) rather than surfacing later as state drift.
+            # Detection strengthened; the assertion names the reason so the
+            # case stays distinguishable from the other halting mutations.
+            assert report.halted > 0, (
+                f"Payload change not detected: halted={report.halted}, "
+                f"drift={report.replayed_drift}, warnings={report.warnings}"
             )
-            assert report.halted == 0
+            detail = " ".join(e.detail or "" for e in report.entries)
+            assert "row_field_mismatch" in detail and "payload" in detail, (
+                f"expected a payload row/envelope mismatch, got: {detail}"
+            )
+            assert report.replayed_drift == 0
             assert report.warnings == 0
         finally:
             conn.execute(
@@ -227,13 +237,22 @@ def _mutate_forged_prev_event_hash(proj: RegistaProject) -> None:
         conn.commit()
         try:
             report = proj.sub.replay(work_item_id=wi_id)
-            assert report.warnings > 0, (
-                f"Forged prev_event_hash not detected: "
-                f"warnings={report.warnings}, drift={report.replayed_drift}, "
-                f"halted={report.halted}"
+            # WI-077 / v6: the chain link is inside the signed envelope
+            # (``chain.previous_entity_event_hash``), so forging the row column
+            # is a structural chain-break verdict AND a verification failure —
+            # no longer a mere advisory warning. ``chain_breaks`` is the field
+            # that distinguishes this case from the other halting mutations.
+            assert report.chain_breaks > 0, (
+                f"Forged prev_event_hash not detected as a chain break: "
+                f"chain_breaks={report.chain_breaks}, halted={report.halted}, "
+                f"warnings={report.warnings}, drift={report.replayed_drift}"
+            )
+            assert report.halted > 0
+            detail = " ".join(e.detail or "" for e in report.entries)
+            assert "row_field_mismatch" in detail and "prev_event_hash" in detail, (
+                f"the mismatch must name the forged column, got: {detail}"
             )
             assert report.replayed_drift == 0
-            assert report.halted == 0
         finally:
             conn.execute(
                 "UPDATE events SET prev_event_hash = %s "
@@ -500,99 +519,70 @@ def _mutate_unauthorized_project_access(proj: RegistaProject) -> None:
 
 
 def _mutate_revoked_key(proj: RegistaProject) -> None:
-    """Revoke a principal's Ed25519 key and verify detection.
+    """Revoke a principal's key acceptance and verify the refusal (v6 form).
 
-    Generates an Ed25519 keypair, registers the public key in the principal
-    key registry, creates an Ed25519-signed event (in memory), verifies the
-    principal binding passes, revokes the key, and verifies the binding now
-    fails with ``key-revoked``.
+    WI-077 re-anchored this scenario. Its v5 form registered a public key in the
+    ``principal_keys`` table via ``sub.principals.register``, signed a synthetic
+    event, verified the binding, then called ``sub.principals.revoke`` and
+    asserted the binding now failed with ``key-revoked``. regista 0.6.0 removes
+    BOTH halves of that mechanism:
 
-    The owning layer is ``verify_event_principal_binding`` (regista Plan 026),
-    not ``replay`` — replay verifies HMAC envelope integrity, not asymmetric
-    principal binding.  This mirrors how ``anchor_mismatch`` tests
-    ``verify_anchor_receipt`` rather than ``replay``.
+    * ``principals.register`` / ``principals.revoke`` are refused outright with
+      ``PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED`` — ``principal_keys`` is a
+      projection of signed trust-log events, not a table to write
+      (``TRUST-DOMAIN.md`` §5.9), and writing it directly while emitting no event
+      is precisely the S6 defect the cutover closes.
+    * ``verify_event_principal_binding`` refuses to answer for a v6 event at all
+      (``v6-binding-not-decided-by-registry``, §5.9 rule 1).
+
+    The v6 mechanism is a signed ``principal_key_acceptance_revoked`` event on
+    the project chain, and its effect is a WRITE-TIME refusal (``§5.10`` step 4).
+    So the adversarial property is asserted where it now lives — and the fact
+    that revocation is deliberately **not retroactive** is asserted too, because
+    a reader of the v5 test would otherwise expect it to be.
     """
-    from datetime import UTC, datetime
+    wi_id = _drive_to_done(proj)
+    _assert_clean_chain(proj.sub, wi_id)
 
-    import nacl.signing
-    from regista import Event
-    from regista._events import sign_event
-    from regista._signing_scheme import Ed25519Scheme
+    proj.revoke_acceptance(proj.agent, reason="compromised")
 
-    pytest.importorskip("nacl.signing")
-
-    _drive_to_done(proj)
-
-    signing_key = nacl.signing.SigningKey.generate()
-    private_key_bytes = bytes(signing_key)
-    public_key_bytes = bytes(signing_key.verify_key)
-
-    principal_id = f"revoked-key-test-{uuid.uuid4().hex[:8]}"
-
-    reg_result = proj.sub.principals.register(
-        principal_id, public_key_bytes, scheme="ed25519",
-        registered_by="test",
-    )
-    key_id = reg_result["key_id"]
-
-    event_id = uuid.uuid4()
-    work_item_id = uuid.uuid4()
-    timestamp = datetime.now(UTC)
-    payload = {"note": "Ed25519 signed test event"}
-    transition = "note"
-
-    signature, canonical_hash, envelope = sign_event(
-        event_id=event_id,
-        work_item_id=work_item_id,
-        actor_id=principal_id,
-        key_id=key_id,
-        event_seq=99,
-        workflow_name="canonical",
-        workflow_version=1,
-        timestamp=timestamp,
-        transition=transition,
-        payload=payload,
-        key=private_key_bytes,
-        scheme=Ed25519Scheme(),
-        entity_kind="work_item",
-        hash_alg="sha-256",
+    # (1) Write-time refusal: the revoked principal can no longer extend the
+    #     chain. This is the adversarial property — a stolen key stops working.
+    # Caught as Exception rather than regista.RegistaError so the assertion
+    # below (on the named error code) is what decides, not the class.
+    with pytest.raises(Exception) as exc_info:
+        proj.sub.create_work_item(
+            workflow_name="canonical",
+            work_item_type="bug",
+            actor_id=proj.agent,
+            actor_kind="agent",
+            actor_metadata=proj.agent_meta,
+            custom_fields={"title": "written with a revoked acceptance"},
+        )
+    assert "KEY_ACCEPTANCE_REVOKED" in str(exc_info.value), (
+        f"expected a KEY_ACCEPTANCE_REVOKED refusal, got: {exc_info.value}"
     )
 
-    event = Event(
-        event_id=event_id,
-        work_item_id=work_item_id,
-        event_seq=99,
-        actor_id=principal_id,
-        actor_kind="agent",
-        actor_metadata=None,
-        key_id=key_id,
-        workflow_name="canonical",
-        workflow_version=1,
-        timestamp=timestamp,
-        transition=transition,
-        payload=payload,
-        payload_canonical_hash=canonical_hash,
-        signature=signature,
-        canonical_envelope=envelope,
-        scheme_id="ed25519",
-        entity_kind="work_item",
-        entity_id=work_item_id,
-        hash_alg="sha-256",
+    # (2) NOT retroactive, on purpose. §5.10 step 4 refuses an event only when a
+    #     revocation lies BETWEEN its acceptance and the event on the chain; the
+    #     acceptance really was valid when these events were signed, so they must
+    #     keep verifying. Asserted rather than left implicit: silently gaining
+    #     retroactive invalidation would be a semantic change worth a red run.
+    report = proj.sub.replay(work_item_id=wi_id)
+    assert report.halted == 0, (
+        "revoking an acceptance must not retroactively invalidate events that "
+        f"preceded the revocation: halted={report.halted}, "
+        f"detail={[e.detail for e in report.entries]}"
     )
+    assert report.replayed_drift == 0
+    assert report.chain_breaks == 0
 
-    result = proj.sub.verify_event_principal_binding(event)
-    assert result["verified"] is True, (
-        f"Binding should pass with active key: {result}"
-    )
-
-    proj.sub.principals.revoke(principal_id, key_id, reason="test revocation")
-
-    result = proj.sub.verify_event_principal_binding(event)
-    assert result["verified"] is False, (
-        f"Binding should fail with revoked key: {result}"
-    )
-    assert "key-revoked" in str(result.get("error", "")), (
-        f"Expected key-revoked error, got: {result}"
+    # (3) The revocation itself is on the chain and verifies like any other
+    #     event, so the whole-project replay stays clean.
+    whole = proj.sub.replay()
+    assert whole.halted == 0 and whole.chain_breaks == 0, (
+        f"the revocation event must itself verify: halted={whole.halted}, "
+        f"chain_breaks={whole.chain_breaks}"
     )
 
 

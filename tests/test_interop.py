@@ -29,6 +29,7 @@ makes a lock a release (docs/bootstrap-contract.md §5).
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from pathlib import Path
@@ -39,7 +40,6 @@ from agent_suite.signature_assurance import bundle_verdict
 from tests.conftest import (
     RegistaProject,
     _can_run,
-    _generate_hmac_key,
 )
 
 # ---------------------------------------------------------------------------
@@ -148,13 +148,17 @@ def test_drive_work_item_across_workflow_to_done(regista_project: RegistaProject
     assert sub.get_work_item(wi.work_item_id).current_state == "in_review"
 
     # --- Human face: adversarial review pass ---
+    # The shared fixture uses one synthetic producer lineage throughout, so the
+    # payload explicitly acknowledges the same-lineage review.
     sub.transition(
         wi.work_item_id,
         "adversarial_pass",
         reviewer,
         actor_kind="human",
         actor_metadata=human_meta,
-        payload={"review_note": "Cross-lineage review: looks correct."},
+        payload=regista_project.review_payload(
+            "Cross-lineage review: looks correct."
+        ),
     )
     assert sub.get_work_item(wi.work_item_id).current_state == "in_human_review"
 
@@ -201,30 +205,55 @@ def test_drive_work_item_across_workflow_to_done(regista_project: RegistaProject
 
 @pytest.mark.skipif(not _can_run(), reason=_SKIP_REASON)
 def test_drive_work_item_per_principal_ed25519_to_done(
-    interop_dsn: str, tmp_path: Path
+    interop_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Drive one work-item to ``done`` with every event signed per-principal.
 
-    The spine- and face-level interop tests above sign with a *shared* HMAC key:
-    the chain is tamper-evident but the actor field is self-asserted — anyone
-    holding the shared key could have written any event. This test closes that
-    gap (claims ledger CL-002): each principal signs with its **own** Ed25519
-    key, so "principal X did Y" is cryptographically provable (non-repudiation).
+    The spine-level interop test above signs each event with the acting
+    principal's own key too, but this test is the *dedicated* non-repudiation
+    proof (claims ledger CL-002): it owns the store configuration that makes a
+    shared secret impossible, and it verifies attribution four independent ways.
 
-    The project is created with ``strict_asymmetric=True`` so the store
-    **rejects any HMAC fallback** — a per-principal Ed25519 key bound to the
-    acting principal is mandatory for every event. The matching public keys are
-    registered in the principal_keys registry so that both verification layers
-    are exercised:
+    ``strict_asymmetric=True`` is retained deliberately even though the v6
+    keyset holds no HMAC key at all: the flag is the store's own refusal of an
+    HMAC fallback, and asserting the property by construction (there is no such
+    key) is weaker than also asking the store to refuse it.
 
-    * per-event ``verify_event_principal_binding`` (signature + actor↔signer
-      binding against the registry);
-    * chain-level ``replay(verify_principal_binding=True)`` (zero drift, zero
-      binding failures);
-    * independent verification under the exported public key (and rejection
-      under the wrong principal's key);
-    * revocation detection — once a principal's key is revoked, its past events
-      fail binding with ``key-revoked`` (also strengthens CL-010).
+    **WI-077 — what the 0.6.0 cutover did to this test.** The v5 version
+    registered each public key in the ``principal_keys`` table via
+    ``sub.principals.register`` and verified attribution against that table.
+    regista 0.6.0 removes that mechanism root and branch:
+
+    * ``principals.register`` / ``.revoke`` are refused with
+      ``PRINCIPAL_KEYS_PROJECTION_WRITE_REFUSED``: the table is a projection of
+      signed events, and writing it directly while emitting none is the S6
+      defect the cutover exists to close (``TRUST-DOMAIN.md`` §5.9).
+    * ``verify_event_principal_binding`` refuses to answer for a v6 event at
+      all — §5.9 rule 1, "no verifier resolves a key from this table for a v6
+      event".
+
+    So the registry-based leg is not re-plumbed, it is **inverted**: this test
+    now pins the refusal, because a future release that silently started
+    answering from the projection again would be a regression in exactly the
+    property 0.6.0 bought. The attribution claim itself is carried by the three
+    legs that survive the cutover intact, all of which are stronger under v6:
+
+    * per-transition signer identity — each event names the acting principal
+      and is signed by *that principal's* key (the v6 writer refuses an
+      actor/signer mismatch outright, ``ACTOR_SIGNER_MISMATCH``);
+    * chain-level ``replay(verify_principal_binding=True)`` — zero drift, zero
+      binding failures, and ``principal_binding_verified`` True, which inside a
+      v6 epoch means the §5.10 acceptance-chain check actually ran (a zero
+      failure count is only an affirmative claim when it did);
+    * independent verification under each exported public key, and
+      **non**-verification under every other principal's key — attribution is
+      non-transferable.
+
+    The revocation leg (CL-010) moved to
+    ``test_adversarial_corpus.py::test_adversarial_mutation[REVOKED_KEY]``,
+    which exercises the v6 mechanism (a signed
+    ``principal_key_acceptance_revoked`` and its write-time refusal). It is not
+    duplicated here.
     """
     pytest.importorskip("nacl.signing")
 
@@ -234,43 +263,53 @@ def test_drive_work_item_per_principal_ed25519_to_done(
     from regista import Regista
     from regista.testing import drop_project_schema
 
-    from tests.conftest import _generate_per_principal_ed25519_keys
-
-    agent = "test-agent"
-    reviewer = "test-reviewer"
-    acceptor = "test-acceptor"
-    agent_meta = {"role": "agent"}
-    human_meta = {"role": "human"}
-
-    project = f"ed25519_{uuid.uuid4().hex[:8]}"
-    key_path = tmp_path / "ed25519_keys.json"
-    material = _generate_per_principal_ed25519_keys(
-        key_path, [agent, reviewer, acceptor]
+    from tests.conftest import (
+        V6_ACCEPTOR_PRINCIPAL,
+        V6_AGENT_MODEL,
+        V6_AGENT_MODEL_LINEAGE,
+        V6_AGENT_PRINCIPAL,
+        V6_BOOTSTRAP_PRINCIPAL,
+        V6_REVIEWER_MODEL,
+        V6_REVIEWER_MODEL_LINEAGE,
+        V6_REVIEWER_PRINCIPAL,
+        _generate_v6_keyset,
+        _open_v6_epoch,
+        _set_v6_producer_env,
     )
 
+    agent = V6_AGENT_PRINCIPAL
+    reviewer = V6_REVIEWER_PRINCIPAL
+    acceptor = V6_ACCEPTOR_PRINCIPAL
+    agent_meta = {"role": "agent"}
+    human_meta = {"role": "human"}
+    actors = (agent, reviewer, acceptor)
+
+    project = f"ed25519_{uuid.uuid4().hex[:8]}"
+    # Own keyset and own epoch rather than the shared ``regista_project``
+    # fixture: this test owns the strict_asymmetric store configuration, which
+    # is part of what it proves.
+    _set_v6_producer_env(
+        monkeypatch,
+        model=V6_AGENT_MODEL,
+        model_lineage=V6_AGENT_MODEL_LINEAGE,
+    )
+    keyset = _generate_v6_keyset(tmp_path, (V6_BOOTSTRAP_PRINCIPAL, *actors))
+
     # Constructed inside the try so the schema is dropped even if create_project
-    # or registration raises (no orphaned schema).
+    # or provisioning raises (no orphaned schema).
     sub = None
     try:
         sub = Regista.create_project(
-            interop_dsn, project, str(key_path), strict_asymmetric=True
+            interop_dsn, project, keyset.path, strict_asymmetric=True
         )
+        _open_v6_epoch(sub, keyset, principals=actors)
         sub.register_workflow(regista_pkg.canonical_workflow_yaml())
         sub.register_actor_role(agent, "agent")
         sub.register_actor_role(reviewer, "human")
         sub.register_actor_role(acceptor, "human")
 
-        # Register each principal's public key in the registry under the SAME
-        # key_id the key-set file uses, so signing and binding verification
-        # agree on the key identity.
-        for pid in (agent, reviewer, acceptor):
-            sub.principals.register(
-                pid, material[pid]["public"], scheme="ed25519",
-                key_id=f"ed-{pid}", registered_by="interop-test",
-            )
-
         # --- Drive the canonical workflow (agent files + works; humans review
-        #     and accept), exactly as the spine-level HMAC test does ---
+        #     and accept), exactly as the spine-level test does ---
         wi, create_evt = sub.create_work_item(
             workflow_name="canonical",
             work_item_type="bug",
@@ -288,11 +327,17 @@ def test_drive_work_item_per_principal_ed25519_to_done(
             wi.work_item_id, "submit_for_review", agent,
             actor_kind="agent", actor_metadata=agent_meta,
         )
+        _set_v6_producer_env(
+            monkeypatch,
+            model=V6_REVIEWER_MODEL,
+            model_lineage=V6_REVIEWER_MODEL_LINEAGE,
+        )
         sub.transition(
             wi.work_item_id, "adversarial_pass", reviewer,
             actor_kind="human", actor_metadata=human_meta,
             payload={"review_note": "cross-lineage review: looks correct."},
         )
+        _set_v6_producer_env(monkeypatch)
         sub.transition(
             wi.work_item_id, "accept", acceptor,
             actor_kind="human", actor_metadata=human_meta,
@@ -326,35 +371,42 @@ def test_drive_work_item_per_principal_ed25519_to_done(
                 f"{transition_name}: actor_id={evt.actor_id!r}, "
                 f"expected {principal!r}"
             )
-            assert evt.key_id == f"ed-{principal}", (
-                f"{transition_name}: key_id={evt.key_id!r}, "
-                f"expected ed-{principal}"
+            # Compared against the keyset's own key id rather than a literal, so
+            # the key-id derivation stays in one place.
+            assert evt.key_id == keyset.key_for(principal).key_id, (
+                f"{transition_name}: key_id={evt.key_id!r}, expected "
+                f"{keyset.key_for(principal).key_id!r}"
             )
         # Three distinct principals => three distinct signing keys.
         assert len({e.key_id for e in events}) == 3
 
-        # --- (2) Per-event principal binding verifies (strong, per-event) ---
-        # This is the load-bearing non-repudiation check: verify_event_principal
-        # _binding fails with unregistered-signer / signature-verification-failed
-        # if the registry or signature is wrong, so the loop is meaningful even
-        # though replay's binding pass silently skips unregistered actors.
+        # --- (2) The registry path is REFUSED for a v6 event (§5.9 rule 1) ---
+        # Pinned as a refusal, not skipped: this is the property the cutover
+        # bought, and a release that quietly started answering from the
+        # projection again must turn this run red.
         for e in events:
             result = sub.verify_event_principal_binding(e)
-            assert result["verified"] is True, (
-                f"{e.transition}: binding failed: {result['error']}"
+            assert result["verified"] is False, (
+                f"{e.transition}: the principal_keys projection must not decide "
+                f"a v6 event's key binding, but it returned {result}"
             )
-            assert result["principal_id"] == e.actor_id
-            assert result["key_id"] == e.key_id, (
-                f"{e.transition}: registry key_id={result['key_id']!r} != "
-                f"event key_id={e.key_id!r}"
+            assert "v6-binding-not-decided-by-registry" in str(result["error"]), (
+                f"{e.transition}: expected the named §5.9 rule 1 refusal, got "
+                f"{result['error']!r}"
             )
 
-        # --- (3) Chain-level replay with binding: zero drift, zero failures ---
+        # --- (3) Chain-level binding: zero drift, zero failures, check RAN ---
         report = sub.replay(verify_principal_binding=True)
         assert report.replayed_drift == 0, f"drift: {report.replayed_drift}"
         assert report.halted == 0, f"halted: {report.halted}"
+        assert report.chain_breaks == 0, f"chain breaks: {report.chain_breaks}"
         assert report.principal_binding_failures == 0, (
             f"binding failures: {report.principal_binding_failures}"
+        )
+        # Load-bearing: a zero failure count means nothing unless the check ran.
+        assert report.principal_binding_verified is True, (
+            "the acceptance-chain binding check did not run, so zero failures "
+            "is 'not checked', not 'passed' (regista WI-223)"
         )
 
         # --- (4) Independent verification under the exported public keys:
@@ -364,6 +416,13 @@ def test_drive_work_item_per_principal_ed25519_to_done(
             k["principal_id"]: base64.b64decode(k["public_key"])
             for k in sub.export_public_keys()
         }
+        # The exported material must be the key material actually on file —
+        # otherwise leg (4) would verify against whatever the store chose to
+        # publish rather than against the signer's real key.
+        for principal in actors:
+            assert pubs[principal] == keyset.key_for(principal).public_key, (
+                f"exported public key for {principal} does not match the keyset"
+            )
         for e in events:
             assert sub.verify_event_signature(
                 e, public_key=pubs[e.actor_id]
@@ -377,30 +436,6 @@ def test_drive_work_item_per_principal_ed25519_to_done(
                     f"{e.transition} (signed by {e.actor_id}) must NOT verify "
                     f"under {other_principal}'s key"
                 )
-
-        # --- (5) Revocation detection: revoke the acceptor's key, its past
-        #     event must now fail binding with key-revoked (CL-010) ---
-        accept_evt = by_transition["accept"]
-        sub.principals.revoke(
-            acceptor, f"ed-{acceptor}", reason="interop revocation proof"
-        )
-        revoked_result = sub.verify_event_principal_binding(accept_evt)
-        assert revoked_result["verified"] is False, (
-            "binding must fail once the signing key is revoked"
-        )
-        assert "key-revoked" in str(revoked_result.get("error", "")), (
-            f"expected key-revoked, got: {revoked_result.get('error')}"
-        )
-        # Chain-level replay must also surface the revoked key as a binding
-        # failure (replay-level revocation detection). The revoked entry is
-        # still present in the registry, so replay's binding pass runs and
-        # flags it — unlike an unregistered actor, which it silently skips.
-        revoked_report = sub.replay(
-            work_item_id=wi.work_item_id, verify_principal_binding=True
-        )
-        assert revoked_report.principal_binding_failures >= 1, (
-            "replay must flag the revoked acceptor key as a binding failure"
-        )
     finally:
         if sub is not None:
             sub.close()
@@ -421,7 +456,7 @@ def test_drive_work_item_per_principal_ed25519_to_done(
     ),
 )
 def test_drive_work_item_across_real_faces_to_done(
-    interop_dsn: str, tmp_path: Path
+    interop_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Face-level: drive ONE work-item across the two real face packages to ``done``.
 
@@ -455,34 +490,71 @@ def test_drive_work_item_across_real_faces_to_done(
     from dossier.gateway import RegistaGateway
     from regista.testing import drop_project_schema
 
+    from tests.conftest import (
+        V6_BOOTSTRAP_PRINCIPAL,
+        _generate_v6_keyset,
+        _open_v6_epoch,
+        _set_v6_producer_env,
+    )
+
+    worker_id = "agent:faces-worker"
+    reviewer_id = "agent:faces-reviewer"
+    human_id = "human:faces-operator"
+    actors = (worker_id, reviewer_id, human_id)
     project = f"faces_{uuid.uuid4().hex[:8]}"
+    _set_v6_producer_env(monkeypatch)
+    keyset = _generate_v6_keyset(
+        tmp_path,
+        (V6_BOOTSTRAP_PRINCIPAL, *actors),
+        filename="faces_v6_keys.json",
+    )
 
-    key_path = tmp_path / "hmac_keys.json"
-    _generate_hmac_key(key_path)
-    key_path_str = str(key_path)
-
-    # Bootstrap: one shared project + the canonical workflow.
-    boot = regista.Regista.create_project(interop_dsn, project, key_path_str)
-    boot.register_workflow(regista.canonical_workflow_yaml())
-    boot.close()
-
-    # Two independent faces, two independent connections, ONE project.
-    agent_face = RegistaFace(regista.Regista(interop_dsn, project, key_path_str))
-    human_face = RegistaGateway(regista.Regista(interop_dsn, project, key_path_str))
-
-    # Two agents of different model lineage + one human.
+    # Actors carry canonical principal identity only. Model provenance is the
+    # process-level producer identity and is switched truthfully before each
+    # model's actions below.
     worker = AgentActor(
-        actor_id="faces-agent", actor_kind="agent",
-        display_name="agent worker", role="agent", model_lineage="claude",
+        actor_id=worker_id, actor_kind="agent",
+        display_name="agent worker", role="agent",
     )
     reviewer = AgentActor(
-        actor_id="faces-reviewer", actor_kind="agent",
-        display_name="cross-lineage reviewer", role="agent", model_lineage="glm",
+        actor_id=reviewer_id, actor_kind="agent",
+        display_name="cross-lineage reviewer", role="agent",
     )
-    human = HumanActor(actor_id="faces-human", actor_kind="human", display_name="operator")
+    human = HumanActor(actor_id=human_id, actor_kind="human", display_name="operator")
 
+    boot = agent_face = human_face = None
     try:
+        # The real faces must run over the same v6 recipe as the spine fixture:
+        # genesis first, then one signed project-local acceptance per actor.
+        boot = regista.Regista.create_project(
+            interop_dsn, project, keyset.path, strict_asymmetric=True
+        )
+        _open_v6_epoch(boot, keyset, principals=actors)
+        boot.register_workflow(regista.canonical_workflow_yaml())
+        boot.register_actor_role(worker_id, "agent")
+        boot.register_actor_role(reviewer_id, "agent")
+        boot.register_actor_role(human_id, "human")
+        boot.close()
+        boot = None
+
+        # Two independent face connections, one accepted per-principal keyset.
+        agent_face = RegistaFace(
+            regista.Regista(
+                interop_dsn, project, keyset.path, strict_asymmetric=True
+            )
+        )
+        human_face = RegistaGateway(
+            regista.Regista(
+                interop_dsn, project, keyset.path, strict_asymmetric=True
+            )
+        )
+
         # --- Agent face: file + work the item ---
+        _set_v6_producer_env(
+            monkeypatch,
+            model="claude-opus-test-worker",
+            model_lineage="claude-opus",
+        )
         wid, state = agent_face.create_breadcrumb(
             actor=worker,
             title="Interop: cross-face work-item via real faces",
@@ -496,13 +568,21 @@ def test_drive_work_item_across_real_faces_to_done(
         assert state == "in_review", f"expected in_review, got {state!r}"
 
         # --- Agent face: cross-lineage adversarial review (reviewer != worker) ---
+        _set_v6_producer_env(
+            monkeypatch,
+            model="glm-test-reviewer",
+            model_lineage="glm",
+        )
         state = agent_face.transition_breadcrumb(
             reviewer, wid, "adversarial_pass",
-            payload={"review_note": "independent cross-lineage review: sound"},
+            payload={
+                "review_note": "independent cross-lineage review: sound",
+            },
         )
         assert state == "in_human_review", f"expected in_human_review, got {state!r}"
 
         # --- Human face: accept to done ---
+        _set_v6_producer_env(monkeypatch)
         human_face.transition(
             actor=human, work_item_id=wid, transition_name="accept",
             payload={"review_note": "human sign-off"},
@@ -525,8 +605,9 @@ def test_drive_work_item_across_real_faces_to_done(
         assert report.halted == 0
         assert report.replayed_ok >= 1
     finally:
-        agent_face.close()
-        human_face.close()
+        for handle in (boot, agent_face, human_face):
+            if handle is not None:
+                handle.close()
         drop_project_schema(interop_dsn, project)
 
 
@@ -544,7 +625,7 @@ def test_drive_work_item_across_real_faces_to_done(
     ),
 )
 def test_drive_work_item_per_principal_ed25519_across_real_faces(
-    interop_dsn: str, tmp_path: Path
+    interop_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Face-level companion to the spine per-principal proof (CL-002).
 
@@ -576,22 +657,29 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
     from dossier.gateway import RegistaGateway
     from regista.testing import drop_project_schema
 
-    from tests.conftest import _generate_per_principal_ed25519_keys
+    from tests.conftest import (
+        V6_BOOTSTRAP_PRINCIPAL,
+        _generate_v6_keyset,
+        _open_v6_epoch,
+        _set_v6_producer_env,
+    )
 
-    worker_id = "faces-agent"
-    reviewer_id = "faces-reviewer"
-    human_id = "faces-human"
+    worker_id = "agent:faces-agent"
+    reviewer_id = "agent:faces-reviewer"
+    human_id = "human:faces-human"
+    actors = (worker_id, reviewer_id, human_id)
 
     project = f"faces_ed_{uuid.uuid4().hex[:8]}"
-    key_path = tmp_path / "ed25519_keys.json"
-    material = _generate_per_principal_ed25519_keys(
-        key_path, [worker_id, reviewer_id, human_id]
+    _set_v6_producer_env(monkeypatch)
+    keyset = _generate_v6_keyset(
+        tmp_path,
+        (V6_BOOTSTRAP_PRINCIPAL, *actors),
+        filename="faces_ed25519_keys.json",
     )
-    key_path_str = str(key_path)
 
     worker = AgentActor(
         actor_id=worker_id, actor_kind="agent",
-        display_name="agent worker", role="agent", model_lineage="claude",
+        display_name="agent worker", role="agent",
     )
     # The adversarial reviewer is deliberately a SECOND agent of a different
     # model lineage (glm vs claude) — the canonical workflow's adversarial_pass
@@ -599,7 +687,7 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
     # face-level interop test above.
     reviewer = AgentActor(
         actor_id=reviewer_id, actor_kind="agent",
-        display_name="cross-lineage reviewer", role="agent", model_lineage="glm",
+        display_name="cross-lineage reviewer", role="agent",
     )
     human = HumanActor(
         actor_id=human_id, actor_kind="human", display_name="operator"
@@ -613,14 +701,13 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
         # Bootstrap: one shared per-principal project + canonical workflow + the
         # principal_keys registry (so binding verification is meaningful).
         boot = regista.Regista.create_project(
-            interop_dsn, project, key_path_str, strict_asymmetric=True
+            interop_dsn, project, keyset.path, strict_asymmetric=True
         )
+        _open_v6_epoch(boot, keyset, principals=actors)
         boot.register_workflow(regista.canonical_workflow_yaml())
-        for pid in (worker_id, reviewer_id, human_id):
-            boot.principals.register(
-                pid, material[pid]["public"], scheme="ed25519",
-                key_id=f"ed-{pid}", registered_by="interop-test",
-            )
+        boot.register_actor_role(worker_id, "agent")
+        boot.register_actor_role(reviewer_id, "agent")
+        boot.register_actor_role(human_id, "human")
         # Release the bootstrap connection before the faces open theirs; clear
         # the handle so the finally loop does not redundantly re-close it
         # (Regista.close() is idempotent, but this makes the intent explicit).
@@ -631,19 +718,24 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
         # key file, all with HMAC fallback forbidden.
         agent_face = RegistaFace(
             regista.Regista(
-                interop_dsn, project, key_path_str, strict_asymmetric=True
+                interop_dsn, project, keyset.path, strict_asymmetric=True
             )
         )
         human_face = RegistaGateway(
             regista.Regista(
-                interop_dsn, project, key_path_str, strict_asymmetric=True
+                interop_dsn, project, keyset.path, strict_asymmetric=True
             )
         )
         verifier = regista.Regista(
-            interop_dsn, project, key_path_str, strict_asymmetric=True
+            interop_dsn, project, keyset.path, strict_asymmetric=True
         )
 
         # --- Agent face: file + work the item ---
+        _set_v6_producer_env(
+            monkeypatch,
+            model="claude-opus-test-worker",
+            model_lineage="claude-opus",
+        )
         wid, state = agent_face.create_breadcrumb(
             actor=worker,
             title="Interop: per-principal Ed25519 via real faces",
@@ -657,13 +749,21 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
         assert state == "in_review", f"expected in_review, got {state!r}"
 
         # --- Agent face: cross-lineage adversarial review ---
+        _set_v6_producer_env(
+            monkeypatch,
+            model="glm-test-reviewer",
+            model_lineage="glm",
+        )
         state = agent_face.transition_breadcrumb(
             reviewer, wid, "adversarial_pass",
-            payload={"review_note": "independent cross-lineage review: sound"},
+            payload={
+                "review_note": "independent cross-lineage review: sound",
+            },
         )
         assert state == "in_human_review", f"expected in_human_review, got {state!r}"
 
         # --- Human face: accept to done ---
+        _set_v6_producer_env(monkeypatch)
         human_face.transition(
             actor=human, work_item_id=wid, transition_name="accept",
             payload={"review_note": "human sign-off"},
@@ -696,9 +796,10 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
                 f"{transition_name}: actor_id={evt.actor_id!r}, "
                 f"expected {principal!r}"
             )
-            assert evt.key_id == f"ed-{principal}", (
+            expected_key_id = keyset.key_for(principal).key_id
+            assert evt.key_id == expected_key_id, (
                 f"{transition_name}: key_id={evt.key_id!r}, "
-                f"expected ed-{principal}"
+                f"expected {expected_key_id}"
             )
         kinds = {e.actor_kind for e in events}
         assert {"agent", "human"} <= kinds, f"chain not mixed: {sorted(kinds)}"
@@ -714,16 +815,14 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
         # export (keyed by key_id); the registry-binding proof is section (3).
         assert info["principal_id"] == human_id
 
-        # --- (3) Registry binding proof (independent verifier handle) ---
+        # --- (3) The projection registry path is refused for v6 (§5.9) ---
         for e in events:
             result = verifier.verify_event_principal_binding(e)
-            assert result["verified"] is True, (
-                f"{e.transition}: binding failed: {result['error']}"
+            assert result["verified"] is False, (
+                f"{e.transition}: v6 binding must not be decided by principal_keys"
             )
-            assert result["principal_id"] == e.actor_id
-            assert result["key_id"] == e.key_id, (
-                f"{e.transition}: registry key_id={result['key_id']!r} != "
-                f"event key_id={e.key_id!r}"
+            assert "v6-binding-not-decided-by-registry" in str(result["error"]), (
+                f"{e.transition}: expected the named §5.9 refusal, got {result}"
             )
 
         # --- (4) Independent verification: each event verifies under its own
@@ -777,9 +876,26 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
         verifier.export_audit_bundle(bundle_path)
         payload = regista.Regista.verify_audit_bundle_offline(bundle_path)
         verdict = bundle_verdict(payload)
-        assert verdict.ok, f"§5 per-actor signature requirement: {verdict.detail}"
-        assert verdict.unverifiable == 0
-        assert verdict.verified == verdict.events
+        # This fixture intentionally has no external trust-policy pin, so v6
+        # reports genesis applicability as unresolved. That is not a symmetric
+        # signature and must not be mislabeled as one. Prove the per-actor
+        # property directly over every bundled event, including bootstrap and
+        # key-acceptance events, then pin the one expected trust limitation.
+        bundle = json.loads(Path(bundle_path).read_text(encoding="utf-8"))
+        expected_keys = {
+            principal: keyset.key_for(principal).key_id
+            for principal in (V6_BOOTSTRAP_PRINCIPAL, *actors)
+        }
+        assert all(event["scheme_id"] == "ed25519" for event in bundle["events"])
+        for event in bundle["events"]:
+            assert event["key_id"] == expected_keys[event["actor_id"]]
+        assert payload["verified"] is True
+        assert payload["signatures_verified"] == payload["event_count"] - 1
+        assert payload["signatures_unverifiable"] == 1
+        assert len(payload["unverifiable_details"]) == 1
+        assert "bootstrap_external_authority" in payload["unverifiable_details"][0]
+        assert verdict.ok is False
+        assert "symmetric" not in verdict.detail
     finally:
         for handle in (agent_face, human_face, verifier, boot):
             if handle is not None:

@@ -208,16 +208,16 @@ Each entry follows the structure required by Plan 008 §6.1:
 
 | Field | Value |
 |-------|-------|
-| **Claim** | An unknown or revoked key status raises at startup or verification time; the system never silently proceeds with an unregistered signer. |
-| **Protected asset** | The key registry — the set of valid signing keys per principal. |
+| **Claim** | In a v6 epoch, project-local key authority is chain-ordered: revocation refuses the principal's next write, while events signed before the revocation remain valid under the acceptance that was live at that chain position. |
+| **Protected asset** | The signed project-local acceptance chain — the set of principals and keys authorised at each project-chain position. |
 | **Threat actor** | An attacker who uses a revoked key to sign events after revocation. |
-| **Trust boundary** | The key registry boundary — `regista verify` reads the registry at verify time, not a cached copy. |
-| **Enforcing component** | regista + agent-suite — key registry, `valid_from`/`valid_to` windows, `unregistered-signer`/`key-revoked` failures; suite interop exercises revocation end-to-end through the real store. |
-| **Positive proof** | `docs/key-custody-threat-model.md` T5 — "regista verify reads the registry at verify time, not a cached copy. A revoked key produces an `unregistered-signer` failure for post-revocation events." `valid_from`/`valid_to` windows are the design (regista Plan 026 WI-3.1). |
-| **Adversarial/failure proof** | `tests/test_interop.py::test_drive_work_item_per_principal_ed25519_to_done` — drives a per-principal Ed25519 chain to `done` through the real store, revokes the acceptor's key, and asserts its past event now fails `verify_event_principal_binding` with `key-revoked` (end-to-end, not a detached in-memory event). `tests/test_adversarial_corpus.py` (mutation `REVOKED_KEY`) covers the same `verify_event_principal_binding` path with a detached event. |
-| **Residual risk** | Revocation detection is exercised end-to-end at the binding layer, but a full *rotate* (new key signs new events while the old key's events still verify under the old key, and `replay(verify_principal_binding=True)` over a mixed pre/post-rotation chain) is not yet a CI assertion. The key-custody threat model (T5) identifies "a verifier uses a stale public-key registry snapshot" as a threat — the mitigation depends on regista always reading the live registry, which is not verified by an agent-suite test. Key rotation cadence is documented in `docs/key-operations.md` but not enforced automatically. |
+| **Trust boundary** | The v6 key-acceptance boundary — verification follows signed acceptance/revocation events in project-chain order and never resolves v6 authority from the `principal_keys` projection. |
+| **Enforcing component** | regista + agent-suite — `principal_key_accepted`, `principal_key_acceptance_revoked`, write-time `KEY_ACCEPTANCE_REVOKED`, and acceptance-chain replay; suite interop pins the projection-registry refusal for v6. |
+| **Positive proof** | `tests/test_adversarial_corpus.py` mutation `REVOKED_KEY` writes a signed project-local acceptance revocation and observes the next append fail with `KEY_ACCEPTANCE_REVOKED`; the pre-revocation event remains valid, matching TRUST-DOMAIN §5.10. |
+| **Adversarial/failure proof** | `tests/test_interop.py::test_drive_work_item_per_principal_ed25519_to_done` and its installed-face companion assert `verify_event_principal_binding` refuses to decide a v6 event from the projection (`v6-binding-not-decided-by-registry`), so a stale or hand-written projection cannot silently replace the acceptance chain. |
+| **Residual risk** | A full *rotate* (new key signs new events while the old key's earlier events remain valid, and `replay(verify_principal_binding=True)` succeeds over a mixed pre/post-rotation chain) is not yet a CI assertion. Key rotation cadence is documented in `docs/key-operations.md` but not enforced automatically. |
 | **Supported profiles** | B and C (Profile A has no human principals requiring rotation) |
-| **Maturity** | provisional (end-to-end revocation detection at the binding layer; full rotate + `replay`-level detection over a mixed chain not yet a CI assertion) |
+| **Maturity** | provisional (write-time revocation and projection-refusal proofs are CI-qualified; full rotate + `replay` over a mixed chain is not yet asserted) |
 | **Last verified release** | unverified |
 
 ---

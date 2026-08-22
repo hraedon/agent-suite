@@ -6,27 +6,33 @@ verifies the clean chain, then injects four independent tampered events
 directly into the events table and confirms ``regista replay`` catches each
 with a distinct, named failure.
 
-The four tamper scenarios map to four distinct ReplayReport categories:
+The four tamper scenarios stay four distinct findings, but WI-077 re-anchored
+two of them on regista 0.6.0's v6 envelope, where several row columns that used
+to be unsigned are now committed to by the signature:
 
 * **Mutated event body** — the ``payload`` column is edited without touching
-  ``canonical_envelope`` or ``signature``.  The stored envelope still
-  verifies, so the signature check passes, but the replayed state
-  (computed from the mutated payload) diverges from the live projection →
-  ``replayed_drift > 0``.
+  ``canonical_envelope`` or ``signature``.  v5: the envelope still verified and
+  only the replayed state diverged (``replayed_drift > 0``).  **v6: the row is
+  reconciled against the signed envelope, so the tamper is caught at
+  verification** → ``halted > 0`` with ``reasons=row_field_mismatch`` naming
+  ``payload``.  Strictly stronger: refused rather than noticed afterwards.
 
 * **Spoofed ``actor_id``** — the ``actor_id`` column is changed and
   ``canonical_envelope`` is nulled so verification cannot fall back to the
-  stored envelope.  The candidate envelopes are rebuilt with the spoofed
-  actor, the HMAC no longer matches, and replay halts → ``halted > 0``.
+  stored envelope.  Replay halts → ``halted > 0`` with
+  ``reasons=envelope_absent``.  (Unchanged in kind by the cutover.)
 
-* **Forged ``prev_event_hash``** — the hash-chain link is corrupted.  The
-  signature still verifies (envelope unchanged), but
-  ``_verify_hash_chain`` detects the mismatch → ``warnings > 0``.
+* **Forged ``prev_event_hash``** — the hash-chain link is corrupted.  v5: an
+  unsigned column, so an advisory ``warnings > 0``.  **v6: the link lives in the
+  signed envelope (``chain.previous_entity_event_hash``), so it is both a
+  verification failure and a structural verdict** → ``chain_breaks > 0`` and
+  ``halted > 0``.  ``chain_breaks`` is what keeps this case distinct from the
+  other three halts.
 
 * **Forged ``signature``** — the ``signature`` column is replaced with
-  garbage bytes (without nulling ``canonical_envelope``).  The signature
-  no longer matches any candidate envelope, verification fails, and
-  replay halts → ``halted > 0``.
+  garbage bytes (without nulling ``canonical_envelope``).  The signature no
+  longer matches the stored envelope, verification fails, and replay halts →
+  ``halted > 0`` with ``reasons=signature_invalid``.
 
 Gated on the component contracts existing: skips cleanly if the regista
 package or Docker (for ephemeral Postgres) are unavailable, or if
@@ -66,10 +72,13 @@ def test_tamper_detection(regista_project: RegistaProject) -> None:
     events in the Postgres events table.  Each scenario is restored before
     the next so the chain is clean between runs.
 
-    The four tamper scenarios produce distinct ReplayReport categories:
-    ``replayed_drift``, ``halted``, ``warnings``, and ``halted`` — proving
-    the chain catches mutation, identity spoofing, hash-chain forgery,
-    and signature forgery respectively.
+    Inside the v6 epoch all four scenarios halt replay, so "halted > 0" alone
+    would no longer tell them apart. Each therefore asserts its own signature:
+    ``reasons=row_field_mismatch`` naming ``payload`` (mutation),
+    ``reasons=envelope_absent`` (identity spoofing), ``chain_breaks`` plus a
+    mismatch naming ``prev_event_hash`` (hash-chain forgery), and
+    ``reasons=signature_invalid`` (signature forgery). See the module docstring
+    for what changed at the cutover and why each move is a strengthening.
     """
     import psycopg
     from psycopg.rows import dict_row
@@ -106,13 +115,16 @@ def test_tamper_detection(regista_project: RegistaProject) -> None:
     )
     assert sub.get_work_item(wi.work_item_id).current_state == "in_review"
 
+    # The shared fixture uses one producer lineage and acknowledges that fact.
     sub.transition(
         wi.work_item_id,
         "adversarial_pass",
         reviewer,
         actor_kind="human",
         actor_metadata=human_meta,
-        payload={"review_note": "Cross-lineage review: looks correct."},
+        payload=regista_project.review_payload(
+            "Cross-lineage review: looks correct."
+        ),
     )
     assert sub.get_work_item(wi.work_item_id).current_state == "in_human_review"
 
@@ -163,16 +175,30 @@ def test_tamper_detection(regista_project: RegistaProject) -> None:
         conn.commit()
         try:
             report = sub.replay(work_item_id=wi.work_item_id)
-            assert report.replayed_drift > 0, (
-                f"Mutated payload not detected: "
-                f"drift={report.replayed_drift}, halted={report.halted}, "
-                f"warnings={report.warnings}"
+            # WI-077 / v6: the detection signal MOVED, and strengthened. Under
+            # v5 the row's ``payload`` column was outside what the stored
+            # envelope committed to, so the signature still verified and the
+            # tamper only showed up as replayed_drift — a *state* divergence
+            # discovered after the event had been accepted. In the v6 epoch the
+            # row is reconciled field-by-field against the signed canonical
+            # envelope, so the mutation is caught at verification and replay
+            # HALTS with reasons=row_field_mismatch naming ``payload``. The
+            # reason string is asserted, not just ``halted > 0``, so this
+            # scenario keeps its discriminating power against the other three.
+            assert report.halted > 0, (
+                f"Mutated payload not detected: halted={report.halted}, "
+                f"drift={report.replayed_drift}, warnings={report.warnings}"
             )
-            assert report.halted == 0, (
-                f"Mutated payload produced unexpected halt: {report.halted}"
+            detail = " ".join(e.detail or "" for e in report.entries)
+            assert "row_field_mismatch" in detail, (
+                f"expected a row/envelope reconciliation failure, got: {detail}"
             )
-            assert report.warnings == 0, (
-                f"Mutated payload produced unexpected warnings: {report.warnings}"
+            assert "payload" in detail, (
+                f"the mismatch must name the mutated column, got: {detail}"
+            )
+            assert report.replayed_drift == 0, (
+                "the tamper is refused at verification, so replay never gets far "
+                f"enough to compute drift: {report.replayed_drift}"
             )
         finally:
             conn.execute(
@@ -228,6 +254,12 @@ def test_tamper_detection(regista_project: RegistaProject) -> None:
             assert report.warnings == 0, (
                 f"Spoofed actor_id produced unexpected warnings: {report.warnings}"
             )
+            # Distinct from the other three halts: nulling the envelope leaves
+            # nothing to verify against, which is its own named reason.
+            detail = " ".join(e.detail or "" for e in report.entries)
+            assert "envelope_absent" in detail, (
+                f"expected an absent-envelope refusal, got: {detail}"
+            )
         finally:
             conn.execute(
                 "UPDATE events SET actor_id = %s, canonical_envelope = %s "
@@ -271,16 +303,30 @@ def test_tamper_detection(regista_project: RegistaProject) -> None:
         conn.commit()
         try:
             report = sub.replay(work_item_id=wi.work_item_id)
-            assert report.warnings > 0, (
-                f"Forged prev_event_hash not detected: "
-                f"warnings={report.warnings}, drift={report.replayed_drift}, "
-                f"halted={report.halted}"
+            # WI-077 / v6: same movement as scenario 1, one step further. Under
+            # v5 ``prev_event_hash`` was an unsigned row column, so corrupting it
+            # was an advisory ``warnings`` finding. In v6 the chain link is inside
+            # the signed envelope (``chain.previous_entity_event_hash``), so the
+            # forgery is BOTH a verification failure (halt, reasons=
+            # row_field_mismatch naming prev_event_hash) and a structural
+            # chain-break verdict. ``chain_breaks`` is the field that makes this
+            # scenario distinguishable from scenarios 1/2/4, all of which also
+            # halt — asserting it is what keeps the four cases four cases.
+            assert report.chain_breaks > 0, (
+                f"Forged prev_event_hash not detected as a chain break: "
+                f"chain_breaks={report.chain_breaks}, halted={report.halted}, "
+                f"warnings={report.warnings}, drift={report.replayed_drift}"
+            )
+            assert report.halted > 0, (
+                "a signed chain link that disagrees with its row must also fail "
+                f"verification: halted={report.halted}"
+            )
+            detail = " ".join(e.detail or "" for e in report.entries)
+            assert "row_field_mismatch" in detail and "prev_event_hash" in detail, (
+                f"the mismatch must name the forged column, got: {detail}"
             )
             assert report.replayed_drift == 0, (
                 f"Forged hash produced unexpected drift: {report.replayed_drift}"
-            )
-            assert report.halted == 0, (
-                f"Forged hash produced unexpected halt: {report.halted}"
             )
         finally:
             conn.execute(
@@ -332,6 +378,12 @@ def test_tamper_detection(regista_project: RegistaProject) -> None:
             assert report.warnings == 0, (
                 f"Forged signature produced unexpected warnings: {report.warnings}"
             )
+            # Distinct from the other three halts: the envelope is intact and
+            # reconciles with the row; only the signature over it is wrong.
+            detail = " ".join(e.detail or "" for e in report.entries)
+            assert "signature_invalid" in detail, (
+                f"expected a signature-invalid refusal, got: {detail}"
+            )
         finally:
             conn.execute(
                 "UPDATE events SET signature = %s "
@@ -346,4 +398,3 @@ def test_tamper_detection(regista_project: RegistaProject) -> None:
     assert report.replayed_drift == 0
     assert report.halted == 0
     assert report.warnings == 0
-

@@ -88,7 +88,7 @@
       "profile": "A",
       "status": "pass",
       "dependency": "agent-notes WI-013",
-      "proof": "probe: _probe_agent_notes_project_discovery -> pass; evidence: agent_notes/core/face_factory.py=present; face_factory importable=yes; agent_notes/cli/workspace.py=present; db.resolve_project (path -> project)=present; cwd discovery=present; actor.resolve_principal_id=present; tests/test_project_discovery.py=present; project discovered from cwd with per-user identity resolution",
+      "proof": "probe: _probe_agent_notes_project_discovery -> pass; evidence: agent_notes/core/face_factory.py=present; face_factory importable=yes; agent_notes/cli/workspace.py=present; db.resolve_project (path -> project)=present; cwd discovery=present; actor.resolve_actor=present; tests/test_project_discovery.py=present; project discovered from cwd with per-user identity resolution",
       "excluded": "\u2014",
       "notes": "Per-project RegistaFace exists but write-through is gated.",
       "owning_wi": "WI-010",

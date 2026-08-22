@@ -3,25 +3,25 @@
 
 [suite]
 release = "1.0.0-dev"
-regista_library_version = "0.5.5"
-regista_schema_version = 44
-regista_workflow_version = "2"
-regista_envelope_version = 5
+regista_library_version = "0.7.1"
+regista_schema_version = 50
+regista_workflow_version = "3"
+regista_envelope_version = 6
 
 [components.agent-capability-broker]
 repo = "hraedon/agent-capability-broker"
 version = "0.1.0"
-revision = "d6412ed67ca2077babd4a116689c04678374ab60"
+revision = "2d510fd1df6a633588b1d45982d08e62017fb61a"
 
 [components.agent-notes]
 repo = "hraedon/agent-notes"
-version = "1.0.0"
-revision = "ca711c4e2f2a78114acc966e228241ed0dbb247f"
+version = "1.1.0"
+revision = "73b521679c392314da6c08e4ccd8a55c04f35c0a"
 
 [components.agent-provenance]
 repo = "hraedon/agent-provenance"
 version = "0.1.0"
-revision = "fea9765647602d732dd30925c0e7d45a84488ecb"
+revision = "4e49ace1cd065a7a5b9b802376f508324a3af878"
 
 [components.agent-wake]
 repo = "hraedon/agent-wake"
@@ -31,12 +31,12 @@ revision = "377e8dd6642d79c39853666eebb68a35e7180714"
 [components.dossier]
 repo = "hraedon/dossier"
 version = "0.1.0"
-revision = "02737deb2ba55ba40463d37677a25f82f169d9bb"
+revision = "bd4984a17b5ad11ab4d75fb0e621376dcdea933d"
 
 [components.regista]
 repo = "hraedon/regista"
-version = "0.5.5"
-revision = "375f1a1b4b808d4693493a8e98e7bfbe4bb0d278"
+version = "0.7.1"
+revision = "8dd7b3464b0316f0f3a36e46dee64e36ceac6dbf"
 
 [memory_provider]
 provider_name = "hindsight"

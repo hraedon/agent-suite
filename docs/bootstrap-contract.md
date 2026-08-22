@@ -228,45 +228,35 @@ qualification, not routine health.
 
 ## 4. The compatibility lock (`SUITE.lock`)
 
-A committed manifest pinning the known-good set:
+A committed manifest pinning the known-good set. The shape is stable; the
+values move every lock advance, so the repo's own `SUITE.lock` — not this
+snippet — is authoritative. Abridged snapshot as of the regista 0.6.0 advance:
 
 ```toml
 [suite]
 release = "1.0.0-dev"
-regista_library_version = "0.5.1"
-regista_schema_version = 43
-regista_workflow_version = "2"
-regista_envelope_version = 5
+regista_library_version = "0.6.0"
+regista_schema_version = 49
+regista_workflow_version = "3"
+regista_envelope_version = 6
 
 [components.regista]
 repo = "hraedon/regista"
-version = "0.5.1"
-revision = "ea434ace9a65bdcadf6161056433b57d7afeca01"
+version = "0.6.0"
+revision = "a34e3d68216f3fa9f52ba80d1d4b6d9cbd6bba16"
 
-[components.dossier]
-repo = "hraedon/dossier"
-version = "0.0.1"
-revision = "db834d834a7f3291acbe9206fcc6226f0b5f96c6"
+# ... one [components.<name>] table per member, same three keys ...
 
 [components.agent-notes]
 repo = "hraedon/agent-notes"
 version = "1.0.0"
-revision = "a33e95092342b8d723a72d66275892531907ec64"
+revision = "ca711c4e2f2a78114acc966e228241ed0dbb247f"
 
-[components.agent-provenance]
-repo = "hraedon/agent-provenance"
-version = "0.1.0"
-revision = "3605d67f15b03e0ed2dc2ce12f719729607066af"
-
-[components.agent-capability-broker]
-repo = "hraedon/agent-capability-broker"
-version = "0.1.0"
-revision = "9610aef6c0d223bc33157b200711953700ce747d"
-
-[components.agent-wake]
-repo = "hraedon/agent-wake"
-version = "0.1.0"
-revision = "90d83803e0824be132dfa531c07daa364a753966"
+[memory_provider]
+provider_name = "hindsight"
+protocol_version = "1.0"
+deployment_mode = "remote"
+support_level = "supported"
 ```
 
 `agent-suite lock` regenerates it from the currently-pinned set; `doctor`

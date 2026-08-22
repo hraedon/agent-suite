@@ -229,6 +229,18 @@ PROFILE_B_CONFIG_SURFACE: tuple[ConfigVar, ...] = (
         ConfigNeed.REQUIRED,
         "the regista project slug(s) this dossier fronts",
     ),
+    ConfigVar(
+        "REGISTA_TRUST_LOG_PROJECT",
+        "dossier",
+        ConfigNeed.REQUIRED,
+        "distinct estate-wide project that records principal lifecycle events",
+    ),
+    ConfigVar(
+        "REGISTA_TRUST_GENESIS_PATH",
+        "dossier",
+        ConfigNeed.REQUIRED,
+        "operator-pinned signed trust-genesis document for lifecycle authority",
+    ),
     # --- dossier: LDAP (required when DOSSIER_AUTH_BACKEND=ldap) ---------------
     ConfigVar(
         "DOSSIER_LDAP_SERVER",
@@ -456,6 +468,10 @@ DOSSIER_VARS_NOT_IN_SUITE_ENV: dict[str, str] = {
     ),
     "DOSSIER_HMAC_KEY_PATH": (
         "deprecated alias for REGISTA_KEY_PATH, same reason"
+    ),
+    "DOSSIER_TRUST_LOG_PROJECT": (
+        "deprecated alias for REGISTA_TRUST_LOG_PROJECT; the lifecycle trust log "
+        "is a suite-wide contract, not a dossier-local setting"
     ),
 }
 

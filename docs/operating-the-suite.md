@@ -240,7 +240,14 @@ proof that signing happens at the actor boundary and no service holds a keyset a
 to sign as arbitrary principals, the gate stays blocked and the epoch may not open.
 The proof must behaviorally attempt an unbound-principal signing request and observe
 the named refusal; key-binding configuration or key-file inspection is not evidence
-that the service cannot perform the action.
+that the service cannot perform the action. Contract v1 scopes that proof to project-v6
+genesis, ordinary project events, and the shared ordinary trust-log writer boundary. The
+one-time offline-root wrappers (`trust init-log` and root-authorised `trust
+delegate-registrar`) are machine-readably excluded: they map an operator-held root seed to an
+operator-asserted actor before constructing a temporary keyset, the WI-320 attribution residual.
+That is not a service-held keyset, and `initial_custody.declared_holder` is explicitly not
+authenticated identity under the frozen trust-domain contract. The umbrella validates the exact
+claim, evidence basis, covered paths and exclusions; a bare passing check ID cannot open the gate.
 Missing component probes fail the scheduled run
 and are also named blockers in the gate. Each required check is a closed, tested set in
 `agent_suite.genesis_gate.GENESIS_REQUIRED_CHECKS`. Removing or weakening a

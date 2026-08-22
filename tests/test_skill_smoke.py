@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import _can_run, _generate_hmac_key
+from tests.conftest import _can_run
 
 _SKIP_REASON = (
     "Skill smoke prerequisites not met — need agent-notes + regista + "
@@ -230,7 +230,15 @@ def smoke_project() -> Generator[dict[str, str], None, None]:
 
     if _regista_available() and regista_dsn and regista_dsn != dsn:
         import regista
-        from regista.testing import drop_project_schema
+        from regista.testing import (
+            TEST_HARNESS,
+            TEST_HARNESS_VERSION,
+            TEST_MODEL,
+            TEST_MODEL_LINEAGE,
+            drop_project_schema,
+            make_v6_keyset,
+            open_v6_epoch,
+        )
 
         slug = uuid.uuid4().hex[:8]
         project_name = f"skill_smoke_{slug}"
@@ -248,16 +256,35 @@ def smoke_project() -> Generator[dict[str, str], None, None]:
                  "GIT_COMMITTER_NAME": "smoke", "GIT_COMMITTER_EMAIL": "s@t"},
         )
 
-        key_path = project_dir / "hmac_keys.json"
-        _generate_hmac_key(key_path)
+        actor_id = "agent:skill-smoke"
+        producer_env = {
+            "REGISTA_PRODUCER_HARNESS": TEST_HARNESS,
+            "REGISTA_PRODUCER_HARNESS_VERSION": TEST_HARNESS_VERSION,
+            "REGISTA_PRODUCER_MODEL": TEST_MODEL,
+            "REGISTA_PRODUCER_MODEL_LINEAGE": TEST_MODEL_LINEAGE,
+        }
+        keyset = make_v6_keyset(project_dir, principals=(actor_id,))
 
         try:
             # Create the regista project in the regista STORE (not the domain
             # DSN). project_name == regista_project_name("skill-smoke-<slug>")
             # so the face resolves the same schema from --path.
-            sub = regista.Regista.create_project(regista_dsn, project_name, str(key_path))
-            sub.register_workflow(regista.canonical_workflow_yaml())
-            sub.close()
+            sub = regista.Regista.create_project(regista_dsn, project_name, keyset.path)
+            saved_producer_env = {
+                name: os.environ.get(name) for name in producer_env
+            }
+            try:
+                os.environ.update(producer_env)
+                open_v6_epoch(sub, keyset, principals=(actor_id,))
+                sub.register_workflow(regista.canonical_workflow_yaml())
+                sub.register_actor_role(actor_id, "agent")
+            finally:
+                sub.close()
+                for name, value in saved_producer_env.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
         except Exception:
             shutil.rmtree(project_dir, ignore_errors=True)
             if _REQUIRE:
@@ -265,9 +292,22 @@ def smoke_project() -> Generator[dict[str, str], None, None]:
                     "Ephemeral project creation failed (CI requires isolation)"
                 )
         else:
+            # Init now validates that the derived regista project really exists,
+            # so it needs the same canonical two-DSN and identity environment as
+            # the subsequent writes.
+            smoke_env = {
+                **env,
+                "REGISTA_DSN": regista_dsn,
+                "AGENT_NOTES_REGISTA_DSN": regista_dsn,
+                "AGENT_NOTES_REGISTA_WRITES": "1",
+                "REGISTA_KEY_PATH": keyset.path,
+                "AGENT_NOTES_REGISTA_HMAC_KEY_PATH": keyset.path,
+                "AGENT_NOTES_ACTOR_ID": actor_id,
+                **producer_env,
+            }
             init_proc = _run_cli(
                 ("agent-notes", "init", str(project_dir), "--no-hooks"),
-                env,
+                smoke_env,
             )
             if init_proc.returncode == 0:
                 # Verbs run with BOTH DSNs + the writes gate on, so mutating
@@ -277,14 +317,6 @@ def smoke_project() -> Generator[dict[str, str], None, None]:
                 # REGISTA_KEY_PATH ahead of the AGENT_NOTES_REGISTA_* aliases,
                 # so a leaked production REGISTA_DSN in the operator's shell
                 # would otherwise redirect these subprocess writes at prod.
-                smoke_env = {
-                    **env,
-                    "REGISTA_DSN": regista_dsn,
-                    "AGENT_NOTES_REGISTA_DSN": regista_dsn,
-                    "AGENT_NOTES_REGISTA_WRITES": "1",
-                    "REGISTA_KEY_PATH": str(key_path),
-                    "AGENT_NOTES_REGISTA_HMAC_KEY_PATH": str(key_path),
-                }
                 yield {"path": str(project_dir), "dsn": dsn, **smoke_env}
                 drop_project_schema(regista_dsn, project_name)
                 shutil.rmtree(project_dir, ignore_errors=True)
@@ -292,7 +324,11 @@ def smoke_project() -> Generator[dict[str, str], None, None]:
             drop_project_schema(regista_dsn, project_name)
             shutil.rmtree(project_dir, ignore_errors=True)
             if _REQUIRE:
-                pytest.fail("agent-notes init failed in CI")
+                pytest.fail(
+                    "agent-notes init failed in CI: "
+                    f"exit={init_proc.returncode}, stdout={init_proc.stdout[-500:]!r}, "
+                    f"stderr={init_proc.stderr[-500:]!r}"
+                )
     elif _REQUIRE:
         if not _regista_available():
             pytest.fail("INTEROP_REQUIRE_FACES=1 but regista is not importable")
