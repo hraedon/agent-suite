@@ -126,8 +126,11 @@ def test_restore_drill_verifies_intact(
 
     from tests.conftest import (
         V6_ACCEPTOR_PRINCIPAL,
+        V6_AGENT_MODEL,
+        V6_AGENT_MODEL_LINEAGE,
         V6_AGENT_PRINCIPAL,
         V6_BOOTSTRAP_PRINCIPAL,
+        V6_REVIEWER_MODEL,
         V6_REVIEWER_MODEL_LINEAGE,
         V6_REVIEWER_PRINCIPAL,
         _generate_v6_keyset,
@@ -142,7 +145,11 @@ def test_restore_drill_verifies_intact(
     actors = (agent, reviewer, acceptor)
     restored_db = f"restored_{uuid.uuid4().hex[:8]}"
 
-    _set_v6_producer_env(monkeypatch)
+    _set_v6_producer_env(
+        monkeypatch,
+        model=V6_AGENT_MODEL,
+        model_lineage=V6_AGENT_MODEL_LINEAGE,
+    )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         keyset = _generate_v6_keyset(
@@ -180,15 +187,17 @@ def test_restore_drill_verifies_intact(
                 wi.work_item_id, "submit_for_review", agent,
                 actor_kind="agent", actor_metadata=agent_meta,
             )
+            _set_v6_producer_env(
+                monkeypatch,
+                model=V6_REVIEWER_MODEL,
+                model_lineage=V6_REVIEWER_MODEL_LINEAGE,
+            )
             sub.transition(
                 wi.work_item_id, "adversarial_pass", reviewer,
                 actor_kind="human", actor_metadata=human_meta,
-                payload={
-                    "review_note": "Restore drill: looks correct.",
-                    # Mandatory inside the v6 epoch (regista WI-307).
-                    "reviewer_claims": {"model_lineage": V6_REVIEWER_MODEL_LINEAGE},
-                },
+                payload={"review_note": "Restore drill: looks correct."},
             )
+            _set_v6_producer_env(monkeypatch)
             sub.transition(
                 wi.work_item_id, "accept", acceptor,
                 actor_kind="human", actor_metadata=human_meta,

@@ -74,8 +74,7 @@ def _drive_to_done(proj: RegistaProject) -> str:
         wi.work_item_id, "submit_for_review", proj.agent,
         actor_kind="agent", actor_metadata=proj.agent_meta,
     )
-    # WI-077: inside the v6 epoch a positive verdict MUST carry
-    # ``reviewer_claims.model_lineage`` (regista WI-307) or ingress fails closed.
+    # The shared fixture uses one producer lineage and acknowledges that fact.
     sub.transition(
         wi.work_item_id,
         "adversarial_pass",

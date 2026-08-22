@@ -169,6 +169,14 @@ def bundle_verdict(payload: Mapping[str, Any]) -> BundleVerdict:
             "count is not zero",
         )
     if unverifiable > 0:
+        raw_details = payload.get("unverifiable_details")
+        if isinstance(raw_details, list) and raw_details:
+            details = "; ".join(str(item) for item in raw_details)
+            return BundleVerdict(
+                False, events, verified, unverifiable,
+                f"{unverifiable} of {events} signature applicability check(s) "
+                f"are unresolved: {details}",
+            )
         return BundleVerdict(
             False, events, verified, unverifiable,
             f"{unverifiable} of {events} signature(s) are unverifiable "

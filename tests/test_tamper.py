@@ -115,8 +115,7 @@ def test_tamper_detection(regista_project: RegistaProject) -> None:
     )
     assert sub.get_work_item(wi.work_item_id).current_state == "in_review"
 
-    # WI-077: inside the v6 epoch a positive verdict MUST carry
-    # ``reviewer_claims.model_lineage`` (regista WI-307) or ingress fails closed.
+    # The shared fixture uses one producer lineage and acknowledges that fact.
     sub.transition(
         wi.work_item_id,
         "adversarial_pass",
@@ -399,4 +398,3 @@ def test_tamper_detection(regista_project: RegistaProject) -> None:
     assert report.replayed_drift == 0
     assert report.halted == 0
     assert report.warnings == 0
-

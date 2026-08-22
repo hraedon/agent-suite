@@ -127,6 +127,8 @@ def _can_run() -> bool:
 # Ephemeral Postgres via Docker
 # ---------------------------------------------------------------------------
 
+EPHEMERAL_POSTGRES_IMAGE = "postgres:18-alpine"
+
 
 def _free_port() -> str:
     """Ask the kernel for an unused TCP port on the loopback interface.
@@ -197,7 +199,7 @@ class _EphemeralPostgres:
                     # Plain postgres rather than pgvector: nothing reached
                     # through this fixture needs the extension (only agent-notes
                     # does, and its smoke module takes its DSN separately).
-                    "postgres:18-alpine",
+                    EPHEMERAL_POSTGRES_IMAGE,
                 ],
                 capture_output=True,
                 text=True,
@@ -406,20 +408,13 @@ V6_ACCEPTOR_PRINCIPAL = "human:test-acceptor"
 V6_PRODUCER_HARNESS = "agent-suite-tests"
 V6_PRODUCER_HARNESS_VERSION = "conftest/1"
 
-#: The reviewer lineage the fixture's ``adversarial_pass`` payloads declare.
-#:
-#: regista 0.6.0 (WI-307, ``REVIEW-VERDICTS.md`` §2.2 ingress amendment) makes
-#: ``reviewer_claims.model_lineage`` MANDATORY for any positive review verdict
-#: written inside the v6 epoch, and it must be a family in
-#: ``_lineage.MODEL_LINEAGE_FAMILIES``. There is no "none" or "human" member, so
-#: a verdict by a human reviewer cannot honestly omit it — see the WI-077 report
-#: for the open question this raises. Fixture data for a fictional reviewer
-#: principal; the *producer* block deliberately declares no model at all (below).
-V6_REVIEWER_MODEL_LINEAGE = "claude-opus"
-
-#: A distinct family for the fixture's *second* reviewer, where a test needs a
-#: cross-lineage pass. Kept adjacent so the two can never accidentally be equal.
-V6_SECOND_REVIEWER_MODEL_LINEAGE = "glm"
+#: Truthful producer identities used when a test models author and reviewer
+#: actions. Lineage exists only in the signed producer block; v6 rejects the
+#: retired ``payload.reviewer_claims`` copy.
+V6_AGENT_MODEL = "claude-opus-test-worker"
+V6_AGENT_MODEL_LINEAGE = "claude-opus"
+V6_REVIEWER_MODEL = "glm-test-reviewer"
+V6_REVIEWER_MODEL_LINEAGE = "glm"
 
 
 def _v6_test_digest(label: str) -> str:
@@ -520,7 +515,12 @@ def _generate_v6_keyset(
     return V6TestKeyset(path=str(target), keys=keys)
 
 
-def _set_v6_producer_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _set_v6_producer_env(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    model: str | None = None,
+    model_lineage: str | None = None,
+) -> None:
     """Publish the process-level producer identity the v6 writer refuses without.
 
     Through ``monkeypatch`` rather than ``os.environ`` so it is undone at
@@ -528,20 +528,22 @@ def _set_v6_producer_env(monkeypatch: pytest.MonkeyPatch) -> None:
     ``resolve_producer`` for a later test that ought to be refused, and would
     escape into the developer's shell.
 
-    ``model`` / ``model_lineage`` are deliberately DELETED rather than set. No
-    model produces these events — a test harness does — and ``resolve_producer``
-    treats both-absent as the legitimate "no model producer" case, distinct from
-    "undeclared". Naming a real model here would be a signed falsehood, which is
-    exactly what ``V6-ENVELOPE.md`` §1.8 exists to prevent. ``delenv`` also stops
-    an ambient export in the developer's shell from leaking a model claim into
-    every fixture-written event.
+    ``model`` and ``model_lineage`` must be supplied together. The default
+    deletes both for fixture-owned bootstrap/human events; face tests supply a
+    truthful pair immediately before model-produced actions.
     """
     from regista._v6_writer import PRODUCER_ENV
 
     monkeypatch.setenv(PRODUCER_ENV["harness"], V6_PRODUCER_HARNESS)
     monkeypatch.setenv(PRODUCER_ENV["harness_version"], V6_PRODUCER_HARNESS_VERSION)
-    monkeypatch.delenv(PRODUCER_ENV["model"], raising=False)
-    monkeypatch.delenv(PRODUCER_ENV["model_lineage"], raising=False)
+    if (model is None) != (model_lineage is None):
+        raise ValueError("model and model_lineage must be supplied together")
+    if model is None:
+        monkeypatch.delenv(PRODUCER_ENV["model"], raising=False)
+        monkeypatch.delenv(PRODUCER_ENV["model_lineage"], raising=False)
+    else:
+        monkeypatch.setenv(PRODUCER_ENV["model"], model)
+        monkeypatch.setenv(PRODUCER_ENV["model_lineage"], model_lineage)
 
 
 def _v6_genesis_envelope(
@@ -911,24 +913,9 @@ class RegistaProject:
     #: column, so an acceptance cannot be referenced by query after the fact.
     acceptances: dict[str, Any]
 
-    @property
-    def reviewer_claims(self) -> dict[str, str]:
-        """The mandatory ``reviewer_claims`` block for a v6 positive verdict.
-
-        A property rather than a stored dict so each call site gets its own copy
-        and cannot mutate the fixture's for the next one.
-        """
-        return {"model_lineage": V6_REVIEWER_MODEL_LINEAGE}
-
     def review_payload(self, note: str, **extra: Any) -> dict[str, Any]:
-        """A complete ``adversarial_pass`` payload: review note + reviewer claims.
-
-        Exists so no test has to remember that WI-307 made ``reviewer_claims``
-        mandatory inside the epoch — omitting it fails closed at ingress with
-        ``INVALID_MODEL_LINEAGE``, which reads like a fixture bug rather than the
-        contract it is.
-        """
-        return {"review_note": note, "reviewer_claims": self.reviewer_claims, **extra}
+        """Build a same-lineage review payload for the shared synthetic fixture."""
+        return {"review_note": note, "same_lineage_acknowledged": True, **extra}
 
     def revoke_acceptance(
         self, principal_id: str, *, reason: str = "compromised"
@@ -985,7 +972,11 @@ def regista_project(
     # The writer resolves the producer from the environment at append time, so
     # this must be in place before the first write — including genesis, whose
     # envelope producer block is built from the same resolution.
-    _set_v6_producer_env(monkeypatch)
+    _set_v6_producer_env(
+        monkeypatch,
+        model=V6_AGENT_MODEL,
+        model_lineage=V6_AGENT_MODEL_LINEAGE,
+    )
 
     keyset = _generate_v6_keyset(tmp_path, (V6_BOOTSTRAP_PRINCIPAL, *actors))
 

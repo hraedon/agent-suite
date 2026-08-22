@@ -312,3 +312,21 @@ def test_release_board_and_support_matrix_agree() -> None:
         f"release-board.json release '{board['release']}' does not match "
         f"support-matrix.json release '{matrix['release']}' — bump both"
     )
+
+
+def test_ephemeral_postgres_image_matches_declared_support_floor() -> None:
+    """Local integration fixtures must exercise the declared Postgres major."""
+    import json
+
+    from tests.conftest import EPHEMERAL_POSTGRES_IMAGE
+
+    matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    declared = re.fullmatch(r"([0-9]+)\+", matrix["postgres_version"])
+    image = re.fullmatch(r"postgres:([0-9]+)-alpine", EPHEMERAL_POSTGRES_IMAGE)
+
+    assert declared is not None, "postgres_version must be '<major>+'"
+    assert image is not None, "ephemeral fixture must pin postgres:<major>-alpine"
+    assert int(image.group(1)) == int(declared.group(1)), (
+        f"fixture {EPHEMERAL_POSTGRES_IMAGE!r} does not exercise support floor "
+        f"{matrix['postgres_version']!r}"
+    )

@@ -151,6 +151,10 @@ def _stub_composed_functions(monkeypatch: pytest.MonkeyPatch) -> None:
         "agent_suite.deploy.read_regista_quad",
         lambda **kw: None,
     )
+    monkeypatch.setattr(
+        "agent_suite.deploy.read_runtime_revisions",
+        lambda: {},
+    )
 
 
 def test_deploy_profile_a_full(

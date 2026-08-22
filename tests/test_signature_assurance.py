@@ -65,6 +65,23 @@ def test_a_fully_per_actor_chain_passes() -> None:
     assert verdict.unverifiable == 0
 
 
+def test_v6_external_bootstrap_is_not_mislabeled_as_symmetric() -> None:
+    verdict = bundle_verdict(
+        {
+            **_QUAL_BUNDLE,
+            "signatures_unverifiable": 1,
+            "unverifiable_details": [
+                "envelope=v6; reasons=key_binding_unresolved; "
+                "unbound=bootstrap_external_authority"
+            ],
+        }
+    )
+
+    assert verdict.ok is False
+    assert "bootstrap_external_authority" in verdict.detail
+    assert "symmetric" not in verdict.detail
+
+
 def test_a_missing_unverifiable_count_is_not_zero() -> None:
     payload = {k: v for k, v in _QUAL_BUNDLE.items() if k != "signatures_unverifiable"}
     payload["signatures_verified"] = 5

@@ -29,6 +29,7 @@ makes a lock a release (docs/bootstrap-contract.md §5).
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from pathlib import Path
@@ -39,7 +40,6 @@ from agent_suite.signature_assurance import bundle_verdict
 from tests.conftest import (
     RegistaProject,
     _can_run,
-    _generate_hmac_key,
 )
 
 # ---------------------------------------------------------------------------
@@ -148,10 +148,8 @@ def test_drive_work_item_across_workflow_to_done(regista_project: RegistaProject
     assert sub.get_work_item(wi.work_item_id).current_state == "in_review"
 
     # --- Human face: adversarial review pass ---
-    # WI-077: inside the v6 epoch a positive verdict MUST carry
-    # ``reviewer_claims.model_lineage`` (regista WI-307, REVIEW-VERDICTS.md §2.2
-    # ingress amendment) or ingress fails closed with INVALID_MODEL_LINEAGE.
-    # ``review_payload`` supplies it.
+    # The shared fixture uses one synthetic producer lineage throughout, so the
+    # payload explicitly acknowledges the same-lineage review.
     sub.transition(
         wi.work_item_id,
         "adversarial_pass",
@@ -267,8 +265,11 @@ def test_drive_work_item_per_principal_ed25519_to_done(
 
     from tests.conftest import (
         V6_ACCEPTOR_PRINCIPAL,
+        V6_AGENT_MODEL,
+        V6_AGENT_MODEL_LINEAGE,
         V6_AGENT_PRINCIPAL,
         V6_BOOTSTRAP_PRINCIPAL,
+        V6_REVIEWER_MODEL,
         V6_REVIEWER_MODEL_LINEAGE,
         V6_REVIEWER_PRINCIPAL,
         _generate_v6_keyset,
@@ -287,7 +288,11 @@ def test_drive_work_item_per_principal_ed25519_to_done(
     # Own keyset and own epoch rather than the shared ``regista_project``
     # fixture: this test owns the strict_asymmetric store configuration, which
     # is part of what it proves.
-    _set_v6_producer_env(monkeypatch)
+    _set_v6_producer_env(
+        monkeypatch,
+        model=V6_AGENT_MODEL,
+        model_lineage=V6_AGENT_MODEL_LINEAGE,
+    )
     keyset = _generate_v6_keyset(tmp_path, (V6_BOOTSTRAP_PRINCIPAL, *actors))
 
     # Constructed inside the try so the schema is dropped even if create_project
@@ -322,15 +327,17 @@ def test_drive_work_item_per_principal_ed25519_to_done(
             wi.work_item_id, "submit_for_review", agent,
             actor_kind="agent", actor_metadata=agent_meta,
         )
+        _set_v6_producer_env(
+            monkeypatch,
+            model=V6_REVIEWER_MODEL,
+            model_lineage=V6_REVIEWER_MODEL_LINEAGE,
+        )
         sub.transition(
             wi.work_item_id, "adversarial_pass", reviewer,
             actor_kind="human", actor_metadata=human_meta,
-            payload={
-                "review_note": "cross-lineage review: looks correct.",
-                # Mandatory inside the v6 epoch (regista WI-307).
-                "reviewer_claims": {"model_lineage": V6_REVIEWER_MODEL_LINEAGE},
-            },
+            payload={"review_note": "cross-lineage review: looks correct."},
         )
+        _set_v6_producer_env(monkeypatch)
         sub.transition(
             wi.work_item_id, "accept", acceptor,
             actor_kind="human", actor_metadata=human_meta,
@@ -449,7 +456,7 @@ def test_drive_work_item_per_principal_ed25519_to_done(
     ),
 )
 def test_drive_work_item_across_real_faces_to_done(
-    interop_dsn: str, tmp_path: Path
+    interop_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Face-level: drive ONE work-item across the two real face packages to ``done``.
 
@@ -483,34 +490,71 @@ def test_drive_work_item_across_real_faces_to_done(
     from dossier.gateway import RegistaGateway
     from regista.testing import drop_project_schema
 
+    from tests.conftest import (
+        V6_BOOTSTRAP_PRINCIPAL,
+        _generate_v6_keyset,
+        _open_v6_epoch,
+        _set_v6_producer_env,
+    )
+
+    worker_id = "agent:faces-worker"
+    reviewer_id = "agent:faces-reviewer"
+    human_id = "human:faces-operator"
+    actors = (worker_id, reviewer_id, human_id)
     project = f"faces_{uuid.uuid4().hex[:8]}"
+    _set_v6_producer_env(monkeypatch)
+    keyset = _generate_v6_keyset(
+        tmp_path,
+        (V6_BOOTSTRAP_PRINCIPAL, *actors),
+        filename="faces_v6_keys.json",
+    )
 
-    key_path = tmp_path / "hmac_keys.json"
-    _generate_hmac_key(key_path)
-    key_path_str = str(key_path)
-
-    # Bootstrap: one shared project + the canonical workflow.
-    boot = regista.Regista.create_project(interop_dsn, project, key_path_str)
-    boot.register_workflow(regista.canonical_workflow_yaml())
-    boot.close()
-
-    # Two independent faces, two independent connections, ONE project.
-    agent_face = RegistaFace(regista.Regista(interop_dsn, project, key_path_str))
-    human_face = RegistaGateway(regista.Regista(interop_dsn, project, key_path_str))
-
-    # Two agents of different model lineage + one human.
+    # Actors carry canonical principal identity only. Model provenance is the
+    # process-level producer identity and is switched truthfully before each
+    # model's actions below.
     worker = AgentActor(
-        actor_id="faces-agent", actor_kind="agent",
-        display_name="agent worker", role="agent", model_lineage="claude",
+        actor_id=worker_id, actor_kind="agent",
+        display_name="agent worker", role="agent",
     )
     reviewer = AgentActor(
-        actor_id="faces-reviewer", actor_kind="agent",
-        display_name="cross-lineage reviewer", role="agent", model_lineage="glm",
+        actor_id=reviewer_id, actor_kind="agent",
+        display_name="cross-lineage reviewer", role="agent",
     )
-    human = HumanActor(actor_id="faces-human", actor_kind="human", display_name="operator")
+    human = HumanActor(actor_id=human_id, actor_kind="human", display_name="operator")
 
+    boot = agent_face = human_face = None
     try:
+        # The real faces must run over the same v6 recipe as the spine fixture:
+        # genesis first, then one signed project-local acceptance per actor.
+        boot = regista.Regista.create_project(
+            interop_dsn, project, keyset.path, strict_asymmetric=True
+        )
+        _open_v6_epoch(boot, keyset, principals=actors)
+        boot.register_workflow(regista.canonical_workflow_yaml())
+        boot.register_actor_role(worker_id, "agent")
+        boot.register_actor_role(reviewer_id, "agent")
+        boot.register_actor_role(human_id, "human")
+        boot.close()
+        boot = None
+
+        # Two independent face connections, one accepted per-principal keyset.
+        agent_face = RegistaFace(
+            regista.Regista(
+                interop_dsn, project, keyset.path, strict_asymmetric=True
+            )
+        )
+        human_face = RegistaGateway(
+            regista.Regista(
+                interop_dsn, project, keyset.path, strict_asymmetric=True
+            )
+        )
+
         # --- Agent face: file + work the item ---
+        _set_v6_producer_env(
+            monkeypatch,
+            model="claude-opus-test-worker",
+            model_lineage="claude-opus",
+        )
         wid, state = agent_face.create_breadcrumb(
             actor=worker,
             title="Interop: cross-face work-item via real faces",
@@ -524,13 +568,21 @@ def test_drive_work_item_across_real_faces_to_done(
         assert state == "in_review", f"expected in_review, got {state!r}"
 
         # --- Agent face: cross-lineage adversarial review (reviewer != worker) ---
+        _set_v6_producer_env(
+            monkeypatch,
+            model="glm-test-reviewer",
+            model_lineage="glm",
+        )
         state = agent_face.transition_breadcrumb(
             reviewer, wid, "adversarial_pass",
-            payload={"review_note": "independent cross-lineage review: sound"},
+            payload={
+                "review_note": "independent cross-lineage review: sound",
+            },
         )
         assert state == "in_human_review", f"expected in_human_review, got {state!r}"
 
         # --- Human face: accept to done ---
+        _set_v6_producer_env(monkeypatch)
         human_face.transition(
             actor=human, work_item_id=wid, transition_name="accept",
             payload={"review_note": "human sign-off"},
@@ -553,8 +605,9 @@ def test_drive_work_item_across_real_faces_to_done(
         assert report.halted == 0
         assert report.replayed_ok >= 1
     finally:
-        agent_face.close()
-        human_face.close()
+        for handle in (boot, agent_face, human_face):
+            if handle is not None:
+                handle.close()
         drop_project_schema(interop_dsn, project)
 
 
@@ -572,7 +625,7 @@ def test_drive_work_item_across_real_faces_to_done(
     ),
 )
 def test_drive_work_item_per_principal_ed25519_across_real_faces(
-    interop_dsn: str, tmp_path: Path
+    interop_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Face-level companion to the spine per-principal proof (CL-002).
 
@@ -604,22 +657,29 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
     from dossier.gateway import RegistaGateway
     from regista.testing import drop_project_schema
 
-    from tests.conftest import _generate_per_principal_ed25519_keys
+    from tests.conftest import (
+        V6_BOOTSTRAP_PRINCIPAL,
+        _generate_v6_keyset,
+        _open_v6_epoch,
+        _set_v6_producer_env,
+    )
 
-    worker_id = "faces-agent"
-    reviewer_id = "faces-reviewer"
-    human_id = "faces-human"
+    worker_id = "agent:faces-agent"
+    reviewer_id = "agent:faces-reviewer"
+    human_id = "human:faces-human"
+    actors = (worker_id, reviewer_id, human_id)
 
     project = f"faces_ed_{uuid.uuid4().hex[:8]}"
-    key_path = tmp_path / "ed25519_keys.json"
-    material = _generate_per_principal_ed25519_keys(
-        key_path, [worker_id, reviewer_id, human_id]
+    _set_v6_producer_env(monkeypatch)
+    keyset = _generate_v6_keyset(
+        tmp_path,
+        (V6_BOOTSTRAP_PRINCIPAL, *actors),
+        filename="faces_ed25519_keys.json",
     )
-    key_path_str = str(key_path)
 
     worker = AgentActor(
         actor_id=worker_id, actor_kind="agent",
-        display_name="agent worker", role="agent", model_lineage="claude",
+        display_name="agent worker", role="agent",
     )
     # The adversarial reviewer is deliberately a SECOND agent of a different
     # model lineage (glm vs claude) — the canonical workflow's adversarial_pass
@@ -627,7 +687,7 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
     # face-level interop test above.
     reviewer = AgentActor(
         actor_id=reviewer_id, actor_kind="agent",
-        display_name="cross-lineage reviewer", role="agent", model_lineage="glm",
+        display_name="cross-lineage reviewer", role="agent",
     )
     human = HumanActor(
         actor_id=human_id, actor_kind="human", display_name="operator"
@@ -641,14 +701,13 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
         # Bootstrap: one shared per-principal project + canonical workflow + the
         # principal_keys registry (so binding verification is meaningful).
         boot = regista.Regista.create_project(
-            interop_dsn, project, key_path_str, strict_asymmetric=True
+            interop_dsn, project, keyset.path, strict_asymmetric=True
         )
+        _open_v6_epoch(boot, keyset, principals=actors)
         boot.register_workflow(regista.canonical_workflow_yaml())
-        for pid in (worker_id, reviewer_id, human_id):
-            boot.principals.register(
-                pid, material[pid]["public"], scheme="ed25519",
-                key_id=f"ed-{pid}", registered_by="interop-test",
-            )
+        boot.register_actor_role(worker_id, "agent")
+        boot.register_actor_role(reviewer_id, "agent")
+        boot.register_actor_role(human_id, "human")
         # Release the bootstrap connection before the faces open theirs; clear
         # the handle so the finally loop does not redundantly re-close it
         # (Regista.close() is idempotent, but this makes the intent explicit).
@@ -659,19 +718,24 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
         # key file, all with HMAC fallback forbidden.
         agent_face = RegistaFace(
             regista.Regista(
-                interop_dsn, project, key_path_str, strict_asymmetric=True
+                interop_dsn, project, keyset.path, strict_asymmetric=True
             )
         )
         human_face = RegistaGateway(
             regista.Regista(
-                interop_dsn, project, key_path_str, strict_asymmetric=True
+                interop_dsn, project, keyset.path, strict_asymmetric=True
             )
         )
         verifier = regista.Regista(
-            interop_dsn, project, key_path_str, strict_asymmetric=True
+            interop_dsn, project, keyset.path, strict_asymmetric=True
         )
 
         # --- Agent face: file + work the item ---
+        _set_v6_producer_env(
+            monkeypatch,
+            model="claude-opus-test-worker",
+            model_lineage="claude-opus",
+        )
         wid, state = agent_face.create_breadcrumb(
             actor=worker,
             title="Interop: per-principal Ed25519 via real faces",
@@ -685,13 +749,21 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
         assert state == "in_review", f"expected in_review, got {state!r}"
 
         # --- Agent face: cross-lineage adversarial review ---
+        _set_v6_producer_env(
+            monkeypatch,
+            model="glm-test-reviewer",
+            model_lineage="glm",
+        )
         state = agent_face.transition_breadcrumb(
             reviewer, wid, "adversarial_pass",
-            payload={"review_note": "independent cross-lineage review: sound"},
+            payload={
+                "review_note": "independent cross-lineage review: sound",
+            },
         )
         assert state == "in_human_review", f"expected in_human_review, got {state!r}"
 
         # --- Human face: accept to done ---
+        _set_v6_producer_env(monkeypatch)
         human_face.transition(
             actor=human, work_item_id=wid, transition_name="accept",
             payload={"review_note": "human sign-off"},
@@ -724,9 +796,10 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
                 f"{transition_name}: actor_id={evt.actor_id!r}, "
                 f"expected {principal!r}"
             )
-            assert evt.key_id == f"ed-{principal}", (
+            expected_key_id = keyset.key_for(principal).key_id
+            assert evt.key_id == expected_key_id, (
                 f"{transition_name}: key_id={evt.key_id!r}, "
-                f"expected ed-{principal}"
+                f"expected {expected_key_id}"
             )
         kinds = {e.actor_kind for e in events}
         assert {"agent", "human"} <= kinds, f"chain not mixed: {sorted(kinds)}"
@@ -742,16 +815,14 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
         # export (keyed by key_id); the registry-binding proof is section (3).
         assert info["principal_id"] == human_id
 
-        # --- (3) Registry binding proof (independent verifier handle) ---
+        # --- (3) The projection registry path is refused for v6 (§5.9) ---
         for e in events:
             result = verifier.verify_event_principal_binding(e)
-            assert result["verified"] is True, (
-                f"{e.transition}: binding failed: {result['error']}"
+            assert result["verified"] is False, (
+                f"{e.transition}: v6 binding must not be decided by principal_keys"
             )
-            assert result["principal_id"] == e.actor_id
-            assert result["key_id"] == e.key_id, (
-                f"{e.transition}: registry key_id={result['key_id']!r} != "
-                f"event key_id={e.key_id!r}"
+            assert "v6-binding-not-decided-by-registry" in str(result["error"]), (
+                f"{e.transition}: expected the named §5.9 refusal, got {result}"
             )
 
         # --- (4) Independent verification: each event verifies under its own
@@ -805,9 +876,26 @@ def test_drive_work_item_per_principal_ed25519_across_real_faces(
         verifier.export_audit_bundle(bundle_path)
         payload = regista.Regista.verify_audit_bundle_offline(bundle_path)
         verdict = bundle_verdict(payload)
-        assert verdict.ok, f"§5 per-actor signature requirement: {verdict.detail}"
-        assert verdict.unverifiable == 0
-        assert verdict.verified == verdict.events
+        # This fixture intentionally has no external trust-policy pin, so v6
+        # reports genesis applicability as unresolved. That is not a symmetric
+        # signature and must not be mislabeled as one. Prove the per-actor
+        # property directly over every bundled event, including bootstrap and
+        # key-acceptance events, then pin the one expected trust limitation.
+        bundle = json.loads(Path(bundle_path).read_text(encoding="utf-8"))
+        expected_keys = {
+            principal: keyset.key_for(principal).key_id
+            for principal in (V6_BOOTSTRAP_PRINCIPAL, *actors)
+        }
+        assert all(event["scheme_id"] == "ed25519" for event in bundle["events"])
+        for event in bundle["events"]:
+            assert event["key_id"] == expected_keys[event["actor_id"]]
+        assert payload["verified"] is True
+        assert payload["signatures_verified"] == payload["event_count"] - 1
+        assert payload["signatures_unverifiable"] == 1
+        assert len(payload["unverifiable_details"]) == 1
+        assert "bootstrap_external_authority" in payload["unverifiable_details"][0]
+        assert verdict.ok is False
+        assert "symmetric" not in verdict.detail
     finally:
         for handle in (agent_face, human_face, verifier, boot):
             if handle is not None:
