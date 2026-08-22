@@ -9,6 +9,11 @@ between "deployed once" and "operated."
 See the [bootstrap contract](bootstrap-contract.md) for the install order,
 lock format, and doctor umbrella that this runbook builds on.
 
+For the one-time clean-v6 transition from a pre-v6 store, follow the
+[fresh-schema cutover runbook](fresh-schema-cutover.md). That transition
+provisions a new epoch and freezes the legacy schema; it is not a normal
+in-place upgrade.
+
 ---
 
 ## 1. Upgrades (WI-1.1)
@@ -484,5 +489,7 @@ spec entity id from the project slug and reads that entity's events first:
 - [Bootstrap contract](bootstrap-contract.md) — the install order, lock
   format, and doctor umbrella this runbook operates
 - [Disaster recovery](disaster-recovery.md) — backup/restore procedures
+- [Fresh-schema v6 cutover](fresh-schema-cutover.md) — freeze the legacy store,
+  open the clean epoch, and repoint without migrating legacy events
 - [Key operations](key-operations.md) — key rotation policy
 - [Install guides](install-linux.md) — platform-specific setup
