@@ -27,7 +27,7 @@ PROBE_REPORT_VERSION = 1
 GENESIS_GATE_REPORT_VERSION = 1
 _PROBE_CHECK_STATUSES = frozenset({"pass", "measured", "fail"})
 _ACTOR_BOUNDARY_CHECK_ID = "regista.actor_boundary_signing"
-_ACTOR_BOUNDARY_CLAIM = "r10.no_arbitrary_principal.project_v6"
+_ACTOR_BOUNDARY_CLAIM = "r10.project_v6.boundary_rejects_mismatched_binding"
 _ACTOR_BOUNDARY_BASIS = "behavioral_attempt_ephemeral_epoch"
 _ACTOR_BOUNDARY_PATHS = frozenset(
     {
