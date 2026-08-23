@@ -44,11 +44,12 @@ import shutil
 import subprocess
 import sys
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
+from packaging.version import InvalidVersion, Version
 
 from agent_suite.config import postgres_database_fingerprint
 from agent_suite.genesis_gate import (
@@ -88,9 +89,12 @@ _SKIP_REASON = (
     "conftest's shared _fail_or_skip."
 )
 
-pytestmark = pytest.mark.skipif(
-    not _can_run() and not _require_interop(), reason=_SKIP_REASON
-)
+#: Whether the live-probe tests below should skip: no blanket module-level
+#: ``pytestmark`` (WI-084 item 4) because the reverse-direction pin further
+#: down needs no probe, no store and no regista, so it must not share a gate
+#: that exists for tests which do. Applied individually to each test that
+#: actually needs the prerequisites instead.
+_MODULE_SKIP = not _can_run() and not _require_interop()
 
 #: The component that owns the actor-boundary check, per the gate's own
 #: ownership map — i.e. the spine, derived from the very check this module
@@ -104,6 +108,54 @@ _SPINE: str = GENESIS_REQUIRED_CHECK_OWNERS[_ACTOR_BOUNDARY_CHECK_ID]
 _REGISTA_SPEC: ProbeSpec = next(
     spec for spec in PROBE_SPECS if spec.component == _SPINE
 )
+
+
+def _import_name_for(component: str) -> str:
+    """The top-level import name ``importlib.metadata.packages_distributions()``
+    would key on for a suite ``component`` name.
+
+    ``packages_distributions()`` keys on *import* names — Python identifiers,
+    which cannot contain hyphens — not on component names or command names.
+    For regista, the component name (``"regista"``), the command
+    (``_REGISTA_SPEC.command[0]`` == ``"regista"``) and the import name
+    (``import regista``) are all the same bare string, which hides that these
+    are three independent namespaces. They are not the same for every suite
+    component: ``agent-notes`` (the component name in
+    ``GENESIS_REQUIRED_CHECK_OWNERS``/``PROBE_SPECS``, and its console-script
+    name) is imported as ``agent_notes`` — a hyphen is not a legal character
+    in a Python module name, so the PEP 8 convention (and this suite's own
+    actual package) substitutes an underscore. Deriving the import name via
+    that substitution, rather than reusing the component name directly, is
+    what makes the probe-binary check below correct if this module is ever
+    generalized past regista — see
+    ``test_import_name_for_derives_the_import_name_not_the_component_name``
+    for the pin (WI-084 review, blocking finding on the original item 2 fix).
+    """
+    return component.replace("-", "_")
+
+
+def test_import_name_for_derives_the_import_name_not_the_component_name() -> None:
+    """Mutation-proof pin for the blocking review finding on WI-084 item 2.
+
+    The original item-2 fix corrected ``which()`` to resolve
+    ``_REGISTA_SPEC.command[0]`` instead of the component name ``_SPINE``, but
+    left the ``packages_distributions()`` lookup a few lines later keyed on
+    ``_SPINE`` directly. That works for regista purely by coincidence
+    (component name == import name == command name, all ``"regista"``) and
+    would silently misdiagnose a *correctly installed* ``agent-notes`` as
+    having "no distribution metadata", because ``"agent-notes"`` (the
+    component name) is never a key ``packages_distributions()`` produces —
+    only ``"agent_notes"`` (the import name) is.
+
+    The regista case alone cannot catch a regression back to using the
+    component name directly, since the two strings are identical for regista
+    either way — the agent-notes case is what actually pins the derivation.
+    Needs no probe, no store and no regista, so — like the WI-084 item 4 pin —
+    it carries no skip marker and runs unconditionally.
+    """
+    assert _import_name_for("agent-notes") == "agent_notes"
+    assert _import_name_for("regista") == "regista"
+
 
 #: Required checks the gate expects from components other than the spine. They
 #: are absent by construction here (only the spine's probe is run), so they are
@@ -137,8 +189,160 @@ _LIBPQ_ENV = (
 
 
 # ---------------------------------------------------------------------------
+# Reverse-direction pin (WI-084 item 4)
+# ---------------------------------------------------------------------------
+#
+# Everything above proves the installed regista satisfies whatever the gate
+# *currently* demands. None of it notices the gate demanding less: deleting a
+# required check from a ``PROBE_SPECS`` entry, or re-owning a
+# ``regista.*`` check to a different component in
+# ``GENESIS_REQUIRED_CHECK_OWNERS``, leaves every test above green — the live
+# probe would simply be asked to prove a smaller contract, and it would.
+# ``_SPINE`` / ``_REGISTA_SPEC`` / ``_NON_REGISTA_REQUIRED`` above are
+# deliberately *derived* from ``genesis_gate``'s own constants (so a new
+# component can't silently widen the expected failure set) — but that same
+# derivation means they cannot catch the gate's constants shrinking, because
+# they shrink right along with them. Catching that needs an independent,
+# hand-transcribed second copy, the same "we forgot vs. we decided" ritual
+# ``DOSSIER_VARS_NOT_IN_SUITE_ENV`` uses (tests/test_config_surface.py).
+#
+# Update ritual: changing ``GENESIS_REQUIRED_CHECK_OWNERS`` or a
+# ``ProbeSpec.required_checks`` in ``genesis_gate.py`` is a real contract
+# change. Update the two pins below IN THE SAME COMMIT and say why in the
+# commit message ("we decided" a check is no longer required, or ownership
+# moved) — so a change here is always a deliberate, reviewed edit to this
+# file, never a side effect of editing ``genesis_gate.py`` alone.
+
+#: Independent snapshot of ``GENESIS_REQUIRED_CHECK_OWNERS``. Catches a check
+#: silently dropped, silently re-owned, or a component renamed.
+_PINNED_REQUIRED_CHECK_OWNERS: Mapping[str, str] = {
+    "regista.load_bearing_fields_refused": "regista",
+    "regista.closed_lineage_registry": "regista",
+    "regista.first_write_admission": "regista",
+    "regista.actor_boundary_signing": "regista",
+    "cairn.runtime_model_observed": "cairn",
+    "cairn.unavailable_model_named": "cairn",
+    "cairn.observation_failure_nonblocking": "cairn",
+    "agent_notes.session_identity_resolvable": "agent-notes",
+}
+
+#: Independent snapshot of each ``ProbeSpec.required_checks``, keyed by
+#: component. Catches a check quietly dropped from a spec's required set even
+#: where ``GENESIS_REQUIRED_CHECK_OWNERS`` is untouched (the two are not the
+#: same mapping — ``store_invariant_measurements`` is required of the regista
+#: probe but is not an owned pass/fail check, so it has no owner entry).
+_PINNED_PROBE_REQUIRED_CHECKS: Mapping[str, frozenset[str]] = {
+    "regista": frozenset(
+        {
+            "regista.store_invariant_measurements",
+            "regista.load_bearing_fields_refused",
+            "regista.closed_lineage_registry",
+            "regista.first_write_admission",
+            "regista.actor_boundary_signing",
+        }
+    ),
+    "cairn": frozenset(
+        {
+            "cairn.runtime_model_observed",
+            "cairn.unavailable_model_named",
+            "cairn.observation_failure_nonblocking",
+        }
+    ),
+    "agent-notes": frozenset({"agent_notes.session_identity_resolvable"}),
+}
+
+
+def test_genesis_required_check_spec_has_not_been_quietly_weakened() -> None:
+    """agent-suite weakening its own spec must redden this module too.
+
+    Pure comparison against ``genesis_gate``'s live constants — no probe, no
+    store, no regista needed — so it runs (and can fail) even in an
+    environment with none of those prerequisites, unlike every other test in
+    this module. See the module comment above for what this catches and the
+    ritual for updating the pin on a deliberate contract change.
+    """
+    assert dict(GENESIS_REQUIRED_CHECK_OWNERS) == dict(_PINNED_REQUIRED_CHECK_OWNERS), (
+        "GENESIS_REQUIRED_CHECK_OWNERS drifted from the pinned snapshot — a "
+        "check was added/removed, or its owner changed. If this is "
+        "deliberate, update _PINNED_REQUIRED_CHECK_OWNERS in the same commit "
+        f"and say why. live={dict(GENESIS_REQUIRED_CHECK_OWNERS)!r} "
+        f"pinned={dict(_PINNED_REQUIRED_CHECK_OWNERS)!r}"
+    )
+    live_required_checks = {spec.component: spec.required_checks for spec in PROBE_SPECS}
+    assert live_required_checks == dict(_PINNED_PROBE_REQUIRED_CHECKS), (
+        "A ProbeSpec's required_checks drifted from the pinned snapshot — a "
+        "required check was added/removed for some component, or a component "
+        "was added/removed from PROBE_SPECS entirely. If this is deliberate, "
+        "update _PINNED_PROBE_REQUIRED_CHECKS in the same commit and say why. "
+        f"live={live_required_checks!r} pinned={dict(_PINNED_PROBE_REQUIRED_CHECKS)!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # The live probe
 # ---------------------------------------------------------------------------
+
+
+def _assert_versions_match(reported: object, imported: str, *, resolved_path: Path) -> None:
+    """Cross-check the probe's self-reported version against the imported package.
+
+    Strict string equality (WI-084 item 3) misdiagnoses one real case: a
+    dev/editable build whose runtime ``__version__`` carries a PEP 440 local
+    segment (``+dirty``, ``+g<sha>``, …) that the wheel's static METADATA
+    ``Version`` field never had, even though both describe the same release.
+    Parsing with ``packaging.version.Version`` lets that case be named
+    precisely instead of reported as an opaque string mismatch.
+
+    Chosen reading (documented per WI-084 item 3, "pick the stricter
+    reasonable reading"): a difference confined to the local segment is
+    *still a failure* — this repo's convention is to prefer strict defaults,
+    and silently normalizing local segments away would let the probe binary
+    and the imported package come from two different local builds of the
+    same release without comment. The only thing parsing buys is a sharper
+    error message that tells the two cases apart.
+
+    ``reported`` is typed ``object``, not ``str | None`` (WI-084 review,
+    non-blocking finding 2): it comes straight from
+    ``json.loads(...).get("library_version")``, so a probe JSON that violates
+    its own contract (e.g. ``library_version`` is a number or a list) is a
+    real, reachable input here, not a hypothetical one. ``Version(...)``
+    raises ``TypeError`` — not ``InvalidVersion`` — for a non-string
+    argument, which would have escaped as an unhandled exception instead of
+    the intended ``pytest.fail`` diagnostic; the explicit ``isinstance``
+    check below turns that into the same clear failure as any other
+    malformed report.
+    """
+    if reported == imported:
+        return
+    if reported is not None and not isinstance(reported, str):
+        pytest.fail(
+            f"{resolved_path} reported a non-string library_version "
+            f"({reported!r}, type {type(reported).__name__}) — the probe's "
+            "own JSON contract requires a version string (or an absent "
+            "field), so this is a malformed report, not a version mismatch."
+        )
+    try:
+        reported_v = Version(reported) if reported is not None else None
+        imported_v = Version(imported)
+    except InvalidVersion:
+        reported_v = None
+        imported_v = None
+    if reported_v is not None and imported_v is not None and reported_v.public == imported_v.public:
+        pytest.fail(
+            f"{resolved_path} reports library_version {reported!r}, whose public "
+            f"version matches the imported distribution's {imported!r} but whose "
+            f"local segment does not ({reported_v.local!r} vs {imported_v.local!r}). "
+            "Strict comparison (WI-084 item 3): a local-segment-only difference is "
+            "still treated as a mismatch, not normalized away — the probe binary "
+            "and the imported package were built from different local revisions "
+            "(e.g. one dirty checkout, one clean), so the contract would be "
+            "compared against an unpinned local build."
+        )
+    pytest.fail(
+        f"{resolved_path} reports library_version {reported!r} but the imported "
+        f"distribution is {imported!r} — the probe and the store would come from "
+        "different installs."
+    )
 
 
 def _assert_probe_binary_is_the_installed_spine() -> str:
@@ -159,24 +363,54 @@ def _assert_probe_binary_is_the_installed_spine() -> str:
     then reconcile the two versions across the process boundary: the
     distribution backing the imported ``regista`` package, and the
     ``library_version`` the resolved script reports for itself.
+
+    Uses ``pytest.fail`` throughout rather than a bare ``assert`` (WI-084 item
+    3): this function runs unconditionally, including under ``python -O``,
+    where a bare ``assert`` is compiled out and the guard would silently do
+    nothing.
     """
-    resolved = shutil.which(_SPINE)
-    assert resolved is not None, (
-        f"no {_SPINE!r} executable on PATH, so the gate's frozen contract "
-        "would be compared against nothing."
-    )
+    probe_executable = _REGISTA_SPEC.command[0]
+    # which() resolves the exact executable name the gate's own runner
+    # invokes (WI-084 item 2) — ``_SPINE`` (the *component* name from
+    # GENESIS_REQUIRED_CHECK_OWNERS) coincides with it for regista today, but
+    # nothing enforces that, and packages_distributions() below keys on a
+    # third, independent name (the *import* name). Resolving the wrong one of
+    # the three would validate a binary the gate would never actually run.
+    resolved = shutil.which(probe_executable)
+    if resolved is None:
+        pytest.fail(
+            f"no {probe_executable!r} executable on PATH, so the gate's frozen "
+            "contract would be compared against nothing."
+        )
     resolved_path = Path(resolved).resolve()
     prefix = Path(sys.prefix).resolve()
-    assert resolved_path.is_relative_to(prefix), (
-        f"PATH resolves {_SPINE!r} to {resolved_path}, which is OUTSIDE this "
-        f"environment ({prefix}). The store is provisioned by the imported "
-        f"package while the probe would run that other install, so the "
-        f"contract comparison would be against an unpinned release. Run under "
-        f"`uv run --frozen`, or remove the shadowing entry from PATH."
-    )
+    if not resolved_path.is_relative_to(prefix):
+        pytest.fail(
+            f"PATH resolves {probe_executable!r} to {resolved_path}, which is "
+            f"OUTSIDE this environment ({prefix}). The store is provisioned by "
+            f"the imported package while the probe would run that other "
+            f"install, so the contract comparison would be against an unpinned "
+            f"release. Run under `uv run --frozen`, or remove the shadowing "
+            f"entry from PATH."
+        )
 
-    distributions = importlib.metadata.packages_distributions().get(_SPINE, [])
-    assert distributions, f"the imported {_SPINE!r} package has no distribution metadata"
+    # packages_distributions() keys on *import* names (e.g. ``agent_notes``),
+    # not component or command names — derived explicitly via
+    # _import_name_for rather than reusing _SPINE, which only coincides with
+    # the import name for regista (review finding on the original item-2 fix:
+    # this line was still keyed on the component name).
+    import_name = _import_name_for(_SPINE)
+    distributions = importlib.metadata.packages_distributions().get(import_name, [])
+    # Indexing distributions[0] would be order-dependent if more than one
+    # distribution ever claimed this import name (WI-084 item 3) — assert
+    # there is exactly one instead of silently picking a side.
+    if len(distributions) != 1:
+        pytest.fail(
+            f"expected exactly one distribution backing the imported "
+            f"{import_name!r} package, found {distributions!r}. "
+            "packages_distributions()[...][0] would pick one arbitrarily, "
+            "which is not a version this test can stand behind."
+        )
     imported_version = importlib.metadata.version(distributions[0])
     completed = subprocess.run(
         (str(resolved_path), "version", "--json"),
@@ -186,12 +420,52 @@ def _assert_probe_binary_is_the_installed_spine() -> str:
         check=True,
     )
     reported_version = json.loads(completed.stdout).get("library_version")
-    assert reported_version == imported_version, (
-        f"{resolved_path} reports library_version {reported_version!r} but the "
-        f"imported {distributions[0]} distribution is {imported_version!r} — "
-        "the probe and the store would come from different installs."
-    )
+    _assert_versions_match(reported_version, imported_version, resolved_path=resolved_path)
     return imported_version
+
+
+@pytest.fixture(scope="module")
+def _verified_probe_binary() -> None:
+    """Hoisted ahead of *all* of this module's other setup (WI-084 item 3).
+
+    ``_assert_probe_binary_is_the_installed_spine`` used to run as the first
+    line of ``live_probe_report``, i.e. *after* ``probe_project`` had already
+    paid for standing up a project across the v6 genesis boundary (~4s of
+    Postgres round-trips and ~50 migrations) — work this module does not need
+    when the answer is "wrong regista on PATH". An earlier version of this
+    fix listed this fixture first in ``probe_project``'s parameter list,
+    which only guaranteed it ran before ``probe_project``'s own *body* — not
+    before ``interop_dsn`` (one of ``probe_project``'s other parameters),
+    which with no ``INTEROP_DSN`` set means an ephemeral Docker Postgres
+    container was still started first. Parameter position between two
+    mutually-independent fixtures is not a structural ordering guarantee
+    (WI-084 review, non-blocking finding 1).
+
+    The actual structural guarantee is the ``interop_dsn`` override directly
+    below: it depends on this fixture explicitly, so the probe-binary check
+    is now a real prerequisite of the DSN itself, and a stale PATH shim is
+    caught before any Docker/Postgres work at all — not just before the
+    v6-genesis project provisioning layered on top of it.
+    """
+    _assert_probe_binary_is_the_installed_spine()
+
+
+@pytest.fixture(scope="module")
+def interop_dsn(_verified_probe_binary: None, interop_dsn: str) -> str:
+    """Override conftest's ``interop_dsn`` to require the probe-binary check first.
+
+    Requesting a fixture named ``interop_dsn`` from within a fixture also
+    named ``interop_dsn`` is the standard pytest fixture-override pattern
+    (not recursion): pytest resolves the inner name to the next
+    ``interop_dsn`` up the fixture hierarchy — conftest's shared,
+    module-scoped fixture — so this module gets the same DSN every other
+    interop test module gets, just gated on ``_verified_probe_binary`` first.
+    Scoped to this module only: the probe-binary check is specific to this
+    module's regista-CLI contract comparison, and forcing it onto conftest's
+    fixture directly would run it for every interop test module, several of
+    which don't need it.
+    """
+    return interop_dsn
 
 
 @pytest.fixture(scope="module")
@@ -205,7 +479,9 @@ def probe_project(
     derives below are the ones an operator would actually see.
 
     Disposable Ed25519 key material in a per-module temp dir — never a tracked
-    fixture file and never the operator's key path.
+    fixture file and never the operator's key path. ``interop_dsn`` here
+    resolves to this module's override above, so the probe-binary check has
+    already run by the time this fixture's body executes.
     """
     if not _regista_available():
         pytest.fail(
@@ -241,15 +517,15 @@ def live_probe_report(interop_dsn: str, probe_project: str) -> InvariantProbeRep
     ``subprocess.run(('regista', 'invariants', 'probe', '--json'))``, then
     ``_parse_probe_result``.
 
-    Which executable ``shutil.which`` will land on is pinned first — see
-    :func:`_assert_probe_binary_is_the_installed_spine`.
+    Which executable ``shutil.which`` will land on is pinned before this
+    module's ``interop_dsn`` override does any work at all — see the
+    ``_verified_probe_binary`` fixture and the ``interop_dsn`` override above.
 
     Every ambient ``REGISTA_*`` and ``PG*`` variable is then dropped. The
     operator's own DSN, project or key path leaking into a measurement of a
     throwaway project would mean the probe reported on the wrong store, and the
     contract comparison would still look green.
     """
-    _assert_probe_binary_is_the_installed_spine()
     with pytest.MonkeyPatch.context() as mp:
         for name in [key for key in os.environ if key.startswith("REGISTA_")]:
             mp.delenv(name, raising=False)
@@ -281,6 +557,7 @@ def _boundary_check(report: InvariantProbeReport) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(_MODULE_SKIP, reason=_SKIP_REASON)
 def test_the_real_probe_is_not_malformed_against_the_frozen_contract(
     live_probe_report: InvariantProbeReport,
 ) -> None:
@@ -303,6 +580,7 @@ def test_the_real_probe_is_not_malformed_against_the_frozen_contract(
     )
 
 
+@pytest.mark.skipif(_MODULE_SKIP, reason=_SKIP_REASON)
 def test_every_gate_required_check_id_is_emitted_by_the_installed_spine(
     live_probe_report: InvariantProbeReport,
 ) -> None:
@@ -324,6 +602,7 @@ def test_every_gate_required_check_id_is_emitted_by_the_installed_spine(
     )
 
 
+@pytest.mark.skipif(_MODULE_SKIP, reason=_SKIP_REASON)
 def test_the_frozen_actor_boundary_contract_matches_the_emitted_check(
     live_probe_report: InvariantProbeReport,
 ) -> None:
@@ -367,6 +646,7 @@ def test_the_frozen_actor_boundary_contract_matches_the_emitted_check(
     assert _actor_boundary_contract_error(check) is None
 
 
+@pytest.mark.skipif(_MODULE_SKIP, reason=_SKIP_REASON)
 def test_the_evaluator_accepts_the_whole_live_regista_contribution(
     live_probe_report: InvariantProbeReport, interop_dsn: str, probe_project: str
 ) -> None:
