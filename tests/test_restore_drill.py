@@ -31,6 +31,7 @@ from tests.conftest import (
     _docker_available,
     _dsn_available,
     _EphemeralPostgres,
+    _fail_or_skip,
     _InteropDsn,
     _regista_available,
 )
@@ -59,7 +60,15 @@ def _can_run() -> bool:
     )
 
 
-pytestmark = pytest.mark.skipif(not _can_run(), reason=_SKIP_REASON)
+# No module-level ``pytestmark = pytest.mark.skipif(not _can_run(), ...)``
+# here (WI-084 item 1): that marker skips at collection time, unconditionally,
+# regardless of INTEROP_REQUIRE_FACES, which silently overrode the interop
+# lane's fail-closed promise. The equivalent check now lives in the
+# ``interop_dsn`` fixture below (for the no-``INTEROP_DSN`` branch) and at the
+# top of ``test_restore_drill_verifies_intact`` (for the case where
+# ``INTEROP_DSN`` is set but regista, its CLI, or the pg tools are not — a gap
+# the fixture's early return would otherwise miss), both routed through
+# conftest's shared ``_fail_or_skip``.
 
 
 @pytest.fixture(scope="module")
@@ -76,10 +85,7 @@ def interop_dsn() -> Generator[_InteropDsn, None, None]:
         return
 
     if not _can_run():
-        pytest.skip(
-            "Restore-drill prerequisites not met — need regista + pg_dump + psql + "
-            "Docker or INTEROP_DSN"
-        )
+        _fail_or_skip(_SKIP_REASON)
 
     # No fixed port: _EphemeralPostgres allocates one dynamically and retries
     # on a bind race. The old ``port="5434"`` argument was removed from that
@@ -119,6 +125,12 @@ def test_restore_drill_verifies_intact(
     whose row columns are covered by the signed envelope, so a restore that
     survives ``verify_restore`` is a stronger statement than it was under v5.
     """
+    # WI-084 item 1: when ``INTEROP_DSN`` is set, the ``interop_dsn`` fixture
+    # returns before checking regista/CLI/pg-tool availability at all, so a
+    # missing prerequisite in that branch must be caught here instead.
+    if not _can_run():
+        _fail_or_skip(_SKIP_REASON)
+
     import psycopg
     import regista as regista_pkg
     from regista import Regista

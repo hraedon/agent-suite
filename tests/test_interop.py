@@ -30,7 +30,6 @@ makes a lock a release (docs/bootstrap-contract.md §5).
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from pathlib import Path
 
@@ -40,6 +39,8 @@ from agent_suite.signature_assurance import bundle_verdict
 from tests.conftest import (
     RegistaProject,
     _can_run,
+    _fail_or_skip,
+    _require_interop,
 )
 
 # ---------------------------------------------------------------------------
@@ -50,12 +51,6 @@ _SKIP_REASON = (
     "Interop prerequisites not met — need regista + (Docker or INTEROP_DSN env). "
     "Expected until component contracts are fully landed (Plan 001 WI-2.2)."
 )
-
-# When set (CI), the face-level interop test must not skip — it fails instead,
-# so a face-packaging regression is a red run, not a silent skip (Plan 002 WI-2).
-_REQUIRE_FACES = os.environ.get("INTEROP_REQUIRE_FACES", "").strip().lower() in {
-    "1", "true", "yes",
-}
 
 # The exact modules the face-level test imports — checking these (not a subset)
 # ensures the availability probe and the test body cannot drift apart.
@@ -93,7 +88,10 @@ def _faces_available() -> bool:
 # skip — a missing face or missing DSN is a packaging/CI regression, not an
 # optional proof. _face_test_should_skip is False in CI so the test runs and
 # fails loudly via the guard inside it (faces) or the interop_dsn fixture (DSN).
-_face_test_should_skip = (not _faces_available() or not _can_run()) and not _REQUIRE_FACES
+# ``_require_interop`` is conftest's single definition of what the flag means
+# (WI-084 item 1) — this module used to keep its own copy of the same check,
+# which is exactly the kind of duplicated literal that can quietly drift.
+_face_test_should_skip = (not _faces_available() or not _can_run()) and not _require_interop()
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +99,13 @@ _face_test_should_skip = (not _faces_available() or not _can_run()) and not _REQ
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _can_run(), reason=_SKIP_REASON)
+# No ``@pytest.mark.skipif(not _can_run(), ...)`` here on purpose (WI-084 item
+# 1): that marker skips at collection time, unconditionally, before any
+# fixture runs — so it silently overrode the interop lane's fail-closed
+# promise regardless of INTEROP_REQUIRE_FACES. ``regista_project`` (via its own
+# ``_regista_available()`` check and its ``interop_dsn`` dependency) already
+# routes a missing prerequisite through conftest's ``_fail_or_skip``, so the
+# gating lives there instead — one decision point, not two disagreeing ones.
 def test_drive_work_item_across_workflow_to_done(regista_project: RegistaProject) -> None:
     """Spine-level: drive one work-item through the canonical workflow to ``done``.
 
@@ -203,7 +207,6 @@ def test_drive_work_item_across_workflow_to_done(regista_project: RegistaProject
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _can_run(), reason=_SKIP_REASON)
 def test_drive_work_item_per_principal_ed25519_to_done(
     interop_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -255,6 +258,17 @@ def test_drive_work_item_per_principal_ed25519_to_done(
     ``principal_key_acceptance_revoked`` and its write-time refusal). It is not
     duplicated here.
     """
+    # WI-084 item 1: this test only depends on ``interop_dsn``, which lets a
+    # caller-supplied ``INTEROP_DSN`` short-circuit past its own
+    # ``_can_run()`` check without ever importing regista — so an
+    # uninstalled ``regista`` here would previously surface as a raw
+    # ``ImportError`` from the ``import regista_pkg`` below rather than a
+    # controlled skip/fail. Route it through the same ``_fail_or_skip`` the
+    # ``regista_project`` fixture already uses, so a missing prerequisite
+    # fails (not skips) under ``INTEROP_REQUIRE_FACES=1``.
+    if not _can_run():
+        _fail_or_skip(_SKIP_REASON)
+
     pytest.importorskip("nacl.signing")
 
     import base64

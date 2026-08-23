@@ -42,21 +42,20 @@ lock a release (docs/bootstrap-contract.md §5-6).
 
 from __future__ import annotations
 
-import pytest
-
-from tests.conftest import RegistaProject, _can_run
+from tests.conftest import RegistaProject
 
 # ---------------------------------------------------------------------------
 # Prerequisite gating — skip cleanly until the component contracts exist
 # ---------------------------------------------------------------------------
-
-_SKIP_REASON = (
-    "Tamper-detection prerequisites not met — need regista + (Docker or "
-    "INTEROP_DSN env). Expected until component contracts are fully landed "
-    "(Plan 001 WI-2.3)."
-)
-
-pytestmark = pytest.mark.skipif(not _can_run(), reason=_SKIP_REASON)
+#
+# No module-level ``pytestmark = pytest.mark.skipif(not _can_run(), ...)``
+# here (WI-084 item 1): that marker skips at collection time, unconditionally,
+# before any fixture runs — so it silently overrode the interop lane's
+# fail-closed promise regardless of INTEROP_REQUIRE_FACES. ``regista_project``
+# (via its own ``_regista_available()`` check and its ``interop_dsn``
+# dependency) already routes a missing prerequisite through conftest's
+# ``_fail_or_skip``, so the gating lives there instead of being re-decided
+# here, inconsistently, at collection time.
 
 
 # ---------------------------------------------------------------------------
