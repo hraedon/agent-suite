@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import urlparse
 
 import pytest
@@ -121,6 +121,48 @@ def _dsn_available() -> bool:
 
 def _can_run() -> bool:
     return _regista_available() and (_docker_available() or _dsn_available())
+
+
+def _require_interop() -> bool:
+    """Whether this is the interop lane, where a missing prerequisite is a bug.
+
+    ``INTEROP_REQUIRE_FACES=1`` is set by the ``interop`` CI job and nothing
+    else. It was introduced for the face-level tests (Plan 002 WI-2), but what
+    it actually marks is the lane in which every integration prerequisite —
+    spine, faces, store — is *supposed* to be present, so a missing one is a
+    packaging or CI regression rather than an optional proof.
+    """
+    return os.environ.get("INTEROP_REQUIRE_FACES", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _fail_or_skip(reason: str) -> NoReturn:
+    """Skip outside the interop lane; FAIL inside it. Never returns.
+
+    The module-level ``skipif`` guards integration tests carry are only half
+    the story: a test can clear its own guard and still be skipped from
+    *underneath* by a fixture whose skip predates the flag. That is exactly
+    what ``interop_dsn`` did — it called :func:`pytest.skip` unconditionally on
+    a missing store, so a module that had deliberately opted out of skipping
+    under ``INTEROP_REQUIRE_FACES=1`` still reported SKIPPED, and its own
+    hard-fail guard never ran. The lane was saved only by ``INTEROP_DSN`` being
+    set, which short-circuits the check before it is reached.
+
+    Routing every integration prerequisite through this one helper means the
+    lane's fail-closed promise is made in one place instead of being re-made,
+    inconsistently, at each fixture.
+    """
+    if _require_interop():
+        pytest.fail(
+            f"INTEROP_REQUIRE_FACES=1 is set, but {reason}. In the interop lane "
+            "a missing prerequisite is a CI or packaging regression, not an "
+            "optional proof: skipping here would make 'this was never checked' "
+            "indistinguishable from 'this passed'."
+        )
+    pytest.skip(reason)
 
 
 # ---------------------------------------------------------------------------
@@ -864,6 +906,12 @@ def interop_dsn() -> Generator[str, None, None]:
     If ``INTEROP_DSN`` is set (e.g. by a CI service container), use that.
     Otherwise stand up an ephemeral Docker container on a dynamically
     allocated port and tear it down after the module.
+
+    Fail-closed in the interop lane (see :func:`_fail_or_skip`): CI is meant to
+    supply ``INTEROP_DSN`` from its service container, so reaching the
+    no-store branch there means the service or the spine install broke, and
+    every test downstream of this fixture must go red rather than quietly
+    vanish from the run.
     """
     env_dsn = os.environ.get("INTEROP_DSN")
     if env_dsn:
@@ -871,8 +919,9 @@ def interop_dsn() -> Generator[str, None, None]:
         return
 
     if not _can_run():
-        pytest.skip(
-            "Integration prerequisites not met — need regista + Docker or INTEROP_DSN"
+        _fail_or_skip(
+            "integration prerequisites are not met — need regista + Docker or "
+            "INTEROP_DSN"
         )
 
     pg = _EphemeralPostgres(container_name_prefix="agent-suite-interop")
@@ -952,12 +1001,9 @@ def regista_project(
         # In CI (INTEROP_REQUIRE_FACES=1) a missing spine is an install
         # regression, not an optional proof — fail instead of skipping, so the
         # adversarial corpus cannot silently regress to a skip (Plan 002 WI-2).
-        if os.environ.get("INTEROP_REQUIRE_FACES", "").strip().lower() in {"1", "true", "yes"}:
-            pytest.fail(
-                "INTEROP_REQUIRE_FACES=1 is set but regista is not importable — "
-                "verify the spine-install step in CI."
-            )
-        pytest.skip("regista is not installed")
+        # Routed through the shared helper so this fixture and interop_dsn
+        # cannot disagree about what the lane flag means.
+        _fail_or_skip("regista is not installed — verify the spine-install step")
 
     import regista as regista_pkg
     from regista import Regista

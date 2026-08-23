@@ -46,6 +46,11 @@ _ACTOR_BOUNDARY_EXCLUSIONS = frozenset(
         "regista._trust_log_writer.write_trust_genesis",
     }
 )
+#: The work item the excluded paths are charged to. Named as a constant so the
+#: interop test that compares this frozen contract against the installed
+#: spine's real output can assert the token this module actually requires,
+#: rather than transcribing a third copy of it.
+_ACTOR_BOUNDARY_RESIDUAL_TOKEN = "WI-320"
 
 
 @dataclass(frozen=True)
@@ -252,8 +257,11 @@ def _actor_boundary_contract_error(check: dict[str, Any]) -> str | None:
         ):
             return f"{_ACTOR_BOUNDARY_CHECK_ID} declared an unexpected {field} set"
     reason = check.get("exclusion_reason")
-    if not isinstance(reason, str) or "WI-320" not in reason:
-        return f"{_ACTOR_BOUNDARY_CHECK_ID} did not name the WI-320 residual"
+    if not isinstance(reason, str) or _ACTOR_BOUNDARY_RESIDUAL_TOKEN not in reason:
+        return (
+            f"{_ACTOR_BOUNDARY_CHECK_ID} did not name the "
+            f"{_ACTOR_BOUNDARY_RESIDUAL_TOKEN} residual"
+        )
     return None
 
 

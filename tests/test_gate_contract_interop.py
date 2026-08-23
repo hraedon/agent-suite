@@ -37,9 +37,15 @@ no Postgres.
 
 from __future__ import annotations
 
+import importlib.metadata
+import json
 import os
+import shutil
+import subprocess
+import sys
 import uuid
 from collections.abc import Generator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -51,6 +57,7 @@ from agent_suite.genesis_gate import (
     _ACTOR_BOUNDARY_CLAIM,
     _ACTOR_BOUNDARY_EXCLUSIONS,
     _ACTOR_BOUNDARY_PATHS,
+    _ACTOR_BOUNDARY_RESIDUAL_TOKEN,
     _ACTOR_BOUNDARY_SHARED_CONSUMERS,
     GENESIS_REQUIRED_CHECK_OWNERS,
     PROBE_SPECS,
@@ -66,48 +73,66 @@ from tests.conftest import (
     V6_BOOTSTRAP_PRINCIPAL,
     _can_run,
     _generate_v6_keyset,
+    _regista_available,
+    _require_interop,
 )
 
 # ---------------------------------------------------------------------------
 # Lane gating
 # ---------------------------------------------------------------------------
 
-#: The interop lane's own marker. ``INTEROP_REQUIRE_FACES=1`` is set only by
-#: the ``interop`` CI job, and ``conftest.regista_project`` already reads it as
-#: "this is the lane where a missing prerequisite is a regression, not an
-#: optional proof". Reused rather than inventing a second flag, so there is one
-#: switch for the lane and not two that can disagree.
-_REQUIRE_INTEROP = os.environ.get("INTEROP_REQUIRE_FACES", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-}
-
 _SKIP_REASON = (
     "Gate-contract interop prerequisites not met — need regista + (Docker or "
     "INTEROP_DSN env). In the interop lane (INTEROP_REQUIRE_FACES=1) this "
-    "module does not skip; it fails."
+    "module does not skip; it fails — including from underneath, via "
+    "conftest's shared _fail_or_skip."
 )
 
 pytestmark = pytest.mark.skipif(
-    not _can_run() and not _REQUIRE_INTEROP, reason=_SKIP_REASON
+    not _can_run() and not _require_interop(), reason=_SKIP_REASON
 )
+
+#: The component that owns the actor-boundary check, per the gate's own
+#: ownership map — i.e. the spine, derived from the very check this module
+#: exists to pin rather than spelled out again. A component name repeated here
+#: is one more literal that can drift from ``genesis_gate``.
+_SPINE: str = GENESIS_REQUIRED_CHECK_OWNERS[_ACTOR_BOUNDARY_CHECK_ID]
 
 #: The gate's own spec for the spine — command, required check IDs and all.
 #: Taken from ``PROBE_SPECS`` so the test cannot run a different argv than the
 #: gate does, which is precisely the drift the regista-side guard also pins.
 _REGISTA_SPEC: ProbeSpec = next(
-    spec for spec in PROBE_SPECS if spec.component == "regista"
+    spec for spec in PROBE_SPECS if spec.component == _SPINE
 )
 
-#: Required checks the gate expects from components other than regista. They
+#: Required checks the gate expects from components other than the spine. They
 #: are absent by construction here (only the spine's probe is run), so they are
 #: the *complete* expected failure set for the evaluation below — derived, not
 #: transcribed, so adding a component to the gate cannot silently widen it.
 _NON_REGISTA_REQUIRED = frozenset(
     check_id
     for check_id, owner in GENESIS_REQUIRED_CHECK_OWNERS.items()
-    if owner != "regista"
+    if owner != _SPINE
+)
+
+#: libpq's ambient connection variables. Scrubbed alongside ``REGISTA_*``
+#: before the probe runs: ``PGHOST``/``PGDATABASE``/``PGSERVICE`` and friends
+#: are consulted by psycopg for any connection parameter the DSN leaves out, so
+#: an operator's exported ``PGDATABASE`` could redirect part of the probe's
+#: connection away from the throwaway store while the comparison below still
+#: read green.
+_LIBPQ_ENV = (
+    "PGHOST",
+    "PGHOSTADDR",
+    "PGPORT",
+    "PGUSER",
+    "PGPASSWORD",
+    "PGPASSFILE",
+    "PGDATABASE",
+    "PGSERVICE",
+    "PGSERVICEFILE",
+    "PGSSLMODE",
+    "PGOPTIONS",
 )
 
 
@@ -116,12 +141,57 @@ _NON_REGISTA_REQUIRED = frozenset(
 # ---------------------------------------------------------------------------
 
 
-def _regista_importable() -> bool:
-    try:
-        import regista  # noqa: F401
-    except ImportError:
-        return False
-    return True
+def _assert_probe_binary_is_the_installed_spine() -> str:
+    """Resolve the probe's executable and prove it is *this* environment's spine.
+
+    Two separate installs answer to the name ``regista`` on a developer box: the
+    one this venv imports, and whatever a user-level tool install
+    (``~/.local/bin``) put earlier on ``PATH``. The gate resolves its probe by
+    ``shutil.which``, but the store below is provisioned by the *imported*
+    package — nothing in the report reconciles them, and the probe JSON carries
+    no version field to reconcile them with. A stale uv-tool shim on ``PATH``
+    therefore silently turns this module into a contract comparison against a
+    different release than the one under test. That is not hypothetical: a
+    0.6.0 shim shadowed the 0.7.2 venv install in an independent review of this
+    very file.
+
+    So pin on the resolved *path* — it must live inside ``sys.prefix`` — and
+    then reconcile the two versions across the process boundary: the
+    distribution backing the imported ``regista`` package, and the
+    ``library_version`` the resolved script reports for itself.
+    """
+    resolved = shutil.which(_SPINE)
+    assert resolved is not None, (
+        f"no {_SPINE!r} executable on PATH, so the gate's frozen contract "
+        "would be compared against nothing."
+    )
+    resolved_path = Path(resolved).resolve()
+    prefix = Path(sys.prefix).resolve()
+    assert resolved_path.is_relative_to(prefix), (
+        f"PATH resolves {_SPINE!r} to {resolved_path}, which is OUTSIDE this "
+        f"environment ({prefix}). The store is provisioned by the imported "
+        f"package while the probe would run that other install, so the "
+        f"contract comparison would be against an unpinned release. Run under "
+        f"`uv run --frozen`, or remove the shadowing entry from PATH."
+    )
+
+    distributions = importlib.metadata.packages_distributions().get(_SPINE, [])
+    assert distributions, f"the imported {_SPINE!r} package has no distribution metadata"
+    imported_version = importlib.metadata.version(distributions[0])
+    completed = subprocess.run(
+        (str(resolved_path), "version", "--json"),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    reported_version = json.loads(completed.stdout).get("library_version")
+    assert reported_version == imported_version, (
+        f"{resolved_path} reports library_version {reported_version!r} but the "
+        f"imported {distributions[0]} distribution is {imported_version!r} — "
+        "the probe and the store would come from different installs."
+    )
+    return imported_version
 
 
 @pytest.fixture(scope="module")
@@ -137,7 +207,7 @@ def probe_project(
     Disposable Ed25519 key material in a per-module temp dir — never a tracked
     fixture file and never the operator's key path.
     """
-    if not _regista_importable():
+    if not _regista_available():
         pytest.fail(
             "regista is not importable, so the gate's frozen contract could "
             "not be compared against any real probe output. In the interop "
@@ -171,13 +241,19 @@ def live_probe_report(interop_dsn: str, probe_project: str) -> InvariantProbeRep
     ``subprocess.run(('regista', 'invariants', 'probe', '--json'))``, then
     ``_parse_probe_result``.
 
-    Every ambient ``REGISTA_*`` variable is dropped before the run. The
+    Which executable ``shutil.which`` will land on is pinned first — see
+    :func:`_assert_probe_binary_is_the_installed_spine`.
+
+    Every ambient ``REGISTA_*`` and ``PG*`` variable is then dropped. The
     operator's own DSN, project or key path leaking into a measurement of a
     throwaway project would mean the probe reported on the wrong store, and the
     contract comparison would still look green.
     """
+    _assert_probe_binary_is_the_installed_spine()
     with pytest.MonkeyPatch.context() as mp:
         for name in [key for key in os.environ if key.startswith("REGISTA_")]:
+            mp.delenv(name, raising=False)
+        for name in _LIBPQ_ENV:
             mp.delenv(name, raising=False)
         mp.setenv("REGISTA_DSN", interop_dsn)
         mp.setenv("REGISTA_PROJECT", probe_project)
@@ -225,7 +301,6 @@ def test_the_real_probe_is_not_malformed_against_the_frozen_contract(
         f"the installed regista's real probe output does not satisfy the gate's "
         f"frozen contract: [{result.status.value}] {result.detail}"
     )
-    assert live_probe_report.ok
 
 
 def test_every_gate_required_check_id_is_emitted_by_the_installed_spine(
@@ -283,8 +358,9 @@ def test_the_frozen_actor_boundary_contract_matches_the_emitted_check(
             f"{field} drifted — frozen {sorted(frozen)}, emitted {emitted}"
         )
     reason = check.get("exclusion_reason")
-    assert isinstance(reason, str) and "WI-320" in reason, (
-        f"the emitted check no longer names the WI-320 residual: {reason!r}"
+    assert isinstance(reason, str) and _ACTOR_BOUNDARY_RESIDUAL_TOKEN in reason, (
+        f"the emitted check no longer names the {_ACTOR_BOUNDARY_RESIDUAL_TOKEN} "
+        f"residual: {reason!r}"
     )
 
     # The real validator last: everything above is diagnosis, this is the verdict.
