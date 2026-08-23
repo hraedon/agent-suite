@@ -58,7 +58,7 @@ def _passing_bodies() -> dict[str, dict[str, object]]:
                 {
                     "id": "regista.actor_boundary_signing",
                     "status": "pass",
-                    "claim": "r10.no_arbitrary_principal.project_v6",
+                    "claim": "r10.project_v6.boundary_rejects_mismatched_binding",
                     "basis": "behavioral_attempt_ephemeral_epoch",
                     "paths_proven": [
                         "regista._genesis.append_v6_genesis",
@@ -197,6 +197,7 @@ def test_actor_boundary_signing_failure_blocks_gate() -> None:
     [
         ("claim", None),
         ("claim", "r10.full"),
+        ("claim", "r10.no_arbitrary_principal.project_v6"),
         ("basis", "configuration_inspection"),
         ("paths_proven", ["regista._v6_writer.append_v6_event"]),
         ("shared_boundary_consumers", []),
