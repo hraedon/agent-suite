@@ -1,3 +1,30 @@
+"""Offline unit coverage for the genesis gate's probe parsing and evaluation.
+
+WI-084 item 5 — literal vs. imported-constant rule for this file's hand-built
+fixture bodies (``_passing_bodies`` and its per-test mutations):
+
+* **Import the gate's constant** where a fixture literal exists only to
+  duplicate a value ``genesis_gate`` already names (e.g. the frozen
+  ``_ACTOR_BOUNDARY_*`` contract fields), *and* an external anchor already
+  proves that constant against a real probe. ``tests/test_gate_contract_interop.py``
+  (PR #36) is that anchor for the actor-boundary contract: it runs the real
+  installed regista's probe through the real parser and compares the result
+  against these same constants. Once that anchor exists, transcribing the
+  values here a second time buys no additional drift coverage — it is one
+  more place the two copies could quietly disagree with each other while
+  agreeing with neither the gate nor the anchor's live measurement.
+* **Keep the literal** everywhere else: check IDs and shapes this file
+  invents for its own coverage (e.g. ``_clean_measurement``'s fields, the
+  "cairn"/"agent-notes" bodies) have no live external anchor, and a literal
+  here is deliberately anti-change-detector (kimi-k3's point from the PR #36
+  review) — it forces a human to notice and re-justify a shape change instead
+  of a refactor silently carrying both the production code and its test
+  fixture to a new, mutually-agreeing-but-wrong shape together. The
+  deviation/mutation tests below (e.g. ``bad_value`` parametrization) also
+  keep their literals: they exist specifically to assert on values that
+  *disagree* with the constants, so importing would be self-defeating there.
+"""
+
 from __future__ import annotations
 
 import json
@@ -7,6 +34,13 @@ from copy import deepcopy
 import pytest
 
 from agent_suite.genesis_gate import (
+    _ACTOR_BOUNDARY_BASIS,
+    _ACTOR_BOUNDARY_CHECK_ID,
+    _ACTOR_BOUNDARY_CLAIM,
+    _ACTOR_BOUNDARY_EXCLUSIONS,
+    _ACTOR_BOUNDARY_PATHS,
+    _ACTOR_BOUNDARY_RESIDUAL_TOKEN,
+    _ACTOR_BOUNDARY_SHARED_CONSUMERS,
     GENESIS_REQUIRED_CHECK_OWNERS,
     GENESIS_REQUIRED_CHECKS,
     PROBE_SPECS,
@@ -56,24 +90,19 @@ def _passing_bodies() -> dict[str, dict[str, object]]:
                 {"id": "regista.closed_lineage_registry", "status": "pass"},
                 {"id": "regista.first_write_admission", "status": "pass"},
                 {
-                    "id": "regista.actor_boundary_signing",
+                    # Imported, not transcribed (WI-084 item 5 — see the
+                    # module docstring's rule): these fields duplicate the
+                    # gate's frozen ``_ACTOR_BOUNDARY_*`` contract, and
+                    # tests/test_gate_contract_interop.py (PR #36) already
+                    # anchors that contract against a real installed regista.
+                    "id": _ACTOR_BOUNDARY_CHECK_ID,
                     "status": "pass",
-                    "claim": "r10.project_v6.boundary_rejects_mismatched_binding",
-                    "basis": "behavioral_attempt_ephemeral_epoch",
-                    "paths_proven": [
-                        "regista._genesis.append_v6_genesis",
-                        "regista._v6_writer.append_v6_event",
-                    ],
-                    "shared_boundary_consumers": [
-                        "regista._trust_log_writer.append_trust_log_event"
-                    ],
-                    "excluded_paths": [
-                        "regista._cli.cmd_trust_init_log",
-                        "regista._cli.cmd_trust_delegate_registrar",
-                        "regista._cli._resolve_trust_root_actor",
-                        "regista._trust_log_writer.write_trust_genesis",
-                    ],
-                    "exclusion_reason": "WI-320 remains explicit",
+                    "claim": _ACTOR_BOUNDARY_CLAIM,
+                    "basis": _ACTOR_BOUNDARY_BASIS,
+                    "paths_proven": sorted(_ACTOR_BOUNDARY_PATHS),
+                    "shared_boundary_consumers": sorted(_ACTOR_BOUNDARY_SHARED_CONSUMERS),
+                    "excluded_paths": sorted(_ACTOR_BOUNDARY_EXCLUSIONS),
+                    "exclusion_reason": f"{_ACTOR_BOUNDARY_RESIDUAL_TOKEN} remains explicit",
                 },
             ],
         },
