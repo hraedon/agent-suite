@@ -254,11 +254,17 @@ jobs:
           done
           echo "agent-notes domain schema applied to agent_notes_smoke"
 
-      - name: Run interop + tamper + restore-drill + adversarial-corpus + skill-smoke tests
+      # tests/test_gate_contract_interop.py is the consumer-side guard on the
+      # genesis gate's frozen regista contract. It only means anything where a
+      # real spine and a real store exist, which is this job — and it is
+      # fail-closed here (INTEROP_REQUIRE_FACES=1 above stops it skipping), so
+      # a claim/basis/path-set rename in regista turns this run red instead of
+      # waiting for a live qualification ceremony to discover it.
+      - name: Run interop + gate-contract + tamper + restore-drill + adversarial-corpus + skill-smoke tests
         env:
           AGENT_NOTES_SMOKE_DSN: postgresql://interop:interop_pw@localhost:5432/agent_notes_smoke
           AGENT_NOTES_SMOKE_REGISTA_DSN: postgresql://interop:interop_pw@localhost:5432/agent_notes_smoke_regista
-        run: uv run pytest tests/test_interop.py tests/test_tamper.py tests/test_restore_drill.py tests/test_adversarial_corpus.py tests/test_skill_smoke.py -v --tb=short
+        run: uv run pytest tests/test_interop.py tests/test_gate_contract_interop.py tests/test_tamper.py tests/test_restore_drill.py tests/test_adversarial_corpus.py tests/test_skill_smoke.py -v --tb=short
 
   # Plan 015 WI-0.1 — strict feature-probe verification with all sibling
   # components checked out at SUITE.lock-pinned revisions. Prevents the
