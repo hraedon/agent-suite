@@ -3,7 +3,7 @@
 
 [suite]
 release = "1.0.0-dev"
-regista_library_version = "0.7.1"
+regista_library_version = "0.7.2"
 regista_schema_version = 50
 regista_workflow_version = "3"
 regista_envelope_version = 6
@@ -35,8 +35,8 @@ revision = "bd4984a17b5ad11ab4d75fb0e621376dcdea933d"
 
 [components.regista]
 repo = "hraedon/regista"
-version = "0.7.1"
-revision = "8dd7b3464b0316f0f3a36e46dee64e36ceac6dbf"
+version = "0.7.2"
+revision = "82fb5c82cebbe51cd4e03ff432ed1b5fa8494da0"
 
 [memory_provider]
 provider_name = "hindsight"
