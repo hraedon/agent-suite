@@ -109,6 +109,54 @@ _REGISTA_SPEC: ProbeSpec = next(
     spec for spec in PROBE_SPECS if spec.component == _SPINE
 )
 
+
+def _import_name_for(component: str) -> str:
+    """The top-level import name ``importlib.metadata.packages_distributions()``
+    would key on for a suite ``component`` name.
+
+    ``packages_distributions()`` keys on *import* names — Python identifiers,
+    which cannot contain hyphens — not on component names or command names.
+    For regista, the component name (``"regista"``), the command
+    (``_REGISTA_SPEC.command[0]`` == ``"regista"``) and the import name
+    (``import regista``) are all the same bare string, which hides that these
+    are three independent namespaces. They are not the same for every suite
+    component: ``agent-notes`` (the component name in
+    ``GENESIS_REQUIRED_CHECK_OWNERS``/``PROBE_SPECS``, and its console-script
+    name) is imported as ``agent_notes`` — a hyphen is not a legal character
+    in a Python module name, so the PEP 8 convention (and this suite's own
+    actual package) substitutes an underscore. Deriving the import name via
+    that substitution, rather than reusing the component name directly, is
+    what makes the probe-binary check below correct if this module is ever
+    generalized past regista — see
+    ``test_import_name_for_derives_the_import_name_not_the_component_name``
+    for the pin (WI-084 review, blocking finding on the original item 2 fix).
+    """
+    return component.replace("-", "_")
+
+
+def test_import_name_for_derives_the_import_name_not_the_component_name() -> None:
+    """Mutation-proof pin for the blocking review finding on WI-084 item 2.
+
+    The original item-2 fix corrected ``which()`` to resolve
+    ``_REGISTA_SPEC.command[0]`` instead of the component name ``_SPINE``, but
+    left the ``packages_distributions()`` lookup a few lines later keyed on
+    ``_SPINE`` directly. That works for regista purely by coincidence
+    (component name == import name == command name, all ``"regista"``) and
+    would silently misdiagnose a *correctly installed* ``agent-notes`` as
+    having "no distribution metadata", because ``"agent-notes"`` (the
+    component name) is never a key ``packages_distributions()`` produces —
+    only ``"agent_notes"`` (the import name) is.
+
+    The regista case alone cannot catch a regression back to using the
+    component name directly, since the two strings are identical for regista
+    either way — the agent-notes case is what actually pins the derivation.
+    Needs no probe, no store and no regista, so — like the WI-084 item 4 pin —
+    it carries no skip marker and runs unconditionally.
+    """
+    assert _import_name_for("agent-notes") == "agent_notes"
+    assert _import_name_for("regista") == "regista"
+
+
 #: Required checks the gate expects from components other than the spine. They
 #: are absent by construction here (only the spine's probe is run), so they are
 #: the *complete* expected failure set for the evaluation below — derived, not
@@ -235,7 +283,7 @@ def test_genesis_required_check_spec_has_not_been_quietly_weakened() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _assert_versions_match(reported: str | None, imported: str, *, resolved_path: Path) -> None:
+def _assert_versions_match(reported: object, imported: str, *, resolved_path: Path) -> None:
     """Cross-check the probe's self-reported version against the imported package.
 
     Strict string equality (WI-084 item 3) misdiagnoses one real case: a
@@ -252,9 +300,27 @@ def _assert_versions_match(reported: str | None, imported: str, *, resolved_path
     and the imported package come from two different local builds of the
     same release without comment. The only thing parsing buys is a sharper
     error message that tells the two cases apart.
+
+    ``reported`` is typed ``object``, not ``str | None`` (WI-084 review,
+    non-blocking finding 2): it comes straight from
+    ``json.loads(...).get("library_version")``, so a probe JSON that violates
+    its own contract (e.g. ``library_version`` is a number or a list) is a
+    real, reachable input here, not a hypothetical one. ``Version(...)``
+    raises ``TypeError`` — not ``InvalidVersion`` — for a non-string
+    argument, which would have escaped as an unhandled exception instead of
+    the intended ``pytest.fail`` diagnostic; the explicit ``isinstance``
+    check below turns that into the same clear failure as any other
+    malformed report.
     """
     if reported == imported:
         return
+    if reported is not None and not isinstance(reported, str):
+        pytest.fail(
+            f"{resolved_path} reported a non-string library_version "
+            f"({reported!r}, type {type(reported).__name__}) — the probe's "
+            "own JSON contract requires a version string (or an absent "
+            "field), so this is a malformed report, not a version mismatch."
+        )
     try:
         reported_v = Version(reported) if reported is not None else None
         imported_v = Version(imported)
@@ -329,18 +395,21 @@ def _assert_probe_binary_is_the_installed_spine() -> str:
         )
 
     # packages_distributions() keys on *import* names (e.g. ``agent_notes``),
-    # not component or command names — for regista today all three coincide,
-    # which is exactly the coincidence item 2 warns not to lean on elsewhere.
-    distributions = importlib.metadata.packages_distributions().get(_SPINE, [])
+    # not component or command names — derived explicitly via
+    # _import_name_for rather than reusing _SPINE, which only coincides with
+    # the import name for regista (review finding on the original item-2 fix:
+    # this line was still keyed on the component name).
+    import_name = _import_name_for(_SPINE)
+    distributions = importlib.metadata.packages_distributions().get(import_name, [])
     # Indexing distributions[0] would be order-dependent if more than one
     # distribution ever claimed this import name (WI-084 item 3) — assert
     # there is exactly one instead of silently picking a side.
     if len(distributions) != 1:
         pytest.fail(
-            f"expected exactly one distribution backing the imported {_SPINE!r} "
-            f"package, found {distributions!r}. packages_distributions()[...][0] "
-            "would pick one arbitrarily, which is not a version this test can "
-            "stand behind."
+            f"expected exactly one distribution backing the imported "
+            f"{import_name!r} package, found {distributions!r}. "
+            "packages_distributions()[...][0] would pick one arbitrarily, "
+            "which is not a version this test can stand behind."
         )
     imported_version = importlib.metadata.version(distributions[0])
     completed = subprocess.run(
@@ -357,27 +426,51 @@ def _assert_probe_binary_is_the_installed_spine() -> str:
 
 @pytest.fixture(scope="module")
 def _verified_probe_binary() -> None:
-    """Hoisted ahead of ``probe_project``'s own work (WI-084 item 3).
+    """Hoisted ahead of *all* of this module's other setup (WI-084 item 3).
 
     ``_assert_probe_binary_is_the_installed_spine`` used to run as the first
     line of ``live_probe_report``, i.e. *after* ``probe_project`` had already
     paid for standing up a project across the v6 genesis boundary (~4s of
     Postgres round-trips and ~50 migrations) — work this module does not need
-    when the answer is "wrong regista on PATH". Listed as ``probe_project``'s
-    *first* parameter below rather than made autouse: autouse would also pull
-    in a regista-CLI dependency for the reverse-direction pin test further
-    down, which needs none of this module's prerequisites at all. Same-scope
-    fixtures with no dependency on each other are set up in the order the
-    requesting fixture lists them, so this still runs before ``interop_dsn``
-    and the rest of ``probe_project``'s body for every test that reaches it —
-    a stale PATH shim now fails in milliseconds instead of seconds.
+    when the answer is "wrong regista on PATH". An earlier version of this
+    fix listed this fixture first in ``probe_project``'s parameter list,
+    which only guaranteed it ran before ``probe_project``'s own *body* — not
+    before ``interop_dsn`` (one of ``probe_project``'s other parameters),
+    which with no ``INTEROP_DSN`` set means an ephemeral Docker Postgres
+    container was still started first. Parameter position between two
+    mutually-independent fixtures is not a structural ordering guarantee
+    (WI-084 review, non-blocking finding 1).
+
+    The actual structural guarantee is the ``interop_dsn`` override directly
+    below: it depends on this fixture explicitly, so the probe-binary check
+    is now a real prerequisite of the DSN itself, and a stale PATH shim is
+    caught before any Docker/Postgres work at all — not just before the
+    v6-genesis project provisioning layered on top of it.
     """
     _assert_probe_binary_is_the_installed_spine()
 
 
 @pytest.fixture(scope="module")
+def interop_dsn(_verified_probe_binary: None, interop_dsn: str) -> str:
+    """Override conftest's ``interop_dsn`` to require the probe-binary check first.
+
+    Requesting a fixture named ``interop_dsn`` from within a fixture also
+    named ``interop_dsn`` is the standard pytest fixture-override pattern
+    (not recursion): pytest resolves the inner name to the next
+    ``interop_dsn`` up the fixture hierarchy — conftest's shared,
+    module-scoped fixture — so this module gets the same DSN every other
+    interop test module gets, just gated on ``_verified_probe_binary`` first.
+    Scoped to this module only: the probe-binary check is specific to this
+    module's regista-CLI contract comparison, and forcing it onto conftest's
+    fixture directly would run it for every interop test module, several of
+    which don't need it.
+    """
+    return interop_dsn
+
+
+@pytest.fixture(scope="module")
 def probe_project(
-    _verified_probe_binary: None, interop_dsn: str, tmp_path_factory: pytest.TempPathFactory
+    interop_dsn: str, tmp_path_factory: pytest.TempPathFactory
 ) -> Generator[str, None, None]:
     """A disposable, empty regista project for the probe to measure.
 
@@ -386,7 +479,9 @@ def probe_project(
     derives below are the ones an operator would actually see.
 
     Disposable Ed25519 key material in a per-module temp dir — never a tracked
-    fixture file and never the operator's key path.
+    fixture file and never the operator's key path. ``interop_dsn`` here
+    resolves to this module's override above, so the probe-binary check has
+    already run by the time this fixture's body executes.
     """
     if not _regista_available():
         pytest.fail(
@@ -422,9 +517,9 @@ def live_probe_report(interop_dsn: str, probe_project: str) -> InvariantProbeRep
     ``subprocess.run(('regista', 'invariants', 'probe', '--json'))``, then
     ``_parse_probe_result``.
 
-    Which executable ``shutil.which`` will land on is pinned before
-    ``probe_project`` does any of its own work — see the ``_verified_probe_binary``
-    fixture above.
+    Which executable ``shutil.which`` will land on is pinned before this
+    module's ``interop_dsn`` override does any work at all — see the
+    ``_verified_probe_binary`` fixture and the ``interop_dsn`` override above.
 
     Every ambient ``REGISTA_*`` and ``PG*`` variable is then dropped. The
     operator's own DSN, project or key path leaking into a measurement of a
