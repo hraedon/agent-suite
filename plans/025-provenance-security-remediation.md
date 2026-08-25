@@ -1,208 +1,186 @@
 # Plan 025 — Provenance-Security Remediation (estate-wide)
 
-- **Status:** DRAFT for review (Sol cross-lineage review + owner decision)
-- **Author:** Claude Fable (mvmcc03)
+- **Status:** DRAFT v2 (revised after Sol cross-lineage plan review; incorporates owner decisions 2026-08-25)
+- **Author:** Claude Fable (mvmcc03) · **Plan reviewer:** GPT-5.6 Sol (cross-lineage), verdict *needs-rework* on v1 — this v2 folds in that critique
 - **Date:** 2026-08-25
-- **Provenance of the finding:** whole-estate Daybreak Blue (`gpt-daybreak-blue-latest`) deep security review, 2026-08-25, run per component against the current mains; every regista trust-log finding independently reproduced by a Claude Opus probe-executor. Raw reports: `~/wi337-collision-evidence/daybreak-*.txt`; verified regista findings tracked as WI-342, WI-351..WI-362; consolidated inventory: `~/wi337-collision-evidence/CONSOLIDATED-INVENTORY.md`.
-- **Decision this plan asks for:** (1) patch-in-place vs. rebuild the verification layer; (2) substrate — stay on PostgreSQL vs. move store-integrity into the platform (SQL Server 2022 Ledger / immudb); (3) whether cutover is gated on the whole program or a Critical+High subset.
+- **Provenance of the finding:** whole-estate Daybreak Blue deep security review, 2026-08-25, per component against current mains; the 13 regista trust-log findings independently reproduced by a Claude Opus probe-executor. Raw reports `~/wi337-collision-evidence/daybreak-*.txt`; consolidated inventory `~/wi337-collision-evidence/CONSOLIDATED-INVENTORY.md`; Sol's v1 review `~/wi337-collision-evidence/sol-plan025-review.md`; verified regista findings WI-342, WI-351..362.
+- **Decisions this plan asks for:** (1) rebuild-vs-patch posture; (2) substrate, via a threat-modelled **bake-off** (not a pre-picked lead); (3) cutover gate defined by **named security invariants**, not severity alone; (4) verification depth on the 134 unverified findings.
+- **Owner decisions already taken (2026-08-25):**
+  - **No emergency containment track.** The suite is not deployed in production anywhere; there is no incremental risk from the live findings, so we go straight to the rebuild rather than patching exploitable paths in parallel. (Sol recommended a stabilize-now track; declined on the not-in-prod basis.)
+  - **Substrate is a bake-off, decided with operational eyes open.** The operational burden a substrate/architecture imposes **on adopters** (who must run witnesses, custody anchor keys, operate the store, run fail-closed recovery) is a **first-class security criterion**, not a footnote — a guarantee that depends on operational discipline an adopter won't sustain is a false guarantee. MSSQL Ledger's heavier operational burden is a real weakness to weigh openly and possibly accept knowingly.
 
 ---
 
 ## 0. TL;DR
 
-The deep review did not find a list of bugs. It found **one architectural mistake, repeated in every component**: the estate implements its core trust primitive — *"given some events/rows/artifacts, decide what is authentic and who holds authority"* — many times, ad hoc, and each implementation **trusts unverified state**, **lets retired keys keep authority**, and **fails open**. **147 findings across all seven components (7 Critical, 73 High)** are symptoms of that one mistake; 97 of them fall into just four classes (§2).
+The deep review found **one architectural posture applied everywhere: "verify sometimes, trust the input."** For a *provable-provenance* system that is the wrong default. 147 findings across all seven components (7 Critical, 73 High) are its symptoms.
 
-Two structural fixes collapse most of them:
+The strategic direction is sound and unchanged from v1: **verification must be structurally required, not optional; signed evidence must be separated from mutable projections; every trust decision must flow through one hardened implementation.** Sol's review did not dispute that — it corrected the *rigor of the mechanism*, and this v2 is the corrected version. The four substantive corrections:
 
-1. **Build the trust primitive once.** A single hardened *verified-evidence core*: it takes raw events/artifacts and returns a typed **`Verified<T>`** result only after checking signatures, reconciling row-vs-signed-envelope, resolving **current** key authority, and validating chain integrity. Every gate/verifier/UI/writer consumes it; the ~70 ad-hoc "trust the row" call-sites are deleted. This fixes the app-logic classes (C2/C3/C4) and half of C1.
-2. **Move store-integrity into the substrate.** The single largest class (C1: *an operator/process with DB write forges rows the verifier trusts*) is not reliably closable in application code — the review proves that after four rounds of hardening it was still open. A **tamper-evident append-only store** (SQL Server 2022 Ledger tables, or immudb) makes "DB write ≠ undetectable forgery" a *platform* guarantee, using the exact digest-anchoring pattern the estate already hand-rolls in regista.
+1. **The trust model comes first (§3), before any substrate or API.** Define which adversary can compromise which layer, and the *temporal* authority semantics — because "retired ⇒ not authoritative" is wrong for historical evidence and would invalidate valid history after every rotation.
+2. **The verified-evidence core returns scoped, policy-bearing claims — not a boolean (§4).** A generic `Verified[T]` re-creates the green-badge problem; consumers must request a specific claim (`HumanAcceptanceEvidence`) carrying trust-root, policy version, cut, completeness scope, and proof status. And it is *not* unforgeable across process boundaries — it needs authenticated verification **receipts**. Verification happens at **ingestion + checkpoints**, not on every read (verify-every-read is an availability attack).
+3. **The substrate is a bake-off, not a lead (§5–§6).** A database ledger is tamper-*evident*, not forgery-*prevention*; the real trust boundary is **external anchoring + independent witnesses**, and the operational burden that imposes on adopters is a first-class criterion. Candidates: hardened Postgres + a witnessed transparency log; SQL Server Ledger + witnesses; a purpose-built immutable store (immudb).
+4. **Rebuild incrementally via vertical slices (§7–§8), not "core first, consumers later."** Prove one end-to-end verified claim against production-like history before estate-wide adoption; map every finding to a concrete control; treat data/protocol migration and legacy-evidence containment as explicit phases; gate cutover on named invariants.
 
-**Recommendation:** rebuild the verification layer (not patch), and adopt a tamper-evident substrate, phased so the **verifier core lands first** because everything downstream trusts it, and **cairn** (the provenance *verifier* — the estate's weakest link) is remediated first among consumers. Cutover is held until at least all Critical + High are closed; provable provenance is the product's entire value, and shipping a verifier with holes is worse than not shipping.
-
-This is expensive. It is also the cheap option relative to shipping the current design and discovering these post-cutover or via an adversary — and relative to maintaining 70 hand-rolled copies of a primitive that should exist once.
+We are not shipping the current design. Provable provenance is the entire value; a verifier with holes in every component is worse than no release, and — the owner's framing — the suite is **not in production anywhere**, so we have the rare freedom to fix the foundation properly before anyone depends on it.
 
 ---
 
 ## 1. What the review found
 
-**147 findings** — **13 verified** (regista trust-log crown jewel, Opus-reproduced) + **134 Daybreak-rated** (unverified, pending triage-by-severity reproduction). Full deduped list: `~/wi337-collision-evidence/CONSOLIDATED-INVENTORY.md`.
-
-By component (crown-jewel row at *verified* severity, rest Daybreak-stated):
+**147 findings** — 13 verified (crown-jewel, Opus-reproduced) + 134 Daybreak-rated (unverified). Full deduped list: `CONSOLIDATED-INVENTORY.md`.
 
 | Component | Crit | High | Med | Low | Total |
 |---|--:|--:|--:|--:|--:|
-| regista — trust-log (crown jewel, **verified**) | 0 | 5 | 5 | 3 | 13 |
-| regista — crypto/signing | 0 | 4 | 2 | 1 | 7 |
-| regista — CLI/sidecar | 0 | 3 | 6 | 2 | 11 |
-| regista — persistence/governance | **4** | 6 | 3 | 3 | 16 |
+| regista trust-log (crown jewel, **verified**) | 0 | 5 | 5 | 3 | 13 |
+| regista crypto/signing | 0 | 4 | 2 | 1 | 7 |
+| regista CLI/sidecar | 0 | 3 | 6 | 2 | 11 |
+| regista persistence/governance | **4** | 6 | 3 | 3 | 16 |
 | agent-provenance — **cairn** | **2** | 13 | 6 | 1 | 22 |
 | dossier | 0 | 5 | 9 | 3 | 17 |
 | agent-suite (gate/orchestrator) | 0 | 9 | 7 | 0 | 16 |
 | agent-notes (tracker + gate store) | 0 | 9 | 4 | 2 | 15 |
-| agent-wake (the channel) | 0 | 9 | 5 | 0 | 14 |
+| agent-wake | 0 | 9 | 5 | 0 | 14 |
 | agent-capability-broker (acb) | **1** | 10 | 4 | 1 | 16 |
 | **Total** | **7** | **73** | **51** | **16** | **147** |
 
-By systemic class (§2):
-
-| Class | Crit | High | Med | Low | Total |
-|---|--:|--:|--:|--:|--:|
-| C1 — trust unverified input | 4 | 18 | 5 | 1 | **28** |
-| C2 — retired-key authority | 0 | 9 | 2 | 0 | **11** |
-| C3 — unbound signatures | 0 | 14 | 4 | 2 | **20** |
-| C4 — fail-open / missing authz | 2 | 22 | 12 | 2 | **38** |
-| C5 — other (DoS/TOCTOU/injection/attribution/crypto-confusion) | 1 | 10 | 28 | 11 | **50** |
-
-**C1–C4 account for 97 of 147 findings; C4 (38) and C1 (28) carry the high-severity mass** (the 7 Criticals are all C1 or C4). C5 is a Medium/Low DoS-and-races long tail. ≈2.4M review tokens across the estate.
-
-The 7 Criticals: regista-persist ×4 (workflow enforcement trusts mutable registry JSON; review gates consume unverified evidence; durable lifecycle rows are mutable authority with digest never recomputed; commit finalizes a cancelled op), cairn ×2, acb ×1. Only the 13 crown-jewel findings are verified; the other 134 need triage-by-severity reproduction. **Note:** regista-crypto/cli/persist scanned the same commit (`7707c81`) as the crown jewel, so several of their rows re-discover SEC-* findings; the inventory §5 documents the dedups (each still listed as filed).
+**Evidence maturity caveat (Sol):** only 13/147 are reproduced. Exact counts, class-collapse claims, and the cutover map must NOT be locked on unreproduced model classifications. **Before the architecture is frozen we reproduce every Critical and a representative High from each systemic class**, and every finding gets a row in the finding→control matrix (§2).
 
 ---
 
-## 2. The four systemic classes
+## 2. Systemic classes — as triage categories, not four root causes
 
-Nearly every finding is one of four root causes. This grouping is the plan's central claim: **fix the class, not the instance.** C4 (38) and C1 (28) are the largest classes and hold all 7 Criticals; `CONSOLIDATED-INVENTORY.md` lists the exact finding-IDs per class and the cross-component collisions — e.g. the "trust-the-rows" defect (SEC-11) recurs across ≥7 components (SEC-11, persist-2/9, dossier-2/4, an-8, aw-7), so *one* row↔envelope reconciliation invariant closes all of them at once.
+The four classes are the **map for where to look and what to build shared**, but (Sol, correctly) they are taxonomic buckets that still bundle problems needing distinct controls. C4 mixes endpoint authorization, permissive defaults, exit-code semantics, missing project isolation, and unsigned operations; C1 mixes mutable projections, unsigned manifests, PATH/executable substitution, and supply-chain integrity. A shared "deny by default" or "reconcile row vs envelope" helps many, but not all.
 
-### C1 — Trust the unverified input
-A verifier / gate / UI / writer trusts a mutable DB row, projection, imported artifact, header, or manifest **without** verifying its signature, reconciling the row against its signed envelope, or requiring replay success.
-- regista: assurance reads mutable columns (SEC-11/WI-355); persist Criticals (workflow trusts mutable registry JSON; gates consume unverified evidence; lifecycle rows are mutable authority).
-- agent-notes: projection rows trusted as governance state; native verifier accepts unsigned ops by default; cross-project interchange strips signatures.
-- dossier: renders `human-accepted` / `chain intact` / `completed tool-call` over unverified or tampered rows.
-- cairn: integrity marker accepts un-MACed "legacy" verdicts as verified; filtered mode trusts unverified out-of-window attestations.
-- agent-suite: genesis gate trusts forgeable probe reports.
-**One fix:** nothing consumes a raw row/artifact; everything consumes `Verified<T>` from the core (§4).
+- **C1 — Trust the unverified input** (28: 4C/18H/5M/1L) — the row/envelope-reconciliation class; the largest *closable-by-one-invariant* subset (the SEC-11 collision recurs in ≥7 components: SEC-11, persist-2/9, dossier-2/4, an-8, aw-7).
+- **C2 — Retired/rotated/revoked keys retain authority** (11: 9H/2M) — needs the temporal authority model of §3, not a naive "current authority" flag.
+- **C3 — Signatures/authorizations not bound to context** (20: 14H/4M/2L) — needs shared envelope *framing + domain-separation*, but per-principal semantics (Ed25519 events, HMAC webhooks, executable identity, package digests, Vault grants are not one envelope).
+- **C4 — Fail-open gates / missing authorization boundary** (38, the largest: 2C/22H/12M/2L) — a "default DENY" principle plus *component-specific* authorization controls (endpoint identity, socket-peer identity, project-admin boundary, capability enforcement).
+- **C5 — Other** (50: DoS/resource-limits, TOCTOU races, SSRF/injection, attribution-only, crypto-primitive confusion) — mostly Medium/Low, individually patched.
 
-### C2 — Retired / rotated / revoked keys retain authority
-A key rotated out, revoked, or superseded can still authenticate, sign, or forge; or old signatures replay.
-- regista: SEC-01 delegation fail-open (WI-351); WI-347/348/349 (already fixed in trust-log, but the *pattern* recurs); crypto "retired legacy keys forge accepted history."
-- cairn: retired keys forge historical events; retired first key forges integrity-marker MACs.
-- agent-wake: rotation "leaves the previous key fully authoritative without expiry."
-- acb: retired AppRole SecretIDs remain valid indefinitely after "successful" rotation.
-**One fix:** a single **current-authority resolver** — "is key K authoritative *at cut C*?" — that every verifier calls, and that treats revoked/superseded/expired/rotated-out as **not current**. (The regista WI-347/348/349 work is the template; it must become shared and universal.)
-
-### C3 — Signatures / authorizations not bound to context
-A signature verifies but binds too little — not the event id/seq/predecessor/nonce, source identity, project, actor, idempotency key, or executable identity — enabling replay, relabeling, or substitution.
-- regista: SEC-02 root signatures bind no event context → threshold→one-root replay (WI-352); SEC-13 rotated-root signer_id unbound (WI-362).
-- agent-wake: trigger identity outside the HMAC; a signed request relabeled to another source when sources share a key; outbound replies don't bind the idempotency key.
-- acb: `trusted_argv` authenticates a *pathname*, not the executable's content identity.
-**One fix:** a canonical **signing envelope** whose signed bytes bind the full context (domain-separated, length-framed, including id/seq/predecessor/nonce/project/actor as applicable), used everywhere. regista's `root_signature_input` and the v6 envelope are the starting point; the gap is that not all authorizations use it.
-
-### C4 — Fail-open gates / missing authorization boundary
-A gate or authorization defaults permissive, is bypassable, or a missing/invalid input grants broad rather than zero authority.
-- agent-notes: lineage validation fails open; native mode has no project/admin authorization boundary; `open→done` is a general completion bypass.
-- acb: detected rogue capabilities do not fail the gate; missing manifest → broad capability.
-- agent-suite: `--exit-code` gate is opt-in (a naive call exits 0 when it should BLOCK).
-- regista: SEC-10 default approval verifier is `None` (permissive) (WI-360).
-**One fix:** gates fail **closed** by construction — the default of every gate is DENY; a missing/unverifiable input is a refusal, never a pass; authorization boundaries are mandatory, not optional.
-
-### C5 — Other (independent, still real)
-DoS/resource limits (SEC-12/WI-361; cairn/regista/dossier parser limits), SSRF (regista-cli, agent-notes wake URLs), TOCTOU (SEC-09/WI-359 lifecycle cancel race; sign-genesis symlink), crypto-primitive confusion (Ed25519-as-HMAC), attribution-only forgery (SEC-13, dossier on_behalf_of impersonation). These do not collapse into C1-C4 and get individual fixes, but most are Low/Medium.
+**Required artifact (Sol): the finding→control matrix.** Every one of the 147 gets classified as: *fully closed by the core* / *partially mitigated* / *independently patched* / *invalidated after reproduction*, with its regression test. The v1 claim "97 collapse" is replaced by this matrix — collapse is a hypothesis the matrix must *demonstrate*, per finding, not an artifact of counting the buckets.
 
 ---
 
-## 3. Root-cause diagnosis
+## 3. The trust model (do this FIRST)
 
-The estate was built with a **"trust the input, verify sometimes"** posture. That is the correct posture for a *convenience* tool. It is the wrong posture for a system whose entire value proposition is **provable provenance**, which requires **"verify always, trust nothing unverified, and trust no retired key."**
+Sol's single biggest correction: the plan cannot choose a substrate or an API before the trust model is written. Provenance answers **three** questions, not the two v1 conflated:
 
-Two conflations made this pervasive:
+1. **Authentication** — did key K produce these exact bytes? (signature over a context-bound envelope)
+2. **Authorization at position** — was K authorized for this action *at the relevant log position / policy version*? (the temporal authority question)
+3. **Completeness & non-equivocation** — is the evidence complete, ordered, durable, and free of forked/omitted history? (the store/anchor question)
 
-1. **Signing vs. store-integrity are treated as one job.** "Is this authentic?" actually asks two independent questions: *who authored it and did they have authority?* (a signing/authority question) and *was the stored record altered after the fact?* (a storage-integrity question). The estate answers both in application code, per-component, and gets both wrong in places. They should be **separated**: signatures answer authorship/authority (verify always); a tamper-evident substrate answers storage-integrity (platform guarantee). See §5.
-2. **Verification is a step callers may skip, not a type they must hold.** Because `read_events()` returns raw `Event`s and `verify()` is a separate optional call, every consumer is an opportunity to forget. The fix is to make *unverified* data unrepresentable at the boundary consumers use.
+A valid signature answers only (1); an immutable row answers only part of (3); neither establishes (2). The core (§4) must resolve all three, separately and explicitly.
 
----
+**Temporal authority semantics (the C2 fix, done right).** "Retired ⇒ not authoritative" is wrong: a key that validly signed an event *before* retirement remains valid evidence of that historical act. The model must distinguish:
+- **authority at event/log position** (was K authorized *then*, at an authenticated position — not caller-asserted `occurred_at`),
+- **permission to author a new event now** (is K current authority *today*),
+- **verifier knowledge at a later cut** (what a verifier at checkpoint C can establish),
+- **retroactive invalidation after compromise** (an explicit, signed revocation-with-effect-range, distinct from ordinary rotation).
 
-## 4. Proposal — the verified-evidence core
+Authority is resolved against an **authenticated log position / checkpoint**, never a caller-supplied timestamp (this is what makes SEC-04 backdating and SEC-07 caller-controlled validity un-exploitable *by construction*).
 
-A single library (in regista, exported to every consumer) that owns the trust primitive.
+**Adversary model (Sol).** Define, separately, what each can do and which layer each can compromise — and design each guarantee against a named adversary: ordinary user, service principal, compromised component, DB *writer*, DB *administrator*, host root, verifier operator, anchor/witness operator, signer-key holder, and colluding combinations. Every claim the system makes ("externally authenticated", "human-accepted", "chain intact") must name the adversaries it does and does **not** defend against. (This extends the estate's existing OPERATOR-FORGERY residual-threat doc, WI-007, from regista to the whole stack.)
 
-**Shape (illustrative, not final API):**
-
-```
-verify_evidence(raw_events | artifact, *, trust_root, at_cut) -> Verified[T] | Refusal
-```
-
-`Verified[T]` is a typed, un-forgeable-by-construction result (constructed *only* inside the core, never by a caller — closing the WI-337 "caller-constructible verification object" footgun estate-wide). It is produced only after ALL of:
-
-- **Signature verification** over the canonical, context-bound envelope (§C3), domain-separated.
-- **Row ↔ signed-envelope reconciliation** — every field a consumer reads (transition, actor, kind, lineage, status, timestamps) must equal the signed envelope; any divergence is a hard refusal (kills C1 at the source; note regista already *has* `_reconcile_v6` — the fix is that assurance/gates/UI don't call it).
-- **Current-authority resolution** (§C2) — every key/principal/registrar/root resolved to its status *at the relevant cut*; revoked/superseded/expired/rotated-out ⇒ not authoritative.
-- **Chain integrity** — replay must succeed (no `halted`/`chain_breaks`; drift alone is not "intact" — closes the dossier "halted treated as intact" class).
-- **Validity windows** enforced (closes SEC-03/WI-353) — online and offline paths use the *same* core, ending the online/offline divergence.
-
-**Consumption contract:** assurance, the review/human gates, cairn's bundle/witness verifier, dossier's display, agent-suite's genesis gate, and agent-notes' lifecycle gate **only** accept `Verified[T]`. The raw-row code paths are deleted, not deprecated. `gate_permits_done`, "human-accepted," "chain verified," "externally authenticated," and "capability granted" become functions of `Verified[T]` and nothing else.
-
-**Why this collapses the inventory:** C1 (trust-the-row) and much of C2/C3/C4 are *the same call-site bug* in seventy places; one core + a deletion pass fixes them together, and — critically — makes the *next* consumer safe by default instead of one refactor away from the seventy-first instance.
+Deliverable: a `TRUST-MODEL.md` — adversaries, the three questions, temporal semantics, and the claim-by-adversary matrix. Phase 0 output; gates everything after it.
 
 ---
 
-## 5. Substrate decision (owner: PostgreSQL "not set in stone")
+## 4. The verified-evidence core
 
-The largest class, C1, has a sub-class the review shows is **not reliably closable in application code**: *an operator or process with database write access forges rows that a verifier later trusts.* regista's answer is app-layer hash-chaining + external digest anchoring — and after four hardening rounds it was still bypassable (SEC-11, the persist Criticals, all of dossier's Highs). This is the strongest argument for moving store-integrity into the platform.
+One library (in regista, consumed by every component) that owns the trust primitive — but shaped per Sol's corrections.
 
-**The reframe:** the estate already publishes trust-domain / genesis / checkpoint digests to an external immutable location (a public git repo) so that tampering is *detectable*. A tamper-evident database does exactly this, engine-enforced, for the whole store.
+**Scoped, policy-bearing claims (not a boolean).** No generic `Verified[T]` that consumers reinterpret. The core issues *specific claims* — `HumanAcceptanceEvidence`, `ExternallyAuthenticatedBundle`, `CapabilityGrant`, `WitnessCoSignature` — each carrying:
 
-### Option A — Hardened PostgreSQL (status quo substrate)
-- Keep Postgres; build the verified-evidence core (§4); tamper-evidence stays an **application** responsibility (append-only via constraints/triggers + the existing hash-chain + external digest anchoring).
-- **Pro:** no migration; current investment, drivers, ops, backups, `regista` test harness all intact; team fluency.
-- **Con:** the operator-forgery sub-class of C1 remains an *app* guarantee — i.e., exactly the thing that was repeatedly bypassed. Mitigated but never structurally closed. We would be betting the product's core claim on getting hand-rolled tamper-evidence right where we have four rounds of evidence that it is hard.
+- the normalized claims actually verified (and, explicitly, those *not* verified),
+- evidence/artifact digest; trust-root identifier **and digest**; authority-policy **version**;
+- verification **cut/checkpoint**; chain range + completeness scope;
+- signature/signer result; **authorization** result (the §3 Q2 answer); storage/transparency **proof** result;
+- warnings / unsupported-legacy-semantics; **verifier version**.
 
-### Option B — SQL Server 2022 Ledger tables (recommended lead)
-- **Append-only ledger tables** (engine-enforced insert-only) for the event store + trust log; Merkle-hashed into a blockchain; periodic **database digests anchored to external WORM/immutable storage** (on-prem WORM, Azure Blob immutability, or the existing public-repo pattern); `sys.sp_verify_database_ledger` detects any post-hoc mutation.
-- **Pro:** "DB write ≠ undetectable forgery" becomes a *platform* guarantee → collapses the operator-forgery C1 sub-class outright; fits a Windows/AD shop (we already run an AD domain + a Windows lab box); full T-SQL; Microsoft-maintained maturity; Python via `pyodbc`. Aligns with the estate's existing digest-anchoring instinct.
-- **Con:** migration off Postgres is significant (storage layer, `psycopg`→`pyodbc`, SQL migrations, the whole `regista` test harness, dev-env parity); licensing for a production instance (Developer edition is free for non-prod; Standard/Enterprise or Azure SQL for prod — **cost to verify**); Ledger is tamper-*evident* at verify time, not tamper-*proof* at write (an admin can drop ledger/table, but the act is itself detectable + the anchored digest proves the break). Some ORM/feature parity work.
-- **Due-diligence items (before committing):** exact prod licensing cost; `pyodbc`/driver ergonomics on Linux app hosts; digest-anchoring cadence + storage; whether append-only ledger semantics fit the projection-rebuild pattern (projections are derived, can be non-ledger regular tables recomputed from the ledger event store — likely fine); backup/restore + the ledger verification story; migration tooling (Postgres→MSSQL is not turnkey).
+A consumer asks for the claim it needs; it may not infer authorization from a signature-valid result.
 
-### Option C — immudb (purpose-built immutable DB)
-- Zero-trust, append-only, cryptographic proof **per transaction** (tamper-*proof* at write, stronger than Ledger's verify-time model); KV + SQL; open-source (Codenotary) with commercial support; HIPAA/compliance-oriented; 1.11 added immutable audit logging (who/when).
-- **Pro:** the product's *entire purpose* is exactly our requirement; strongest write-time guarantee; open-source + on-prem; no per-core licensing.
-- **Con:** smaller ecosystem and operational maturity than Postgres/MSSQL; a less complete SQL surface (feature-parity risk for regista's queries); a newer bet to run in production; smaller hiring/knowledge base; migration effort comparable to Option B.
+**Trust & deployment model — receipts, not "unforgeable by construction."** Across dossier/cairn/agent-notes/CLI process boundaries, once a verified result is serialized to JSON a caller can fabricate it. Two acceptable models, chosen in §3/Phase 0: (a) every consumer invokes the core **locally** against pinned inputs; or (b) the core issues **authenticated verification receipts** signed by a separately-custodied *verifier identity*. Pick one explicitly; "hidden constructor" is not a security boundary.
 
-### Substrate recommendation
-**Lead with Option B (SQL Server Ledger)**, pending the due-diligence items, because it closes the operator-forgery class with the maturity and Windows/AD fit this estate has, while keeping a full SQL surface. **Keep Option C (immudb) as a serious alternative** if MSSQL licensing or Linux-driver ergonomics prove painful — its write-time proof model is technically superior and it is purpose-built for this. **Option A only if** the migration cost is judged to outweigh structurally closing C1 — but be honest that Option A leaves the product's core claim resting on the app layer the review just spent a day breaking.
+**Inputs are trust boundaries.** `trust_root` and `at_cut` must come from **pinned project policy**, never ordinary request data — else a caller verifies under an attacker-chosen root or a stale cut.
 
-**Crucial scoping note:** whichever substrate, it **only** addresses the operator-forgery sub-class of C1. C2 (retired keys), C3 (context-binding), C4 (fail-open), and the rest of C1 (a validly-signed-but-authority-laundered event is stored *faithfully* by a tamper-evident store) are **app-logic** and require the verified-evidence core regardless. The substrate is a force-multiplier, not a replacement for §4.
+**Authoritative claims ≠ display metadata.** "Every field a consumer reads must be signed" was both too broad (titles/display fields are legitimately mutable) and too narrow (a signed field can still be unauthorized/stale). The core distinguishes *authoritative claims* (must be verified) from *untrusted display metadata* (rendered as such, never as a verdict). UI preserves the distinction (kills the dossier "green badge over unverified data" class *and* avoids over-signing).
 
----
+**Verify at ingestion + checkpoints, not every read.** Full replay per page/gate is impractical and a DoS vector. Design: verify at ingestion; incremental **authenticated checkpoints**; **verified projections** keyed by (evidence digest, policy version, trust-root digest, cut) with invalidation on authority/policy change; bounded proof verification on reads; periodic full-replay audit. Without this, teams add the performance bypasses that created the current mess.
 
-## 6. Patch-in-place vs. rebuild
+**Fail-closed with an operational design.** Default DENY; a missing/unverifiable input is a refusal. But if the authority resolver / anchor / verifier is unavailable, gates stop — so the plan owes explicit **degraded-state behavior, cache-freshness rules, recovery procedures, and an audited break-glass** (§6). "Fail closed" without this becomes "add a hidden bypass later."
 
-**Patch-in-place** (fix ~140 findings where they are): lowest immediate disruption, but (a) it is ~140 discrete gate-code fixes each needing dual-lineage review — plausibly *more* total effort than the rebuild; (b) it leaves the systemic posture intact, so the 141st call-site reintroduces the class; (c) it does not resolve the signing/store-integrity conflation. Patching is how we got four rounds deep on WI-337 and still had SEC-01 waiting one subsystem over.
-
-**Rebuild the verification layer** (§4 + §5): higher up-front cost, but it converts ~70 of the findings into "delete the raw-row path, route through the core," makes the estate safe-by-construction, and gives *one* place to audit instead of seventy. The event model, the v6 envelope, the WI-347/348/349 authority work, and the digest-anchoring pattern are all **reusable** — this is a rebuild of the *verification and trust-decision layer*, not a from-scratch rewrite of regista.
-
-**Recommendation:** **rebuild the verification layer; reuse the event/envelope/crypto foundations; adopt a tamper-evident substrate.** Treat "start fully fresh" as *not* warranted — the primitives (Ed25519 signing, JCS canonicalization, the v6 envelope, the trust-log model, digest anchoring) largely *held up* in the review ("controls that held" lists are substantial); the failure is in how they are *consumed*, which is the layer we replace.
+**What the core does NOT close (Sol).** It does not establish endpoint caller identity, project-admin authority, socket-peer identity, harness membership, environment safety, or process exit semantics — those are component-specific C4 controls. The core is necessary, not sufficient; the finding→control matrix (§2) is where "necessary vs sufficient" is made honest per finding.
 
 ---
 
-## 7. Phased sequence
+## 5. Substrate — a threat-modelled bake-off (owner-confirmed)
 
-Ordered by "what everything else trusts," so we never build on unverified ground:
+The split (signing = §3-Q1/Q2, store-integrity = §3-Q3) is right; v1's "SQL Server lead unless cost is painful" was not. **Run a three-way spike, each tested against the same adversary scenarios** (§3): malicious *valid* writer, DB admin, host compromise, rollback (old DB + old checkpoint), fork/equivocation, anchor compromise, restore, projection rebuild, and realistic read volume. A database ledger only helps Q3, and only *tamper-evidence* (detect history rewrite vs. a trusted external digest) — it does **not** stop an authorized writer appending semantically fraudulent rows (that is Q1/Q2), nor omission-before-anchor, stale reads, or app-level bypass.
 
-- **Phase 0 — Substrate decision + spike.** Resolve §5 due-diligence; a thin spike proving the event store + trust log on the chosen substrate with digest anchoring and a passing `regista` interop subset. Gate: owner sign-off on substrate.
-- **Phase 1 — The verified-evidence core (regista).** Build `verify_evidence`/`Verified[T]`, the shared current-authority resolver, the canonical context-bound signing envelope, and fail-closed gate defaults. Land behind the existing regista test discipline (epoch-debt manifest, two-reviewer ceremony, Daybreak re-confirm). Nothing consumes it yet.
-- **Phase 2 — cairn first.** The provenance *verifier* is the weakest link and everything downstream (dossier, attestation) trusts it. Re-point cairn's bundle/witness/integrity-marker verification at the core; delete its ad-hoc trust paths; fix the witness-root circularity and retired-key classes. Daybreak re-confirm cairn specifically.
-- **Phase 3 — regista consumers.** assurance, the review/human gates, the persistence Criticals — route through the core; delete the mutable-row trust; enforce validity windows; bind root signatures to context (SEC-02); fix the lifecycle TOCTOU (SEC-09).
-- **Phase 4 — agent-notes + agent-suite gates.** Lineage/review gates and the genesis gate consume `Verified[T]`; fail-closed defaults; close the open→done and fail-open classes.
-- **Phase 5 — dossier.** Display becomes a pure function of `Verified[T]`; no green badge without it; fix on_behalf_of impersonation.
-- **Phase 6 — agent-wake + acb.** Context-bound signing (trigger identity in the HMAC), key-rotation expiry, capability grants that fail closed and pin executable identity, retired-SecretID revocation.
-- **Cross-cutting, any phase:** the C5 items (parser resource limits, SSRF, symlink TOCTOU) as they touch each component.
+**The real trust boundary is anchoring, and it is not free.** Ledger/transparency-log verification is only worth anything if an attacker cannot rewrite *both* the store *and* the accepted checkpoint history. The design must specify: **who publishes digests, who signs them, where the signing keys live, who witnesses them, how clients learn the latest expected checkpoint, how rollback/equivocation is detected, and anchor cadence/retention.** *A public Git repo is not inherently immutable — a repo admin can rewrite it unless independent witnesses retain and monitor checkpoints.* Anchoring/witness design is therefore part of the substrate decision, not a downstream detail.
 
-Each phase: **Sol implements against this plan; Fable reviews/advises; Daybreak re-confirms the gate code.** Cutover is held until Phases 1–4 (Critical + High) are closed at minimum; Med/Low may trail into a follow-up if the owner chooses (§8 decision 3).
+Candidates for the spike:
+
+- **A. Hardened PostgreSQL as projection/query store + a signed append-only log as source of truth + externally-witnessed checkpoints (transparency-log design: Trillian/Rekor-style consistency + inclusion proofs, or a smaller purpose-built equivalent).** Preserves the Postgres investment; moves integrity *outside* mutable app tables without migrating all relational storage. Strong candidate.
+- **B. SQL Server 2022 Ledger tables + independent digest witnesses.** Engine-enforced append-only + Merkle + external digest; Windows/AD fit; full T-SQL. Tamper-evident at verify-time. **Operational burden is its main weakness (§6).**
+- **C. Purpose-built immutable store (immudb) + witnesses.** Per-transaction consistency/inclusion proofs (stronger than Ledger, but still only *detectable* to clients retaining trusted state — a compromised server can rollback/fork/deny unless witnessed); open-source, no per-core licensing; smaller ecosystem + SQL/operational maturity risk — needs a real workload spike, not a feature comparison.
+
+Each option is scored on: security against the §3 adversaries; **operational requirements imposed on adopters (§6, first-class)**; migration cost + schema/query compatibility; HA/backup/restore + the *verification* runbook; Linux developer experience + driver ergonomics; licensing; monitoring/incident-recovery. Recommendation is deferred to the spike results — no presumptive lead.
 
 ---
 
-## 8. Effort, risk, and open decisions
+## 6. Operational requirements imposed on adopters (first-class, owner-directed)
 
-- **Effort:** large — a multi-phase program, not a sprint. The rebuild front-loads cost (Phases 0–1) then *accelerates* (Phases 2–6 are largely "route through the core + delete") relative to 140 discrete patches. Substrate migration (if B/C) is the single biggest line item and the main schedule risk.
-- **Risk:** (1) substrate migration underestimated — mitigated by the Phase-0 spike gating the decision; (2) the core's API is load-bearing — it gets the full two-reviewer + Daybreak ceremony; (3) scope creep — the C1-C4 grouping is the guardrail (if a proposed fix isn't collapsing a class, question it).
+Every security guarantee here is also an **operational obligation on whoever deploys the suite** (recall the tertiary "deploy-at-work" goal — real adopters inherit this). We decide the architecture *with these costs explicit*, because a guarantee an adopter can't operationally sustain is a false guarantee. The plan must, per substrate/architecture option, enumerate and weigh:
+
+- **Witness operation** — how many independent witnesses, run by whom, monitored how? (The strongest anti-rollback/equivocation guarantees need genuinely independent parties; a single-operator "witness" is theatre. For a small adopter this may be the single heaviest ask — and a reason to prefer a design that minimizes required witnesses, or a shared/public transparency-log with existing witness infrastructure.)
+- **Anchor-signing key custody** — where the checkpoint/digest signing keys live (HSM / Vault / offline), rotation, and recovery.
+- **Checkpoint distribution** — how clients/verifiers learn the current expected checkpoint out-of-band, and how that channel is itself trusted.
+- **Substrate operations** — B: SQL Server licensing + admin skills + the ledger-verify runbook + Linux driver ergonomics; C: operating a less-common DB + proof retention; A: operating the transparency log + its witnesses.
+- **Fail-closed recovery / break-glass** — documented degraded mode, cache-freshness policy, and an *audited* break-glass, so "fail closed" doesn't become a covert bypass.
+- **Backup/restore + verification** — restore must not silently roll back the ledger/anchor; the restore runbook includes re-verification.
+- **Version-skew & policy governance** — behavior when components run different core versions; and how verification *policy* changes without silently altering *historical* verdicts.
+
+Explicit output: an **"operational requirements per option" table** produced by the spike, so decision 2 is made knowing exactly what we ask of every future deployer. The owner's stance: MSSQL's burden may be worth accepting — but only decided this way.
+
+---
+
+## 7. Rebuild vs. patch — stabilize-declined, incremental vertical slices
+
+**Owner decision:** no separate emergency-containment track (suite not in production; no incremental risk). So we do **not** run parallel exploit-patching; we go to the incremental rebuild. (Had it been deployed, Sol's stabilize-now track would be mandatory — recorded for the deploy-at-work moment: *do not deploy the current suite to anyone before the rebuild.*)
+
+**Rebuild the verification/consumption layer incrementally — not a big-bang core, and not a from-scratch rewrite of regista.** v1's rebuild-vs-patch binary was false; the model is *replace the consumption layer via vertical slices*, reusing lower layers **only after a fresh audit accepts each**:
+
+- **Reuse boundary needs a crypto-protocol re-audit.** "The foundations held" is too optimistic — the inventory contains algorithm confusion (Ed25519-as-HMAC), a raw signing oracle, legacy-key-status loss, context-unbound signatures, and online/offline divergence. Reusing Ed25519 + JCS + the v6 envelope is likely fine, but only after each primitive and format at the *cryptographic protocol boundary* is explicitly re-accepted, not assumed.
+- **Legacy v1–v5 containment is a required decision.** A secure v7 core that keeps accepting unsafe legacy evidence *by default* has not solved the problem. Decide: reject / quarantine-as-unverifiable / one-time re-anchor.
+
+---
+
+## 8. Phasing — vertical slices, with the corrections
+
+- **Phase 0 — Trust model + anchor design + substrate spike.** Deliver `TRUST-MODEL.md` (§3); the anchoring/witness design (§5); the three-way spike scored incl. operational requirements (§6). **Gate:** owner picks substrate + trust/deployment model (local-verify vs receipts). *No architecture is frozen before this.*
+- **Phase 1 — First vertical slice, end to end.** The smallest complete path that exercises the whole design: one authoritative event flow → one key lifecycle (incl. a rotation, to prove the §3 temporal model) → one checkpoint/anchor → one cairn decision → one gate → one projection/UI claim. Built on the chosen substrate with the scoped-claim core (§4). **Shadow it against production-like history; attack it (Daybreak + Opus); measure read performance.** Expand only after it survives. This replaces v1's risky "core lands, nothing consumes it."
+- **Phase 2 — cairn, delivered *with* its authority source.** cairn is the weakest link and everything trusts it — but pointing it at a still-mutable regista authority source proves nothing (Sol). So cairn + the authoritative-state integrity it depends on ship as one vertical slice: witness-root circularity, retired-key classes (§3), and filtered/bundle PASS laundering closed against a *verified* authority base.
+- **Phase 3 — regista consumers.** assurance, review/human gates, the persistence Criticals → scoped claims; delete mutable-row trust; context-bind root signatures (SEC-02); fix the lifecycle TOCTOU (SEC-09).
+- **Phase 4 — agent-notes + agent-suite gates.** lineage/review + genesis gates consume claims; default-DENY; close open→done and the fail-open class.
+- **Phase 5 — dossier.** display = pure function of a scoped claim; no badge without one; fix on_behalf_of impersonation.
+- **Phase 6 — agent-wake + acb.** context-bound signing (trigger identity inside the HMAC), rotation expiry, capability grants that fail closed and pin *executable* identity, retired-SecretID revocation. **NOTE:** acb-1 is Critical and lives here — so cutover (below) cannot precede Phase 6.
+- **Data/protocol migration — an explicit cross-cutting phase** (Sol): inventory historical envelope versions; classify unverifiable legacy history; dual-read/shadow verification; rebuild projections; checkpoint the migration boundary; compatibility with already-published bundles; rollback plan; then disable legacy verification.
+- **Cross-cutting:** C5 items (parser limits, SSRF, symlink TOCTOU) as each component is touched.
+
+**Cutover gate = named security invariants + supported attack surfaces, not severity alone (Sol).** A Medium that exhausts the verifier or breaks proof completeness can outweigh a nominal High in a disabled feature. Cutover requires: every named invariant in `TRUST-MODEL.md` holds under its stated adversaries; all reproduced Critical/High closed *with a matrix row + regression test*; the migration boundary checkpointed; the operational runbooks (§6) written. Because acb-1 (Critical) is Phase 6, **cutover is a whole-program gate**, not "after Phase 4" — v1's phrasing was internally contradictory and is corrected.
+
+Each phase: **Sol implements against this plan; Fable reviews/advises; Daybreak re-confirms the gate code; two-reviewer ceremony on the core and each gate.**
+
+---
+
+## 9. Open decisions & recommendation
+
 - **Open decisions for owner + Sol:**
-  1. **Patch vs. rebuild** — recommendation: rebuild the verification layer (§6).
-  2. **Substrate** — recommendation: SQL Server Ledger (Option B), immudb (C) as live alternative, pending Phase-0 due-diligence (§5).
-  3. **Cutover gate** — whole program vs. Critical+High-then-trail. Recommendation: gate on Critical+High (Phases 1–4); track Med/Low to a named follow-up.
-  4. **Verification depth on the ~127 unverified findings** — reproduce all vs. triage-by-severity. Recommendation: reproduce Critical/High with rigor (they drive the fix wave); batch-assess Med/Low from the reports.
-
----
-
-## 9. Recommendation (one paragraph)
-
-Do not ship the current design; provable provenance is the whole value and the verifier has holes in every component. **Rebuild the verification layer around a single hardened verified-evidence core** that everything consumes, **separate signing from store-integrity**, and **move store-integrity into a tamper-evident substrate — SQL Server 2022 Ledger as the lead, immudb as the alternative — decided behind a Phase-0 spike.** Sequence verifier-core-first and cairn-first. Reuse regista's crypto/envelope/event foundations (they held up); replace the consumption layer (it did not). Hold cutover until Critical + High are closed. Sol implements per phase against this plan; Fable reviews; Daybreak re-confirms the gate code.
+  1. **Rebuild posture** — recommendation: incremental vertical-slice rebuild of the consumption/verification layer (§7), reuse lower layers only after re-audit. *No parallel containment* (owner-decided). *Do not deploy the current suite to anyone before the rebuild.*
+  2. **Substrate + trust/deployment model** — decided by the Phase-0 spike scored incl. operational burden (§5/§6). No presumptive lead; Option A (Postgres + witnessed transparency log) and B (MSSQL Ledger) and C (immudb) are live.
+  3. **Cutover gate** — recommendation: named-invariant gate (§8), whole-program (acb-1 is Critical in Phase 6).
+  4. **Verification depth** — recommendation: reproduce every Critical + a representative High per class before freezing the architecture; batch-assess the rest into the finding→control matrix.
+- **Biggest program risk (Sol):** the trust model being underspecified — which is why §3 is Phase 0 and gates everything.
+- **Recommendation (one paragraph):** Do not ship or deploy the current design. Write the trust model and anchor/witness design first; build a single verified-evidence core that issues *scoped, policy-bearing claims* (with receipts across process boundaries) and verifies *at ingestion + checkpoints*; decide the substrate via a threat-modelled bake-off that treats the **operational burden on adopters as a first-class security criterion**; rebuild the consumption layer as incremental vertical slices, cairn-with-its-authority-source first, reusing lower layers only after a crypto-protocol re-audit and a legacy-containment decision; map every one of the 147 findings to a concrete control + regression test; and gate cutover on named security invariants holding under a named adversary model. Sol implements per phase; Fable reviews; Daybreak re-confirms.
