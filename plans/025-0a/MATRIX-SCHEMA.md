@@ -1,6 +1,6 @@
 # Plan 025 finding-control-test matrix schema
 
-Version: v0.2-draft, 2026-08-26 (third-lineage delta review: minimax-m3, 2026-08-25). Status: DRAFT. The initial rows are deliberately provisional. This schema describes the exact 16-column charter schema; parenthetical constraints in the charter are not literal header text.
+Version: v0.3, 2026-08-26 (third-lineage delta review: minimax-m3, 2026-08-25). Status: DRAFT. The rows remain provisional until concrete controls and regression tests land. This schema describes the exact 16-column charter schema; parenthetical constraints in the charter are not literal header text.
 
 ```csv
 finding_id,component,reviewed_ref,mechanism,class,daybreak_severity,verified_severity,reproduction_ref,disposition,owning_boundary,control_id,invariant_ids,regression_test_ref,phase,profile_gate,notes
@@ -21,7 +21,7 @@ finding_id,component,reviewed_ref,mechanism,class,daybreak_severity,verified_sev
 | `disposition` | Provisional or final remediation route, not proof of closure. Initial values are provisional. | `fully-closed-by-kernel`, `partially-mitigated`, `independently-patched`, `invalidated`, `deferred-profile`. |
 | `owning_boundary` | Boundary accountable for the complete closing control. Initial values are provisional target-decomposition assignments, not ownership transfers. | `kernel`, `gate-engine`, `broker`, `bootstrap-root`, `app:regista-cli`, `app:agent-notes`, `app:dossier`, `app:cairn`, `transport`. Never blank. |
 | `control_id` | Stable id of the accepted concrete control. | Blank initially; later `CTRL-nnn`. `ASSUMPTION:` this format requires owner confirmation. |
-| `invariant_ids` | Accepted trust-model invariants established by the control. | Blank initially; later one or more `INV-nnn` values separated by `;`. |
+| `invariant_ids` | Accepted trust-model invariants that close or partially mitigate the finding. | One or more `INV-nnn` values separated by `;`; blank only when no accepted invariant maps. |
 | `regression_test_ref` | Stable repository-relative test proving the control. | Blank initially; later a path plus test node/name where applicable. |
 | `phase` | Provisional planned phase in which the owning control becomes implemented and regression-tested. | `Phase 1`, `Phase 2`, `Phase 3`, `Phase 4`, `Phase 5`, `Phase 6`, `Migration`. |
 | `profile_gate` | Provisional deployment-profile family whose enabled graph requires closure. | `core`, `capability`, `transport`. |
@@ -33,7 +33,7 @@ Fixed reviewed refs: all four Regista-family components use `7707c81`; cairn `74
 
 1. The file has exactly 147 data rows and each inventory finding id appears exactly once. Deduplication never removes a row.
 2. `mechanism`, provisional `disposition`, provisional `owning_boundary`, provisional `phase`, and provisional `profile_gate` are nonempty on every initial row. All remain proposals while `control_id` and `regression_test_ref` are blank; 0A freezes no component ownership.
-3. A `fully-closed-by-kernel` row MUST cite at least one accepted `INV-nnn`; the kernel alone must close the complete exploit under that invariant's stated adversaries. Until then use `partially-mitigated` and name residual ownership in notes.
+3. A `fully-closed-by-kernel` row MUST cite at least one accepted `INV-nnn` and satisfy the invariant-derivation promotion rule below. Until then use `partially-mitigated` or the applicable non-kernel disposition and name residual ownership in notes.
 4. `independently-patched` names the intended non-kernel remediation route; it does not assert implementation. Closure additionally requires `control_id`, applicable `invariant_ids`, and `regression_test_ref`.
 5. `deferred-profile` is a per-finding determination, never a component default. Notes MUST name the signed profile (`profile=<stable-id>`) and state the finding-specific structural-unreachability proof: no deployed code, route/service/executable, identity, secret/grant/plugin/network edge, or enabled-principal invocation edge, plus the negative reachability test. It must change before a profile enabling that surface cuts over. An existing developer-host path is not profile-deferrable.
 6. `invalidated` requires an attempted reproduction whose reviewed verdict is `invalidated`; `not-reproducible` alone never invalidates a row. The charter has no reproduction-verdict column, so the verdict remains in the referenced reproduction record and is summarized in notes.
@@ -45,6 +45,12 @@ Fixed reviewed refs: all four Regista-family components use `7707c81`; cairn `74
 12. Phase means control-delivery phase under plan section 8, not discovery or reproduction phase. Phase 1 rows are the minimum vertical-slice controls; Phase 2 completes kernel paths; Phase 3 completes governance/agent-notes; Phase 4 dossier; Phase 5 broker/transport; Phase 6 bootstrap; `Migration` handles legacy/history boundaries.
 13. Every row's `owning_boundary` and leading `sub_boundary=<slug>` MUST be derivable from its taxonomy mechanism entry. A mechanism with split ownership must state the per-finding split. The sub-boundary token is metadata inside `notes`, not a seventeenth column.
 14. The six-level effective scale maps to the inventory's four-column summary as follows: `Critical -> Critical`; `High` and `Medium-High -> High`; `Medium` and `Low-Medium -> Medium`; `Low -> Low`. Selection continues to use all six levels.
+
+## invariant_ids derivation rule
+
+Derive each row's `invariant_ids` from the union of (a) the trust-model registry's explicit citations of that finding id, (b) the High/Critical coverage sweep's assigned invariant home, and (c) the taxonomy mechanism's closing-control shape mapped to the invariant or invariants that express it. Use `;` between ids. When only a generic invariant applies and a component-specific control is still required, retain the generic id and add `ctrl_note=<one clause>` to `notes`.
+
+A row may move from `partially-mitigated` to `fully-closed-by-kernel` only when its owning boundary is `kernel`, `gate-engine`, or `bootstrap-root`, every cited invariant is owned by that same boundary, and those invariants wholly express the mechanism's closing control. Otherwise preserve the existing disposition.
 
 ## Reproduction updates
 
@@ -58,8 +64,8 @@ Fixed reviewed refs: all four Regista-family components use `7707c81`; cairn `74
 ## Provisional decisions
 
 - `ASSUMPTION:` The inventory's report-level component labels are normative for matrix rows and mechanism counting; logical products are used for cross-component probe diversity.
-- `ASSUMPTION:` No initial row is `fully-closed-by-kernel` because no accepted concrete control and regression test has yet been cited.
+- `ASSUMPTION:` A `fully-closed-by-kernel` disposition records the accepted invariant route, not implementation proof; closure still requires a concrete control and regression test.
 - `ASSUMPTION:` `Phase 1` membership marks controls required by the first vertical slice, not reuse of the vulnerable implementation.
 - `ASSUMPTION:` Existing acb and agent-wake developer-host paths remain reachable and therefore use `partially-mitigated` with broker/transport residual ownership; future truly absent surfaces may use `deferred-profile` only under rule 5.
-- `OPEN:` Confirm the proposed `CTRL-nnn` namespace and semicolon encoding for multiple invariant ids.
+- `ASSUMPTION:` D-0A-10 accepts the `CTRL-nnn` namespace; multiple invariant ids use the accepted semicolon encoding.
 - `OPEN:` Confirm whether phase/profile values should later become signed-manifest identifiers rather than the coarse families used in 0A.
