@@ -48,7 +48,7 @@ Host separation alone does not pass `INV-016`. For each candidate, both witnesse
 |---|---|---|---|---|
 | A | `mvmcc03`, PostgreSQL/log admins, writer credentials, writer backup plane | `mvmcc02` | A-W1 operator and admin account, not an A writer/DBA admin | A-W1-only key custody and retained-state plane |
 | A | same | `mvmcitest01` | A-W2 operator and admin account, distinct from A-W1 and A writer/DBA admins | A-W2-only key custody and retained-state plane, not the A backup plane |
-| B | `mvmcitest01`, SQL Server/Windows/cluster admins, DBA credentials, SQL backup and DBA management planes | `mvmcc03` | B-W1 operator and Linux admin realm outside SQL/Windows/AD DBA control | B-W1-only key custody and retained digest plane |
+| B | `mvmcitest01`, SQL Server/Windows/cluster admins, DBA credentials, SQL backup and DBA management plane, directory/IdP administrator realm (`ADV-30`), secret-backend administrator (`ADV-31`)s | `mvmcc03` | B-W1 operator and Linux admin realm outside SQL/Windows/AD DBA control | B-W1-only key custody and retained digest plane |
 | B | same | `mvmcc02` | B-W2 operator and admin account, distinct from B-W1 and all B DBA dependencies | B-W2-only key custody and retained digest plane, not the SQL backup plane |
 | C | `mvmcc02`, immudb/container admins, writer credentials, candidate backup plane | `mvmcc03` | C-W1 operator and admin account, not a C writer/store admin | C-W1-only key custody and retained-state plane |
 | C | same | `mvmcitest01` | C-W2 operator and admin account, distinct from C-W1 and C writer/store admins | C-W2-only key custody and retained-state plane, not the C backup plane |
@@ -336,6 +336,8 @@ The carried `crypto-4` Windows reproduction runs on `mvmcitest01` during pre-fli
 
 ## 6. Pre-flight checklist
 
+**Item 0 (added after review, B1/N7):** the owner's INV-016 posture for this bake-off is recorded in `DECISIONS-0B.md` D-0B-1 BEFORE any scored measurement — either (i) six distinct operator/admin/custody/persistence assignments are named and evidenced, or (ii) a **simulated-independence declaration** is recorded: the bake-off measures whether each candidate's design *supports* independent witnesses (separate service identities, keys, storage, admin accounts, no shared credentials, fail-closed below quorum), the single human operator is an explicit residual, and real operator independence becomes a deployment-profile requirement verified at cutover. Under (ii) no candidate may be declared to *pass* INV-016; results are recorded as `INV-016: design-supports / operator-independence-not-demonstrated`.
+
 No scored measurement starts until every mandatory item below is checked and the observer has the referenced digest or evidence.
 
 - [ ] Frozen rubric repository revision, SHA-256, freeze date, concurring lineages, and owner approval recorded in the run manifest. The drafting values at the top of this plan are independently recomputed, not merely copied.
@@ -357,6 +359,8 @@ No scored measurement starts until every mandatory item below is checked and the
 - [ ] Secret-redaction and no-free-text controls checked; no production data or session transcript content enters the kernel fixture or evidence package.
 
 ## 7. 0B exit and 0C handoff
+
+Additions after review (minimax N6): the 0C hand-off MUST include (a) **FIPS/HSM evidence per candidate** — availability and support status of validated cryptographic modules in the actual deployment mode, HSM/KMS/CNG/PKCS#11 integration path, and key non-exportability (`INV-053`); (b) **cross-platform conformance evidence** — the same canonical event bytes hashed/signed/verified on Windows and Linux clients produce byte-identical digests and identical verifier results (rubric §9 Portability), captured in the evidence package.
 
 Phase 0B is complete when 0C receives all of the following without a rubric change hidden in analysis:
 
