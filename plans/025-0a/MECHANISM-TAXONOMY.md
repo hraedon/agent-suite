@@ -1,14 +1,17 @@
 # Plan 025 mechanism taxonomy
 
-Status: DRAFT. This taxonomy partitions the 147 filed findings by failed security mechanism. C1-C5 remain triage classes, not mechanisms. A finding has exactly one primary mechanism even when it has secondary effects.
+Version: v0.2-draft, 2026-08-26.
+
+Status: DRAFT. This taxonomy partitions the 147 filed findings by failed security mechanism and is a strict refinement of the inventory's C1-C5 triage classes: 102 of 103 mechanisms remain wholly within one C-class, so inherited C-class assignments were not independently re-adjudicated. A finding has exactly one primary mechanism even when it has secondary effects.
 
 ## Selection semantics
 
-- Effective severity for selection is `verified_severity` when present and Daybreak severity otherwise, ordered `Critical > High > Medium-High > Medium > Low-Medium > Low`. Thus SEC-01 is High, not Critical.
+- Effective severity for selection is `verified_severity` when present and Daybreak severity otherwise, ordered `Critical > High > Medium-High > Medium > Low-Medium > Low`. Thus SEC-01 is High, not Critical. For the inventory's four-column tally, the pinned mapping is `Critical -> Critical`, `High` or `Medium-High -> High`, `Medium` or `Low-Medium -> Medium`, and `Low -> Low`.
+- **High-bearing** means a mechanism whose maximum effective severity is `High` or `Critical`, i.e. effective severity `>= High`; it includes Critical-only mechanisms even when they contain no finding literally rated High. `OPEN:` The owner must confirm this interpretation of the charter before probes are commissioned.
 - Component counts use the inventory's ten report-level component names. `ASSUMPTION:` for a count tie, choose the component containing the highest-effective-severity finding, then a verified finding, then the component order `trustlog, crypto, regista-cli, persist, cairn, dossier, agent-suite, agent-notes, agent-wake, acb`; choose a finding within a component by the same severity/verification rules and then lexical finding id.
-- `ASSUMPTION:` "a second component" means a different logical product where possible. The four Regista reports are one logical product for diversity, even though they remain distinct component values for counting and traceability.
+- `ASSUMPTION:` "a second component" means a different logical product where possible. The four Regista reports are one logical product for diversity, even though they remain distinct component values for counting and traceability. For mechanisms spanning three or four components, choose the second logical product by highest effective severity, then verified status, then the component order above; choose its finding by the same finding tie-break. This makes the `authenticated-approval-and-sod` choice of `an-1` derivable.
 - A mandatory Critical may also satisfy the dominant-component or second-component obligation for its mechanism. Suspected findings remain in counts.
-- `OPEN:` The owner should confirm the tie-break and report-component counting rules before probes are commissioned; changing either rule requires recomputing the reproduction set.
+- `OPEN:` The owner should confirm the tie-break, report-component counting rules, and either accept approximately 78 probes or direct a pre-selection merge of near-synonymous singletons before probes are commissioned; changing any rule requires recomputing the reproduction set. Candidate merges/questions are `checked-evidence-required-for-pass` + `aggregate-verdict-completeness`; placing `as-10` under `network-endpoint-authentication` + `typed-gate-result-and-exit-semantics` rather than widening `subprocess-result-authenticity`; and coarsening `preallocation-parser-limits`, `read-to-eof-path-denial`, `query-and-batch-budget`, and `application-request-work-budget` toward the charter's `unbounded-parse` example. No merge is made in this draft.
 
 ## Mechanisms
 
@@ -16,9 +19,10 @@ Each entry gives the stable slug, definition and closing control shape, owning b
 
 ### Authenticated authority and evidence
 
-- **`row-envelope-reconciliation`.** Mutable rows or projections are treated as signed authority. Close it by authenticating the envelope, recomputing stored digests, and reconciling every decision-bearing field at each authoritative read. Owning boundary: kernel for evidence reads and gate-engine for admission reads; dossier/agent-notes must consume claims rather than rows. Findings: `SEC-11`, `persist-2`, `persist-4`, `persist-9`, `dossier-2`, `dossier-4`, `an-8`.
+- **`row-envelope-reconciliation`.** Mutable rows or projections are treated as signed authority. Close it by authenticating the envelope, recomputing stored digests, and reconciling every decision-bearing field at each authoritative read. Owning boundary: kernel for evidence reads and gate-engine for admission reads; dossier/agent-notes must consume claims rather than rows. Findings: `SEC-11`, `persist-2`, `persist-4`, `dossier-2`, `dossier-4`, `an-8`.
+- **`unique-chain-head-binding`.** A mutable chain-head pointer can select a validly signed fork instead of the unique accepted predecessor chain. Close it by binding the named head to the authenticated unique-position chain and refusing competing descendants under `INV-005`. Owning boundary: kernel. Findings: `persist-9`.
 - **`canonical-subject-reconciliation`.** Caller or child-record subject fields override canonical identity or lifecycle state. Close it by deriving kind, principal, project, and status from authenticated canonical records. Owning boundary: kernel for principal claims; bootstrap-root for provisioning. Findings: `SEC-08`, `as-9`.
-- **`queued-row-ingress-authenticity`.** A durable queue row can bypass authenticated ingress. Close it by MAC/signature-verifying queued content and its routing context before dispatch. Owning boundary: transport. Findings: `aw-7`.
+- **`queued-row-ingress-authenticity`.** A durable queue row can bypass authenticated ingress. Close it by MAC/signature-verifying queued content and its routing context before dispatch. Owning boundary: transport. Findings: `aw-7`. `ASSUMPTION:` This deliberately diverges from the inventory's INV-004-style row/envelope dedup: the pending row has no authenticated envelope to reconcile, so the primary failure is unauthenticated durable ingress; `INV-004` remains a secondary consumer obligation.
 - **`signed-policy-as-authority`.** Enforcement uses mutable policy state rather than the signed registration. Close it by verifying the policy object and binding every decision to its digest/version. Owning boundary: gate-engine. Findings: `persist-1`.
 - **`signature-before-admission`.** Unsigned events affect workflow admission or precedence. Close it by authenticating the event and its chain position before any authority use. Owning boundary: gate-engine with kernel claim input. Findings: `persist-8`.
 - **`imported-state-authenticity`.** Imported lifecycle state affects local authority without provenance checks. Close it with authenticated import, lineage/lifecycle validation, and legacy quarantine. Owning boundary: kernel at migration ingestion; agent-notes only projects admitted events. Findings: `an-7`, `an-15`.
@@ -28,7 +32,7 @@ Each entry gives the stable slug, definition and closing control shape, owning b
 - **`checked-evidence-required-for-pass`.** Unchecked or indeterminate evidence contributes to PASS. Close it with a typed aggregate in which every required result is positively verified. Owning boundary: kernel. Findings: `cairn-16`.
 - **`event-pairing-completeness`.** An orphan end event is displayed as a completed execution. Close it by proving required begin/end structure before issuing or rendering completion. Owning boundary: app:dossier, consuming a kernel claim. Findings: `dossier-1`.
 - **`artifact-trust-root-authenticity`.** Self-hashes or caller-supplied manifests are mistaken for trusted baselines. Close it with a signed subject-to-digest binding rooted in pinned policy and owner checks. Owning boundary: bootstrap-root for suite artifacts and broker for capability manifests. Findings: `as-2`, `as-4`, `acb-1`.
-- **`release-content-pinning`.** Package or registry content is installed without a cryptographic release binding. Close it by resolving immutable content digests from signed release metadata. Owning boundary: bootstrap-root for suite packages and broker for capability packages. Findings: `as-8`, `acb-9`.
+- **`release-content-pinning`.** Package or registry content is installed without a cryptographic release binding. Close it by resolving immutable content digests from signed release metadata. Owning boundary: bootstrap-root for both suite and capability packages under `INV-035`; the broker consumes the installed binding at execution. Findings: `as-8`, `acb-9`.
 - **`subprocess-result-authenticity`.** Parsed child or remote output is accepted despite process/transport failure. Close it by coupling typed output to a successful exit and authenticated channel. Owning boundary: bootstrap-root. Findings: `as-6`, `as-10`.
 - **`executable-identity-binding`.** A pathname or substring stands in for executable identity. Close it with content digest, ownership/mode checks, symlink-safe resolution, and descriptor-bound execution. Owning boundary: bootstrap-root for suite execution and broker for capability execution. Findings: `as-1`, `acb-5`, `acb-7`.
 
@@ -54,7 +58,7 @@ Each entry gives the stable slug, definition and closing control shape, owning b
 - **`attestation-subject-and-issuer-binding`.** An attestation omits the session/principal subject or authorized issuer relation. Close it by signing the full subject tuple and checking issuer authority. Owning boundary: kernel. Findings: `cairn-04`.
 - **`delegation-authorization-binding`.** A signed `on_behalf_of` value is accepted without representation authority. Close it by binding delegator/delegate/subject/scope and checking delegated authority. Owning boundary: app:dossier with gate-engine authorization. Findings: `dossier-5`.
 - **`project-key-isolation`.** One signing identity spans every project. Close it with project-scoped keys or explicitly scoped claims rooted in project policy. Owning boundary: bootstrap-root provisioning. Findings: `as-11`.
-- **`canonical-actor-recording`.** The resolved actor is discarded and raw unresolved caller input is recorded. Close it by recording the authenticated canonical actor only. Owning boundary: kernel claim production. Findings: `an-5`.
+- **`canonical-actor-recording`.** The resolved actor is discarded and raw unresolved caller input is recorded. Close it by recording the authenticated canonical actor only. Owning boundary: app:agent-notes at command ingress, consuming a kernel identity/authority claim. Findings: `an-5`.
 - **`signed-project-actor-context`.** Outbox signatures omit project, actor, kind, role, or lineage. Close it by signing the complete typed dispatch context. Owning boundary: app:agent-notes. Findings: `an-9`.
 - **`transport-identity-source-binding`.** Trigger/source/reply identity is outside the MAC or authenticated connection. Close it by MAC-binding identity and source and correlating replies to the authenticated delivery. Owning boundary: transport. Findings: `aw-1`, `aw-3`, `aw-6`.
 - **`replay-freshness-binding`.** Timestamp, nonce, event/reply id, or idempotency key is unsigned or not consumed. Close it by signing all freshness fields and atomically recording nonce use. Owning boundary: transport. Findings: `aw-2`, `aw-13`.
@@ -62,25 +66,24 @@ Each entry gives the stable slug, definition and closing control shape, owning b
 
 ### Authentication, authorization, and gates
 
-- **`genesis-proof-consumed-by-first-write`.** A genesis boolean/verdict is not authenticated and atomically consumed by the first write. Close it with a scoped gate decision bound to that action. Owning boundary: gate-engine. Findings: `SEC-05`, `as-13`.
+- **`genesis-proof-consumed-by-first-write`.** A genesis boolean/verdict is not authenticated and atomically consumed by the first write, or absent bootstrap identity opens an ordinary-write window. Close it with an independently pinned signed bootstrap policy and a scoped admission decision atomically consumed by that action. Owning boundary: bootstrap-root + kernel under `INV-009`; suite is the bootstrap-side caller. Findings: `SEC-05`, `as-13`, `persist-13`.
 - **`authenticated-approval-and-sod`.** Caller strings or permissive defaults stand in for authenticated approval and separation of duties. Close it with authenticated roles, explicit policy, distinct principals, and default DENY. Owning boundary: gate-engine. Findings: `SEC-10`, `persist-7`, `as-12`, `an-1`.
 - **`operator-action-authorization`.** An operator-only action has no operator authorization boundary. Close it by authenticating the caller and evaluating operator policy. Owning boundary: gate-engine. Findings: `an-10`.
 - **`scope-entitlement-enforcement`.** Declared workflow or harness scope is not enforced at use. Close it by checking the authenticated caller against the exact requested scope on every route/execution. Owning boundary: gate-engine for workflows and broker for harnesses. Findings: `cli-1`, `acb-2`.
 - **`privileged-mutation-authorization`.** Ordinary callers can perform administrative mutation or mint project-authoritative artifacts. Close it with authenticated project-admin policy and attributable signing. Owning boundary: gate-engine. Findings: `cli-2`, `an-3`.
-- **`stored-secret-access-control`.** Ordinary bearer tokens can retrieve stored delivery credentials. Close it with least-privilege secret-reference use and non-disclosure APIs. Owning boundary: kernel-side service edge. Findings: `cli-3`.
+- **`stored-secret-access-control`.** Ordinary bearer tokens can retrieve stored delivery credentials. Close it with least-privilege secret-reference use and non-disclosure APIs. Owning boundary: app:regista-cli. Findings: `cli-3`.
 - **`lease-scope-and-expiry`.** A caller leases unauthorized work or holds it indefinitely. Close it with pre-reservation scope checks and bounded leases. Owning boundary: gate-engine. Findings: `cli-6`.
 - **`verification-head-completeness`.** A truncated prefix is reported as fully valid without an expected head. Close it with a pinned cut/head or an explicit partial-verification result. Owning boundary: kernel. Findings: `cli-7`.
 - **`network-endpoint-authentication`.** Sensitive records or diagnostics are exposed when authentication configuration is absent. Close it with authentication and least disclosure by default. Owning boundary: kernel service edge for regista and app:agent-notes for its viewer. Findings: `cli-11`, `an-14`.
 - **`local-peer-authentication`.** A local socket peer self-asserts routing identity. Close it by binding OS peer credentials to authorized adapter/destination identity. Owning boundary: transport. Findings: `aw-5`.
-- **`missing-bootstrap-identity-deny`.** Missing project identity grants a write window. Close it by making absent bootstrap identity deny all ordinary inserts. Owning boundary: gate-engine. Findings: `persist-13`.
-- **`filtered-verification-preserves-global-failures`.** Filtering deletes global integrity failures. Close it by separating presentation filtering from full-chain verdict computation. Owning boundary: kernel. Findings: `cairn-01`.
+- **`filtered-verification-preserves-global-failures`.** Filtering hides a global integrity failure. Close it by separating presentation filtering from the full-chain verdict. Owning boundary: kernel under `INV-005`. Findings: `cairn-01`.
 - **`aggregate-verdict-completeness`.** PASS omits unverified counts, halted replay, warnings, or inconsistent totals. Close it with exhaustive typed aggregation requiring all expected checks. Owning boundary: kernel for claims; dossier renders that claim. Findings: `cairn-02`, `dossier-3`.
 - **`authenticated-coverage-receipt`.** Signatureless or un-MACed coverage evidence counts as verified. Close it by rejecting absent/invalid authenticators and legacy downgrade. Owning boundary: kernel. Findings: `cairn-07`, `cairn-12`.
 - **`transition-role-default-deny`.** Unknown roles, workflow-version drift, or shortcut transitions satisfy a gate. Close it with versioned transition policy and exhaustive default DENY. Owning boundary: gate-engine. Findings: `cairn-15`, `as-14`, `an-4`.
 - **`probe-evidence-not-fixture-pass`.** Synthetic fixtures yield a gating PASS without inspecting the installation. Close it with environment-bound probe evidence and explicit unavailable status. Owning boundary: kernel conformance surface. Findings: `cairn-20`.
 - **`revocation-authz-consistency`.** Optional lifecycle configuration removes actor or dual-control checks. Close it with one invariant revocation policy across modes. Owning boundary: gate-engine. Findings: `dossier-13`.
-- **`config-permission-completeness`.** Security config checks omit group write permissions. Close it by enforcing owner/group/world policy on the opened file. Owning boundary: app:dossier. Findings: `dossier-14`.
-- **`typed-gate-result-and-exit-semantics`.** Truthy strings, ignored child status, warnings, or opt-in flags turn failure into exit 0. Close it with strict result types and unconditional nonzero blocked/unhealthy exits. Owning boundary: bootstrap-root for suite and broker for capability health. Findings: `as-3`, `as-16`, `acb-6`.
+- **`config-permission-completeness`.** Security config checks omit group write permissions. Close it by enforcing owner/group/world policy on the opened independently pinned configuration. Owning boundary: bootstrap-root under `INV-036`; dossier consumes verified configuration. Findings: `dossier-14`.
+- **`typed-gate-result-and-exit-semantics`.** Truthy strings, ignored child status, warnings, or opt-in flags turn failure into exit 0. Close it with strict result types and unconditional nonzero blocked/unhealthy exits. Owning boundary: bootstrap-root for both suite CLI findings (`as-3`, `as-16`) and broker for capability health (`acb-6`). Findings: `as-3`, `as-16`, `acb-6`.
 - **`artifact-revision-required`.** Missing revision provenance skips revision pinning. Close it by requiring immutable revision plus digest or failing verification. Owning boundary: bootstrap-root. Findings: `as-7`.
 - **`dependency-validation-failure-deny`.** A failed lineage/dependency lookup is interpreted as validation success. Close it with explicit unavailable/invalid states that deny admission. Owning boundary: gate-engine. Findings: `an-2`.
 - **`unsigned-operation-rejection`.** Null-signed operations satisfy lifecycle policy. Close it by removing NullSigner and requiring authenticated governance events. Owning boundary: app:agent-notes at command ingress and gate-engine for admission. Findings: `an-6`.
@@ -96,7 +99,7 @@ Each entry gives the stable slug, definition and closing control shape, owning b
 - **`outbound-destination-policy`.** Attacker-controlled URLs permit SSRF and response exfiltration. Close it with scheme/host/IP policy, redirect/rebinding checks, and bounded responses. Owning boundary: kernel service edge and app:agent-notes transport client. Findings: `cli-4`, `an-13`.
 - **`structured-config-safe-serialization`.** Hand-quoted TOML permits table injection. Close it with a conforming serializer and schema validation. Owning boundary: broker. Findings: `acb-10`.
 - **`generated-shim-input-validation`.** Unescaped identifiers inject generated shims. Close it with strict identifiers or context-correct encoding. Owning boundary: broker. Findings: `acb-11`.
-- **`html-output-encoding`.** Untrusted artifact metadata is inserted into HTML without contextual escaping. Close it with safe templates and browser regression tests. Owning boundary: app:dossier. Findings: `cairn-18`.
+- **`html-output-encoding`.** Untrusted artifact metadata is inserted into HTML without contextual escaping. Close it with safe templates and browser regression tests. Owning boundary: app:cairn for the current portal. `ASSUMPTION:` A later consolidation may transfer rendering to dossier, but 0A does not transfer this live defect. Findings: `cairn-18`.
 
 ### Resource and parser controls
 
@@ -140,102 +143,20 @@ Each entry gives the stable slug, definition and closing control shape, owning b
 
 ## Reproduction set
 
-`ASSUMPTION:` This set applies the selection semantics above to this taxonomy. It is a probe plan only; no probe was run or written here. The reviewed refs are `7707c81` for Regista-family components, `74471ad` cairn, `d775b6d` dossier, `a153213` agent-suite, `235c2b6` agent-notes, `f6a0eed` agent-wake, and `f2df972` acb.
+The executor hand-off is `REPRODUCTIONS.md`. It is derived from this taxonomy and the selection semantics above at the frozen pre-selection digest `sha256:5918f63a261ebdca466df0a5f7e97d2ac73455b4eb6c5f1b6a6ef0eb309b0651`; this v0.2 revision changes ownership and moves `persist-9` within the INV-005 family but does not alter the verified 78-finding selection. The union remains all seven effective Criticals plus dominant/second-component selections for 59 High-bearing mechanisms.
 
-The union contains 78 findings: all seven effective Criticals and the dominant/second-component selections for 59 High-bearing mechanisms. Some rule-selected examples are below High because the charter chooses within the most-populated component and requires a second component; effective severity does not override those placement rules.
-
-| Finding | Component | Reviewed ref | Selection basis and one-line probe sketch |
-|---|---|---|---|
-| `persist-1` | persist | `7707c81` | Critical + representative: mutate registry policy without changing its signed registration and demonstrate an otherwise admitted transition follows the mutation. |
-| `persist-2` | persist | `7707c81` | Critical + representative: alter row-only review fields and demonstrate a gate accepts evidence whose signed envelope says something else. |
-| `persist-4` | persist | `7707c81` | Critical: alter a durable approved lifecycle row without recomputing its digest and demonstrate rehydration emits authority for the substituted subject. |
-| `persist-5` | persist | `7707c81` | Critical + representative: race cancellation against commit and demonstrate cached APPROVED state commits after the locked row is cancelled. |
-| `cairn-01` | cairn | `74471ad` | Critical + representative: delete an in-window event and demonstrate filtered verification suppresses the resulting global-chain violation. |
-| `cairn-02` | cairn | `74471ad` | Critical + representative: supply signature-valid but referent-missing events and demonstrate merged verification returns PASS while omitting unverified counts. |
-| `acb-1` | acb | `f2df972` | Critical + second component: replace the unsigned capability manifest and demonstrate an attacker-selected executable receives an attacker-selected secret reference. |
-| `SEC-08` | trustlog | `7707c81` | Second component: register a conflicting payload principal kind and demonstrate replay/claims use it instead of canonical enrollment. |
-| `persist-8` | persist | `7707c81` | Representative: submit an unsigned workflow registration and demonstrate it influences admission or precedence. |
-| `cairn-05` | cairn | `74471ad` | Representative: place unverified out-of-window attestations and demonstrate they suppress a genuine gap finding. |
-| `cairn-06` | cairn | `74471ad` | Representative: choose an attacker-controlled witness roster and demonstrate verification reports sufficient coverage against it. |
-| `cairn-08` | cairn | `74471ad` | Representative: omit an externally pinned bundle/chain root and demonstrate `all_ok` still succeeds. |
-| `dossier-1` | dossier | `d775b6d` | Representative: provide an orphan tool-call end and demonstrate dossier renders a completed chain-verified execution. |
-| `dossier-2` | dossier | `d775b6d` | Second component: flip mutable actor/transition columns and demonstrate a human-accepted or independent-review badge without matching signed evidence. |
-| `as-1` | agent-suite | `a153213` | Second component: place a forged component earlier on PATH and demonstrate genesis executes it as a required probe. |
-| `as-2` | agent-suite | `a153213` | Representative: create an unsigned lock baseline and demonstrate doctor/deploy accepts or creates it as trusted. |
-| `as-6` | agent-suite | `a153213` | Representative: return forged replay JSON from a failing subprocess and demonstrate restore verification accepts it. |
-| `as-8` | agent-suite | `a153213` | Representative: substitute same-version package content and demonstrate upgrade/rollback installs it without digest rejection. |
-| `as-9` | agent-suite | `a153213` | Representative: substitute principal/project fields in child provisioning records and demonstrate provisioning or offboarding acts on them. |
-| `an-7` | agent-notes | `235c2b6` | Representative: import unsigned cross-project lifecycle state and demonstrate it becomes local governance state. |
-| `aw-7` | agent-wake | `f6a0eed` | Representative: insert a forged pending DB row directly and demonstrate dispatch bypasses HTTP authentication and ingress checks. |
-| `acb-5` | acb | `f2df972` | Representative: supply an attacker executable whose text/path contains `playwright` and demonstrate reverse-surface qualification blesses it. |
-| `acb-9` | acb | `f2df972` | Second component: alter registry-resolved package content at the accepted name/version and demonstrate reconciliation executes it without a content pin. |
-| `SEC-01` | trustlog | `7707c81` | Representative: use a revoked/superseded issuer key to mint a new delegation and demonstrate current-status resolution is bypassed. |
-| `SEC-03` | trustlog | `7707c81` | Representative: verify an expired status-active key online and offline and demonstrate only the offline path accepts it. |
-| `SEC-06` | trustlog | `7707c81` | Second component: invoke the library legacy catalog path with a removed root and demonstrate it accepts evidence the CLI refuses. |
-| `crypto-2` | crypto | `7707c81` | Second component: resolve a retired legacy key through `KeySetResolver` and demonstrate newly forged history authenticates. |
-| `cairn-10` | cairn | `74471ad` | Representative: forge a new v1-v4 event with a retired key and demonstrate default legacy verification accepts it as historical. |
-| `cairn-11` | cairn | `74471ad` | Representative: use equivalent offset timestamps whose lexical order differs and demonstrate a post-revocation event bypasses the check. |
-| `cairn-13` | cairn | `74471ad` | Representative: forge the integrity marker with the retired first key in a key file and demonstrate doctor reports green. |
-| `aw-4` | agent-wake | `f6a0eed` | Representative: remove the active key while the daemon runs and demonstrate requests signed with it remain accepted before restart. |
-| `aw-9` | agent-wake | `f6a0eed` | Representative: rotate keys and demonstrate the previous key remains fully authoritative beyond any declared overlap. |
-| `acb-12` | acb | `f2df972` | Representative: force best-effort SecretID revocation to fail and demonstrate rotation reports success while the old credential still authenticates. |
-| `SEC-02` | trustlog | `7707c81` | Representative: replay stored root signatures at a new event id/sequence and demonstrate threshold governance accepts the transplant. |
-| `SEC-04` | trustlog | `7707c81` | Representative: insert a backdated event with a registrar key and demonstrate caller time revives expired authority. |
-| `crypto-3` | crypto | `7707c81` | Representative: feed a cross-protocol framed message to the rotation client and demonstrate it returns a usable Ed25519 signature. |
-| `persist-3` | persist | `7707c81` | Representative: collide entity ids across kinds and demonstrate a per-item read includes another kind's event. |
-| `cairn-03` | cairn | `74471ad` | Second component: submit a retroactive/cross-session attestation and demonstrate payload time expands its coverage beyond authenticated position. |
-| `cairn-04` | cairn | `74471ad` | Representative: substitute session/principal subject fields and demonstrate a valid signature attests the wrong entity or actor. |
-| `dossier-5` | dossier | `d775b6d` | Representative: sign an `on_behalf_of` claim as an unauthorized principal and demonstrate dossier treats it as delegated attribution. |
-| `dossier-9` | dossier | `d775b6d` | Second component: use a non-note UUID and demonstrate it renders as a verified knowledge note. |
-| `an-5` | agent-notes | `235c2b6` | Representative: omit/spoof actor input and demonstrate the event records raw `null`/spoofed identity rather than resolved actor. |
-| `an-9` | agent-notes | `235c2b6` | Representative: alter project/actor metadata outside the outbox signature and demonstrate reconciliation accepts the relabeled operation. |
-| `aw-1` | agent-wake | `f6a0eed` | Representative: alter `X-AgentWake-Identity` while retaining a valid body MAC and demonstrate forged trigger identity is stamped. |
-| `aw-2` | agent-wake | `f6a0eed` | Representative: replay a captured body with unsigned event id/freshness metadata and demonstrate a second accepted wake. |
-| `SEC-05` | trustlog | `7707c81` | Representative: call public genesis initialization with a completed envelope and bare true gate flag and demonstrate epoch creation. |
-| `cli-1` | regista-cli | `7707c81` | Representative: use a token outside its allowed workflow on a non-hook route and demonstrate the request succeeds. |
-| `cli-2` | regista-cli | `7707c81` | Representative: use a non-admin token to register malicious workflow content and demonstrate it is signed as project identity. |
-| `cli-3` | regista-cli | `7707c81` | Representative: query witness/webhook configuration with an ordinary bearer and demonstrate stored authorization credentials are returned. |
-| `persist-7` | persist | `7707c81` | Representative: omit an approval verifier or supply forged approver evidence and demonstrate separation-of-duties admission. |
-| `cairn-07` | cairn | `74471ad` | Representative: submit a signatureless HMAC receipt and demonstrate it counts toward witness coverage. |
-| `cairn-15` | cairn | `74471ad` | Representative: use operator/unknown role on an actor-only transition and demonstrate the role gate passes. |
-| `dossier-3` | dossier | `d775b6d` | Second component: provide replay output with halted events/warnings and demonstrate dossier labels the chain intact. |
-| `as-3` | agent-suite | `a153213` | Representative: return string `false` and a contradictory failing exit status and demonstrate doctor reports healthy. |
-| `as-7` | agent-suite | `a153213` | Representative: provide same-version wheel provenance without revision and demonstrate lock verification skips the revision pin. |
-| `as-13` | agent-suite | `a153213` | Second component: produce a genesis verdict then perform first write without presenting it and demonstrate admission succeeds. |
-| `an-1` | agent-notes | `235c2b6` | Second component: self-review with caller-selected actor and acknowledgment flag and demonstrate completion without operator authority. |
-| `an-2` | agent-notes | `235c2b6` | Representative: exercise the pinned registry lookup failure and demonstrate missing lineage validation is treated as success. |
-| `an-3` | agent-notes | `235c2b6` | Second component: invoke native force/admin switches as an ordinary caller and demonstrate privileged mutation succeeds. |
-| `an-4` | agent-notes | `235c2b6` | Second component: use open-to-done shortcut and demonstrate normal completion gates are bypassed. |
-| `an-6` | agent-notes | `235c2b6` | Representative: create a NullSigner operation and demonstrate verifier accepts `keyid:null` under lifecycle policy. |
-| `aw-5` | agent-wake | `f6a0eed` | Representative: connect as same-UID rogue peer claiming an adapter/destination and demonstrate wake hijack. |
-| `acb-2` | acb | `f2df972` | Second component: check out a capability from a harness absent from `cap.harnesses` and demonstrate secret release. |
-| `acb-3` | acb | `f2df972` | Representative: override `ACB_VAULT_ENV` and demonstrate one capability accesses another authorization plane. |
-| `acb-4` | acb | `f2df972` | Representative: install a rogue non-Playwright MCP grant and demonstrate doctor remains green. |
-| `acb-6` | acb | `f2df972` | Second component: create a detected rogue capability and demonstrate doctor returns `ok=True`/exit 0. |
-| `acb-8` | acb | `f2df972` | Representative: inject `LD_PRELOAD` or equivalent while preserving trusted argv and demonstrate attacker code runs before the target. |
-| `SEC-09` | trustlog | `7707c81` | Second component: use two process caches to cancel then commit and demonstrate locked durable state is ignored. |
-| `crypto-1` | crypto | `7707c81` | Representative: label a v5 event HMAC-SHA256 using known Ed25519 public bytes and demonstrate full authentication without a private key. |
-| `crypto-4` | crypto | `7707c81` | Representative: invoke Windows public-identity flow and demonstrate a machine-scope decryptable private-key blob reaches argv/output. |
-| `persist-6` | persist | `7707c81` | Representative: race possession/approval against cancellation and demonstrate a stale transition resurrects the operation. |
-| `persist-11` | persist | `7707c81` | Representative: run migration 027 with a nonempty archive and demonstrate it drops audit evidence without refusal. |
-| `persist-12` | persist | `7707c81` | Representative: upgrade existing history and demonstrate deletion of pre-upgrade events does not break the new suffix chain. |
-| `cairn-09` | cairn | `74471ad` | Representative: export more than 10,000 events and demonstrate a truncated bundle is hashed/labeled complete. |
-| `cairn-14` | cairn | `74471ad` | Representative: place `/dev/zero` or a FIFO in artifact file paths and demonstrate verifier reads indefinitely. |
-| `as-5` | agent-suite | `a153213` | Second component: provision with inline private-key reference and demonstrate secret material appears in argv or diagnostics. |
-| `aw-8` | agent-wake | `f6a0eed` | Representative: use an attacker-controlled socket parent/rebind and demonstrate clients connect to a fake server. |
-| `acb-10` | acb | `f2df972` | Representative: register a quote/new-table payload and demonstrate generated TOML grants a forged capability. |
+`ASSUMPTION:` The digest records evidentiary ordering because taxonomy and selection were not separated into commits. No probe execution or verdict is claimed here.
 
 ## Suspected mechanisms
 
 The inventory marks the following findings "suspected, needs reproduction"; therefore their mechanisms remain suspected to the extent indicated:
 
-- `row-envelope-reconciliation`: `persist-9`
+- `unique-chain-head-binding`: `persist-9`
 - `imported-state-authenticity`: `an-15`
 - `signed-project-actor-context`: `an-9`
 - `replay-freshness-binding`: `aw-13`
 - `dedupe-security-domain-binding`: `aw-14`
-- `missing-bootstrap-identity-deny`: `persist-13`
-- `genesis-proof-consumed-by-first-write`: `as-13`
+- `genesis-proof-consumed-by-first-write`: `persist-13`, `as-13`
 - `private-key-material-non-disclosure`: `crypto-4`
 - `descriptor-bound-containment`: `cli-10`
 - `lifecycle-transition-cas`: `persist-6`, `persist-10`
