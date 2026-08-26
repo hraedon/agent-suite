@@ -1,4 +1,6 @@
-# TRUST-MODEL - v0.3-draft, 2026-08-25, reviewed refs listed below
+# TRUST-MODEL - v0.3, 2026-08-25, reviewed refs listed below
+
+**Owner decisions 2026-08-25 (see `DECISIONS-0A.md`):** §11.5 → option (a) free text forbidden (D-0A-1); §10 → quarantine-as-unverifiable (D-0A-2); §5 retroactive-revocation policy per recommendation (D-0A-3); §9 proposed maxima accepted as ceilings, values finalised in 0C (D-0A-4/5); incident roles remain placeholders until the environment exists (D-0A-6). Third-lineage review: accept. **Status: accepted by owner; deployment values pending 0C.**
 
 Reviewed inputs: Plan 025 v3.1 at regista family `7707c81`, cairn `74471ad`, dossier `d775b6d`, agent-suite `a153213`, agent-notes `235c2b6`, agent-wake `f6a0eed`, and acb `f2df972`; the consolidated inventory of 147 findings; Sol Plan 025 re-reviews 2 and 3; Fable review and addendum; Opus review `REVIEW-0A1-opus.md`; and third-lineage reviewer 3 review `REVIEW-0A1-minimax.md`. This is the round-3 0A-1 draft. It requires owner sign-off; no gate transition is recorded here.
 
