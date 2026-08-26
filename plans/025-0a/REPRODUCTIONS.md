@@ -2,7 +2,7 @@
 
 Version: v0.1-draft, 2026-08-26.
 
-Status: EXECUTOR HAND-OFF. No probe has been executed and no verdict is claimed. This 78-finding set is derived from `MECHANISM-TAXONOMY.md` at frozen pre-selection digest `sha256:5918f63a261ebdca466df0a5f7e97d2ac73455b4eb6c5f1b6a6ef0eb309b0651`. The later taxonomy ownership/INV-005 reconciliation does not change membership.
+Status: EXECUTOR HAND-OFF. No probe has been executed and no verdict is claimed. This 78-finding set is derived from `MECHANISM-TAXONOMY.md` at frozen pre-selection digest `sha256:5918f63a261ebdca466df0a5f7e97d2ac73455b4eb6c5f1b6a6ef0eb309b0651`. The later taxonomy ownership/INV-005 reconciliation (taxonomy v0.2) does not change membership; the digest is of the v0.1 taxonomy text at selection time, recorded deliberately as the pre-selection freeze evidence (NB-12a).
 
 ## Verdict contract
 

@@ -1,6 +1,6 @@
 # Plan 025 finding-control-test matrix schema
 
-Status: DRAFT. The initial rows are deliberately provisional. This schema describes the exact 16-column charter schema; parenthetical constraints in the charter are not literal header text.
+Version: v0.2-draft, 2026-08-26 (third-lineage delta review: minimax-m3, 2026-08-25). Status: DRAFT. The initial rows are deliberately provisional. This schema describes the exact 16-column charter schema; parenthetical constraints in the charter are not literal header text.
 
 ```csv
 finding_id,component,reviewed_ref,mechanism,class,daybreak_severity,verified_severity,reproduction_ref,disposition,owning_boundary,control_id,invariant_ids,regression_test_ref,phase,profile_gate,notes
