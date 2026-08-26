@@ -24,3 +24,12 @@ Findings (none blocking):
 
 Lineage note: drafter openai/gpt-5.6-sol; reviewer 1 anthropic (Fable); reviewer 2 to be
 anthropic Opus on mvmcc02 (security-focused, probe-capable). Two lineages in the loop.
+
+## Addendum after reviewer 2 (Opus) — 2026-08-26
+
+Opus's verdict is **rework** and I concur; my "accept as draft, none blocking" did not survive
+its §8 column audit, §5 fixpoint analysis, or the §7 completeness count. Specifically I
+withdraw the lineage note: charter line 15 requires a **third lineage** on the invariant
+registry; two Anthropic reviewers do not satisfy it (Opus B14). Reviewer 3 will be a
+non-Anthropic, non-OpenAI lineage on v0.2. My findings #1 and #2 are upgraded to blocking
+per Opus (they have uncited High evidence: an-2 and cairn-06).
