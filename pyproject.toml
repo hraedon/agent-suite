@@ -16,7 +16,7 @@ dependencies = []  # stdlib-only core
 Repository = "https://github.com/hraedon/agent-suite"
 
 [project.optional-dependencies]
-dev = ["ruff>=0.16,<1", "mypy", "pytest", "build", "hatchling"]  # build+hatchling: conformance wheel build-test; ruff pinned to the 0.16 line with an explicit lint select (see [tool.ruff.lint])
+dev = ["ruff>=0.16,<0.17", "mypy>=2.1,<3", "pytest", "build", "hatchling"]  # build+hatchling: conformance wheel build-test; ruff pinned to the 0.16 line with an explicit lint select (see [tool.ruff.lint])
 vault = ["hvac"]                     # HashiCorp Vault secret backend (edge only)
 azure = ["azure-identity", "azure-keyvault-secrets", "PyJWT[crypto]"]  # Azure Key Vault + Entra (edge only)
 windows = ["pywin32; sys_platform == 'win32'"]        # DPAPI / Credential Manager (edge only)
