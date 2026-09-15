@@ -40,6 +40,11 @@ if [ -z "${python_bin:-}" ] || [ ! -x "$python_bin" ]; then
 fi
 
 # Resolve the denylist once (same order as pre-commit; see that hook).
+#
+# The "agent-suite" in the ~/.config path below is the shared config DIRECTORY --
+# one canonical denylist for every repo -- not a project name. A templatising
+# pass that treated it as one rewrote it to ~/.config/<repo>/, which exists
+# nowhere, and every hook then announced itself INACTIVE while looking installed.
 if [ -z "${AGENT_SUITE_FORBIDDEN_IDENTIFIERS:-}" ]; then
   for candidate in \
     "$repo_root/.identifiers-denylist.local" \
