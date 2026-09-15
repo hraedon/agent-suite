@@ -74,6 +74,21 @@ _GUARDED_DIRS = frozenset({"samples"})
 # The plumbing declaration. Read here for ONE purpose: deciding whether an
 # unconfigured gate is a benign no-op or a silent pass. check_publication_plumbing.py
 # remains the authority on everything else in this file.
+# Always-on guards that need no denylist and no configuration.
+#
+# An editor swap file holds the BUFFER of the file being edited -- a secret typed
+# and not yet saved is in there. Vim's collision sequence (.swo, .swn, ... after
+# .swp is taken) means suffix matching alone misses the ones a busy session
+# leaves behind.
+#
+# A root-level .env is the classic credential leak; .env.example is the
+# deliberately tracked template and is exempt. Scoped to the ROOT so a fixture
+# like tests/fixtures/.env.broken stays possible.
+#
+# From touchstone, which had both while the template guarded only samples/.
+_EDITOR_SWAP_SUFFIXES = frozenset({".swp", ".swo"})
+_VIM_COLLISION_SUFFIX = re.compile(r"\.s[a-w][a-z]\Z")
+
 _DECLARATION_FILENAME = "publication.toml"
 
 
@@ -492,12 +507,35 @@ def print_report(violations: list[Violation]) -> None:
 
 
 def leaked_tracked_files(paths: list[Path], guarded: frozenset[str]) -> list[Path]:
-    """Tracked files whose root component is a guarded (gitignored) data dir.
+    """Tracked paths reserved for runtime data, operator secrets, or editor swap files.
 
-    Matches only the first path component so a nested code directory that happens
-    to be named ``samples`` (e.g. ``tests/samples/``) is not a false positive.
+    Three always-on rules, none of which needs a denylist:
+
+    * an **editor swap file** anywhere -- it holds the buffer of the file being
+      edited, so a secret typed and not yet saved is inside it;
+    * a first path component in *guarded* -- matched on the root only, so a
+      nested code directory named ``samples`` (e.g. ``tests/samples/``) is not a
+      false positive;
+    * a **root-level ``.env``** or ``.env.<something>``, except the deliberately
+      tracked ``.env.example``.
     """
-    return [p for p in paths if p.parts and p.parts[0] in guarded]
+    leaked: list[Path] = []
+    for path in paths:
+        is_vim_collision = bool(
+            path.name.startswith(".") and _VIM_COLLISION_SUFFIX.fullmatch(path.suffix)
+        )
+        if path.suffix in _EDITOR_SWAP_SUFFIXES or is_vim_collision:
+            leaked.append(path)
+            continue
+        if path.parts and path.parts[0] in guarded:
+            leaked.append(path)
+            continue
+        if len(path.parts) == 1 and (
+            path.name == ".env"
+            or (path.name.startswith(".env.") and path.name != ".env.example")
+        ):
+            leaked.append(path)
+    return leaked
 
 
 def _declares_public() -> bool:
@@ -642,13 +680,17 @@ def _run(args: argparse.Namespace) -> int:
     #    catches a ``git add -f samples/...`` leak regardless of secret config.
     leaked = leaked_tracked_files(paths, _GUARDED_DIRS)
     if leaked:
-        print("Tracked files under a gitignored data directory detected:", file=sys.stderr)
+        print("Tracked paths that must never be committed:", file=sys.stderr)
         for p in sorted(leaked, key=str):
             print(f"  {p}", file=sys.stderr)
         print(
-            "\nThese paths are gitignored by convention (samples/ holds real "
-            "identifier-bearing data — hostnames, service accounts, principal "
-            "handles). Remove them from the index: git rm --cached -r <path>.",
+            "\nThese are gitignored by convention, and .gitignore is advisory — "
+            "git add -f walks straight past it. A guarded data directory holds "
+            "real identifier-bearing data (hostnames, service accounts, principal "
+            "handles); an editor swap file holds the BUFFER of the file being "
+            "edited, secrets typed but not yet saved included; a root-level .env "
+            "holds credentials (.env.example is the exempt template).\n\n"
+            "Remove them from the index: git rm --cached -r <path>.",
             file=sys.stderr,
         )
         return 1
