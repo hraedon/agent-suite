@@ -12,9 +12,23 @@ Two complementary checks:
    whitespace-separated list of real identifiers — hostnames, emails, service
    accounts, principal handles, personal names), every tracked text file
    outside ``samples/`` is scanned for those identifiers. This catches real
-   names that leaked into docs, tests, or reflections. It is a no-op (exit 0)
-   until the secret is configured, so it never blocks a fresh clone or a fork
-   without the secret.
+   names that leaked into docs, tests, or reflections.
+
+   Unconfigured behaviour depends on ``publication.toml``. In a repo declaring
+   ``private-until-review`` (or with no declaration at all) a missing secret is a
+   no-op (exit 0), so a fresh clone or a fork without the secret is never
+   blocked. In a repo declaring ``visibility = "public"`` it is a **failure**
+   (exit 1): an unconfigured gate there prints "skipping" and exits 0, which is
+   indistinguishable from a clean tree — a silent pass on exactly the repos where
+   a leak is irreversible. That asymmetry was documented in publication.toml for
+   months before it was implemented here.
+
+   In ``--staged`` mode (the pre-commit hook) the scan reads the **staged index
+   blobs** (``git show :0:<path>``), never the working tree: the commit records
+   the index, and worktree bytes can legitimately differ from it (``git add
+   -p``, staging then editing). Scanning the worktree let a staged forbidden
+   identifier hide behind a clean unstaged copy — and blocked clean commits
+   whose worktree copy was dirty (WI-031).
 
    **Multi-word identifiers are double-quoted** (``"two words"``) and match any
    separator run — spaced, hyphenated, underscored, dotted, or wrapped across a
@@ -23,13 +37,6 @@ Two complementary checks:
    tokens that the length filter dropped. A real two-word work-domain name sat
    undetected in sixteen repositories — eight of them public — because of that
    blind spot. Any denylist entry containing a space must stay quoted.
-
-   In ``--staged`` mode (the pre-commit hook) the scan reads the **staged index
-   blobs** (``git show :0:<path>``), never the working tree: the commit records
-   the index, and worktree bytes can legitimately differ from it (``git add
-   -p``, staging then editing). Scanning the worktree let a staged forbidden
-   identifier hide behind a clean unstaged copy — and blocked clean commits
-   whose worktree copy was dirty (WI-031).
 
 Run locally: python scripts/check_committed_identifiers.py
 """
@@ -42,6 +49,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -62,6 +70,26 @@ _SKIP_DIRS = frozenset({".venv"})
 # guard matches the first path component so a legitimate nested code dir named
 # ``samples`` (e.g. ``tests/samples/``) is not a false positive.
 _GUARDED_DIRS = frozenset({"samples"})
+
+# The plumbing declaration. Read here for ONE purpose: deciding whether an
+# unconfigured gate is a benign no-op or a silent pass. check_publication_plumbing.py
+# remains the authority on everything else in this file.
+# Always-on guards that need no denylist and no configuration.
+#
+# An editor swap file holds the BUFFER of the file being edited -- a secret typed
+# and not yet saved is in there. Vim's collision sequence (.swo, .swn, ... after
+# .swp is taken) means suffix matching alone misses the ones a busy session
+# leaves behind.
+#
+# A root-level .env is the classic credential leak; .env.example is the
+# deliberately tracked template and is exempt. Scoped to the ROOT so a fixture
+# like tests/fixtures/.env.broken stays possible.
+#
+# From touchstone, which had both while the template guarded only samples/.
+_EDITOR_SWAP_SUFFIXES = frozenset({".swp", ".swo"})
+_VIM_COLLISION_SUFFIX = re.compile(r"\.s[a-w][a-z]\Z")
+
+_DECLARATION_FILENAME = "publication.toml"
 
 
 @dataclass(frozen=True)
@@ -205,6 +233,21 @@ def _is_binary(chunk: bytes) -> bool:
     return b"\x00" in chunk
 
 
+def _strip_bom(text: str) -> str:
+    """Drop a leading U+FEFF left by an explicit-endian UTF-16 decode.
+
+    The ``utf-16-le`` / ``utf-16-be`` codecs do not consume the byte-order mark,
+    so it survives as a stray character at the start of line 1 and lands in
+    violation reports. (``utf-8-sig`` strips its own.) It does not hide anything
+    -- matching is substring-based, so an identifier at offset 0 is still found,
+    verified against both variants -- but a report that prints an invisible
+    character before the offending text is a report people mistrust.
+
+    From vitrine, which had it and the template did not.
+    """
+    return text[1:] if text.startswith("\ufeff") else text
+
+
 def scan_files(
     identifiers: frozenset[str],
     paths: list[Path],
@@ -267,6 +310,7 @@ def scan_files(
         except OSError:
             unreadable.append(path)
             continue
+        text = _strip_bom(text)
         for violation in scan_text(text, identifiers):
             violations.append(replace(violation, path=path))
     if owns_collector and unreadable:
@@ -441,7 +485,7 @@ def scan_staged_blobs(
         chunk = blob[:_BINARY_SNIFF_LEN]
         if _is_binary(chunk):
             continue
-        text = blob.decode(_sniff_encoding(chunk) or "utf-8", errors="replace")
+        text = _strip_bom(blob.decode(_sniff_encoding(chunk) or "utf-8", errors="replace"))
         for violation in scan_text(text, identifiers):
             violations.append(replace(violation, path=path))
     if owns_collector and unreadable:
@@ -463,12 +507,99 @@ def print_report(violations: list[Violation]) -> None:
 
 
 def leaked_tracked_files(paths: list[Path], guarded: frozenset[str]) -> list[Path]:
-    """Tracked files whose root component is a guarded (gitignored) data dir.
+    """Tracked paths reserved for runtime data, operator secrets, or editor swap files.
 
-    Matches only the first path component so a nested code directory that happens
-    to be named ``samples`` (e.g. ``tests/samples/``) is not a false positive.
+    Three always-on rules, none of which needs a denylist:
+
+    * an **editor swap file** anywhere -- it holds the buffer of the file being
+      edited, so a secret typed and not yet saved is inside it;
+    * a first path component in *guarded* -- matched on the root only, so a
+      nested code directory named ``samples`` (e.g. ``tests/samples/``) is not a
+      false positive;
+    * a **root-level ``.env``** or ``.env.<something>``, except the deliberately
+      tracked ``.env.example``.
     """
-    return [p for p in paths if p.parts and p.parts[0] in guarded]
+    leaked: list[Path] = []
+    for path in paths:
+        is_vim_collision = bool(
+            path.name.startswith(".") and _VIM_COLLISION_SUFFIX.fullmatch(path.suffix)
+        )
+        if path.suffix in _EDITOR_SWAP_SUFFIXES or is_vim_collision:
+            leaked.append(path)
+            continue
+        if path.parts and path.parts[0] in guarded:
+            leaked.append(path)
+            continue
+        if len(path.parts) == 1 and (
+            path.name == ".env"
+            or (path.name.startswith(".env.") and path.name != ".env.example")
+        ):
+            leaked.append(path)
+    return leaked
+
+
+def _declares_public() -> bool:
+    """True when this repo's publication.toml declares public visibility.
+
+    Governs whether a missing denylist is a no-op or a hard failure. The
+    distinction is the whole point: a private-until-review repo must stay
+    clonable and committable without the secret, but a PUBLIC repo whose gate is
+    unconfigured is a silent pass — the scan prints "skipping" and exits 0, and
+    nothing downstream can tell that apart from a clean tree.
+
+    Absence of the file is False (fail-open): a repo that never opted into the
+    publication system is not suddenly blocked. A file that is PRESENT but
+    unparseable is a GateError, not False — that repo did opt in, and guessing
+    its visibility is exactly the coin-flip this function exists to remove.
+    """
+    try:
+        repo_root = Path(_run_git(["git", "rev-parse", "--show-toplevel"]).strip())
+    except GateError:
+        # Not a git repo (or git is unusable). The caller's other git work will
+        # surface that; do not convert it into a publication verdict here.
+        return False
+
+    path = repo_root / _DECLARATION_FILENAME
+    if not path.is_file():
+        return False
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise GateError(
+            f"{_DECLARATION_FILENAME} is present but could not be parsed ({exc}); "
+            "the gate cannot tell whether this repo is public, so it will not pass."
+        ) from exc
+
+    section = raw.get("publication")
+    if not isinstance(section, dict):
+        raise GateError(
+            f"{_DECLARATION_FILENAME} has no [publication] table; the gate cannot "
+            "tell whether this repo is public, so it will not pass."
+        )
+    return str(section.get("visibility", "")).strip() == "public"
+
+
+def _unconfigured(reason: str) -> None:
+    """Handle a denylist that is unset or unusable.
+
+    Returns quietly (caller no-ops) for a non-public repo; raises GateError for a
+    public one.
+    """
+    if _declares_public():
+        raise GateError(
+            f"{reason} but {_DECLARATION_FILENAME} declares visibility=\"public\". "
+            "A public repo with an unconfigured gate is a silent pass, so this is "
+            # The env-name placeholder below sits on a line of its own. The longest
+            # name in the estate is 52 characters, and folding it into a prose line
+            # pushes the SUBSTITUTED file past 100 columns while the template itself
+            # still looks clean. (This comment may not name the placeholder: it would
+            # be substituted too, and would itself go over.)
+            "a failure, not a skip. Provide the denylist via the "
+            "AGENT_SUITE_FORBIDDEN_IDENTIFIERS environment variable "
+            "(in CI, the secret of that name: org-level where the repo is in an "
+            "org, otherwise a repo-level secret)."
+        )
+    print(f"{reason}; skipping identifier gate.", file=sys.stderr)
 
 
 def _resolve_identifiers() -> frozenset[str] | None:
@@ -479,22 +610,13 @@ def _resolve_identifiers() -> frozenset[str] | None:
     """
     raw = os.environ.get("AGENT_SUITE_FORBIDDEN_IDENTIFIERS", "")
     if not raw.strip():
-        # Split so the line still fits at 100 columns after the per-repo env-var
-        # substitution: the longest name in the estate is 52 characters, 19 more
-        # than the canonical one, which pushed this over the limit in two repos.
-        print(
-            "AGENT_SUITE_FORBIDDEN_IDENTIFIERS is empty or unset; "
-            "skipping identifier gate.",
-            file=sys.stderr,
-        )
+        _unconfigured("AGENT_SUITE_FORBIDDEN_IDENTIFIERS is empty or unset")
         return None
     identifiers = parse_identifier_set(raw)
     if not identifiers:
-        print(
-            "AGENT_SUITE_FORBIDDEN_IDENTIFIERS contained no usable "
-            f"identifiers (minimum length is {MIN_IDENTIFIER_LENGTH} "
-            "characters); skipping gate.",
-            file=sys.stderr,
+        _unconfigured(
+            "AGENT_SUITE_FORBIDDEN_IDENTIFIERS contained no usable identifiers "
+            f"(minimum length is {MIN_IDENTIFIER_LENGTH} characters)"
         )
         return None
     return identifiers
@@ -558,39 +680,30 @@ def _run(args: argparse.Namespace) -> int:
     #    catches a ``git add -f samples/...`` leak regardless of secret config.
     leaked = leaked_tracked_files(paths, _GUARDED_DIRS)
     if leaked:
-        print("Tracked files under a gitignored data directory detected:", file=sys.stderr)
+        print("Tracked paths that must never be committed:", file=sys.stderr)
         for p in sorted(leaked, key=str):
             print(f"  {p}", file=sys.stderr)
         print(
-            "\nThese paths are gitignored by convention (samples/ holds real "
-            "identifier-bearing data — hostnames, service accounts, principal "
-            "handles). Remove them from the index: git rm --cached -r <path>.",
+            "\nThese are gitignored by convention, and .gitignore is advisory — "
+            "git add -f walks straight past it. A guarded data directory holds "
+            "real identifier-bearing data (hostnames, service accounts, principal "
+            "handles); an editor swap file holds the BUFFER of the file being "
+            "edited, secrets typed but not yet saved included; a root-level .env "
+            "holds credentials (.env.example is the exempt template).\n\n"
+            "Remove them from the index: git rm --cached -r <path>.",
             file=sys.stderr,
         )
         return 1
 
     # 2. Secret-driven: scan tracked text files (outside guarded dirs) for
-    #    forbidden identifiers. No-op until the secret is configured.
-    raw = os.environ.get("AGENT_SUITE_FORBIDDEN_IDENTIFIERS", "")
-    if not raw.strip():
-        # Split so the line still fits at 100 columns after the per-repo env-var
-        # substitution: the longest name in the estate is 52 characters, 19 more
-        # than the canonical one, which pushed this over the limit in two repos.
-        print(
-            "AGENT_SUITE_FORBIDDEN_IDENTIFIERS is empty or unset; "
-            "skipping identifier gate.",
-            file=sys.stderr,
-        )
-        return 0
-
-    identifiers = parse_identifier_set(raw)
-    if not identifiers:
-        print(
-            "AGENT_SUITE_FORBIDDEN_IDENTIFIERS contained no usable "
-            f"identifiers (minimum length is {MIN_IDENTIFIER_LENGTH} "
-            "characters); skipping gate.",
-            file=sys.stderr,
-        )
+    #    forbidden identifiers. A no-op until the secret is configured — EXCEPT in
+    #    a repo declaring public visibility, where _resolve_identifiers raises
+    #    rather than let an unconfigured gate report a green pass.
+    #
+    #    This path used to duplicate the resolver inline, so the tree scan and the
+    #    message scans could drift apart in exactly the semantics that matter.
+    identifiers = _resolve_identifiers()
+    if identifiers is None:
         return 0
 
     scan_paths = [p for p in paths if not any(part in _SKIP_DIRS for part in p.parts)]
@@ -625,8 +738,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--staged",
         action="store_true",
-        help="Scan only the staged index blobs (for the pre-commit hook) "
-        "instead of the full tracked tree (the CI default).",
+        help="Scan only staged files (for the pre-commit hook) instead of the "
+        "full tracked tree (the CI default).",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
