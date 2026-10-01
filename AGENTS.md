@@ -67,6 +67,32 @@ operator docs — nothing else. See `README.md` for the charter and
 - **Honest health.** `doctor` reports a component as unhealthy or unreachable
   plainly; it never smooths a missing component into "ok." A gap in the suite is a
   named state, not silence.
+- **No GitHub credential without the identifier gate.** (Owner decision,
+  2026-10-01: "no gh without AOS/agent-suite 2.0".) A host or agent gets a
+  GitHub credential only when the suite also provisions the identifier gate in
+  the same operation. The credential can be a `gh` login, a token, an App token
+  or a deploy key. The gate is three things:
+  - the canonical gate template, which is versioned and drift-checked against
+    its `MANIFEST`, known hashes and `VARIANTS`;
+  - the pre-push hook;
+  - the denylist, which is distributed as a secret and never committed.
+
+  If any part cannot be installed, no credential is installed. `doctor` must
+  report a host where `gh auth status` succeeds but the denylist or gate is
+  missing as misprovisioned, never as "ok". On public repositories:
+  - The gate fails closed when the denylist is missing. The only opt-out is an
+    explicit, loudly logged one.
+  - Pre-push scans the outgoing range: diffs, commit messages, and author and
+    committer identity.
+  - CI scans the full range at `fetch-depth: 0`.
+  - A scheduled job scans the full history.
+  - Git tracked-ness decides what is scanned, not path.
+
+  Rulesets, once approved, carry no bypass list, because agents use the owner's
+  token. Giving an agent `gh` access is never a standalone step. **This is
+  inherited by every successor** (agent-suite 2.0, agent-operations-suite, or any
+  replacement), where it is a provisioning invariant. AOS records it as spec
+  BR-50/AC-58, with a design note.
 
 ## Boundary vs. the components
 
