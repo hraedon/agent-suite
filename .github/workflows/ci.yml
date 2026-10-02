@@ -90,12 +90,8 @@ jobs:
           shellcheck githooks/pre-commit githooks/commit-msg githooks/pre-push \
                      scripts/install-git-hooks.sh scripts/agent-worktree
 
-  # Commit messages are a publication channel the tracked-tree scan cannot see:
-  # it reads files, so an identifier named only in a message is invisible to it.
-  # That blind spot is not hypothetical — a sibling public repo carried
-  # work-domain identifiers in three commit messages, two of which were the very
-  # commits that redacted the same identifiers from the files. Separate job
-  # because it needs full history (fetch-depth: 0) and the matrix job does not.
+  # Everything a push or PR publishes needs a full-history range scan. Separate
+  # job because it needs full history (fetch-depth: 0) and the matrix job does not.
   message-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -109,26 +105,16 @@ jobs:
       - run: uv venv
       - run: uv sync --frozen --extra dev
 
-      - name: Commit message identifier gate
+      - name: Published-range identifier gate
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         env:
           AGENT_SUITE_FORBIDDEN_IDENTIFIERS: ${{ secrets.AGENT_SUITE_FORBIDDEN_IDENTIFIERS }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
         run: |
           if [[ -z "${AGENT_SUITE_FORBIDDEN_IDENTIFIERS//[[:space:]]/}" ]]; then
             echo "::error::AGENT_SUITE_FORBIDDEN_IDENTIFIERS must be configured"
             exit 1
           fi
-          # On a PR scan the branch's own commits; on a push scan what arrived.
-          if [[ -n "$BASE_SHA" ]]; then
-            range="$BASE_SHA..HEAD"
-          elif [[ -n "$BEFORE_SHA" ]] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
-            range="$BEFORE_SHA..HEAD"
-          else
-            range="HEAD~1..HEAD"
-          fi
-          echo "scanning commit messages in $range"
-          uv run python scripts/check_committed_identifiers.py --rev-range "$range"
+          uv run python scripts/check_committed_identifiers.py --ci-range
 
   interop:
     runs-on: ubuntu-latest

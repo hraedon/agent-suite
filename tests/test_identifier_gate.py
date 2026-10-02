@@ -239,7 +239,9 @@ def test_ci_scans_commit_messages() -> None:
         encoding="utf-8"
     )
     assert "message-gate:" in ci, "the commit-message gate job must exist"
-    assert "--rev-range" in ci, "CI must invoke the message-scanning mode"
+    # --ci-range scans the event's whole published range: messages, identities
+    # and introduced content (it superseded the message-only --rev-range step).
+    assert "--ci-range" in ci, "CI must invoke the published-range scanning mode"
     assert "fetch-depth: 0" in ci, "the message scan needs full history"
 
 
