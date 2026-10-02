@@ -1,0 +1,16 @@
+{
+  "canonical_gate_hash": "34c91c522e4a2419",
+  "files": {
+    "KNOWN_GATE_HASHES": "b9845e78bce0a75a126e80e4ff08cbf299d6f0b6a55ce5bc58286d034b88058c",
+    "MANIFEST": "55e880973dba3d01772f85a0c5301ab157a243b07695cdb07fae81eff60225a1",
+    "PROVENANCE": "09452724206bdf2588584734e1f441e37c68622a98a3601480643ec98bcf9655",
+    "VARIANTS": "b2e8dca7ec61ddab1d1c1a3313f51ae40ae52cd246dfd774d89e48afbff08dfb",
+    "check_committed_identifiers.py": "1181fa532f6d8213c0391212e55b75790a2ad717c42be1cfa77b943a502cea13",
+    "check_publication_plumbing.py": "bd333f8b575337e27528b96bf5b7fc51504c04cf441ade4b5affb0201387add3",
+    "pre-push": "726940a048f028fc283203264f5fce53f7eda83b2878b2fd78d5126181741c7f",
+    "sync-identifier-gate.sh": "6963a574b84b8f3d3ec02fc3d6fcc0f8a10bda1e27096932f36f2f0827ae824f",
+    "test_identifier_gate.py": "ae7a440c03a1f7226e2d734b42d6696856936e3bc93d82aca0ecaa8b92453a24",
+    "test_identifier_gate_visibility.py": "90259ed6c3896de79cd6e024dcbb093c79e2c2082071c9de08267783634bf8eb"
+  },
+  "revision": "5233019143546395b13ee2219045dace75587fb3"
+}

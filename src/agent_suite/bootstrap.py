@@ -89,6 +89,7 @@ class StepKind(Enum):
     CAPABILITIES = "capabilities"
     SIGNALING = "signaling"
     USER_ONBOARDING = "user_onboarding"
+    GITHUB_CREDENTIALS = "github_credentials"
 
 
 class StepStatus(Enum):
@@ -773,8 +774,25 @@ def _run_step(
     hindsight_url: str | None = None,
     load_key_file: secret_refs.KeyFileLoader | None = None,
     dossier_user: str | None = None,
+    force_identifier_gate: bool = False,
 ) -> StepResult:
     match step:
+        case StepKind.GITHUB_CREDENTIALS:
+            from agent_suite.config import GitHubCredentialConfig
+            from agent_suite.github_credentials import provision_github_credential
+            from agent_suite.identifier_gate import GateError
+
+            try:
+                outcome = provision_github_credential(
+                    GitHubCredentialConfig.from_env(env), dry_run=dry_run,
+                    force=force_identifier_gate,
+                )
+                return StepResult(step, StepStatus.PENDING if dry_run else StepStatus.DONE,
+                                  "denylist -> gate -> hook -> verify -> credential; "
+                                  + str(outcome.get("credential", "plan only")))
+            except (GateError, ValueError) as exc:
+                code = str(exc) if isinstance(exc, GateError) else "GITHUB_CONFIG_INVALID"
+                return StepResult(step, StepStatus.REFUSED, code)
         case StepKind.PROBE_SECRETS:
             return _step_probe_secrets(
                 runner=runner,
@@ -907,6 +925,8 @@ def run_bootstrap(
     env: Mapping[str, str] | None = None,
     load_key_file: secret_refs.KeyFileLoader | None = None,
     dossier_user: str | None = None,
+    github_credential: bool = False,
+    force_identifier_gate: bool = False,
 ) -> BootstrapResult:
     """Run the documented install order idempotently.
 
@@ -925,10 +945,18 @@ def run_bootstrap(
     """
     import os
 
+    if github_credential and user:
+        return BootstrapResult(False, dry_run, [StepResult(
+            StepKind.GITHUB_CREDENTIALS, StepStatus.REFUSED, "GITHUB_PROVISIONING_FLAG_CONFLICT",
+        )])
     harness = normalize_harness_target(harness)
     tier_enum = BootstrapTier(tier)
     steps_to_run = _steps_for_tier(tier_enum)
     resolved_env: Mapping[str, str] = os.environ if env is None else env
+    if github_credential:
+        steps_to_run = [StepKind.GITHUB_CREDENTIALS]
+    elif resolved_env.get("AGENT_SUITE_GITHUB_TOKEN_REF"):
+        steps_to_run.append(StepKind.GITHUB_CREDENTIALS)
     all_projects = _merge_projects(project, projects)
 
     if user and StepKind.USER_ONBOARDING not in steps_to_run:
@@ -952,6 +980,7 @@ def run_bootstrap(
             hindsight_url=hindsight_url,
             load_key_file=load_key_file,
             dossier_user=dossier_user,
+            force_identifier_gate=force_identifier_gate,
         )
         results.append(result)
         if _is_terminal(result.status):

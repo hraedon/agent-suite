@@ -37,6 +37,8 @@ path = "src/agent_suite/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_suite"]
+artifacts = ["src/agent_suite/data/gate-template.lock.json",
+             "src/agent_suite/data/gate-template/5233019/*"]
 
 [tool.mypy]
 strict = true

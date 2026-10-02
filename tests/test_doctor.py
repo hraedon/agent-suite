@@ -19,6 +19,7 @@ from agent_suite.doctor import (
     aggregate,
     format_text,
 )
+from agent_suite.github_credentials import GitHubHealth
 from agent_suite.profiles import Profile
 
 
@@ -46,6 +47,7 @@ def _aggregate_safe(
         remote_checker=remote_checker,
         memory_provider_checks=False,
         codex_health_checks=False,
+        github_health=GitHubHealth(),
         invoking_context=invoking_context,  # type: ignore[arg-type]
     )
 
@@ -125,6 +127,7 @@ def test_umbrella_shape_matches_contract() -> None:
     d = report.to_dict()
     assert set(d) == {
         "suite_ok", "components", "lock", "invoking_context", "duration_ms",
+        "github_credentials",
     }
     comp = d["components"][0]
     assert {
@@ -1396,3 +1399,21 @@ def test_provenance_probe_failure_fails_closed(tmp_path: Path) -> None:
         report.artifact_attestation.note
     )
     assert report.suite_ok is False
+
+
+def test_github_misprovisioning_reds_umbrella_even_without_profile() -> None:
+    from agent_suite.github_credentials import GitHubHealth
+
+    health = GitHubHealth(status="MISPROVISIONED", credential="authenticated",
+                          issues=["no gate repository inventory"])
+    report = aggregate(
+        installed=lambda _: True, components=(COMPONENTS[0],),
+        runner=StubRunner({COMPONENTS[0].doctor_cmd[0]: _completed(_ok_json(COMPONENTS[0].ident))}),
+        key_watch_checks=False,
+        memory_provider_checks=False, codex_health_checks=False, lock_checks=False,
+        github_health=health,
+    )
+    assert not report.suite_ok
+    assert report.to_dict()["github_credentials"] == health.to_dict()
+    assert "MISPROVISIONED" in format_text(report)
+    assert "no gate repository inventory" in format_text(report)

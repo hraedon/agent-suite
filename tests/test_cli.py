@@ -1159,3 +1159,30 @@ def test_the_shipped_windows_installer_calls_the_canonical_verb() -> None:
     ).read_text(encoding="utf-8")
     assert f"agent-suite {Command.PREFLIGHT_WINDOWS.value}" in script
     assert "agent-suite preflight --" not in script
+
+
+@pytest.mark.parametrize("flags", [[], ["--json"]])
+def test_github_misprovisioned_doctor_always_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], flags: list[str],
+) -> None:
+    from agent_suite.github_credentials import GitHubHealth
+    health = GitHubHealth(status="MISPROVISIONED", credential="authenticated",
+                          issues=["denylist absent"])
+    monkeypatch.setattr(doctor_mod, "aggregate", lambda **_: doctor_mod.SuiteReport(
+        False, [], github_health=health,
+    ))
+    assert main(["doctor", *flags]) == 1
+    output = capsys.readouterr().out
+    assert "MISPROVISIONED" in output
+    if flags:
+        assert json.loads(output)["github_credentials"]["ok"] is False
+
+
+def test_github_unsupported_adapter_uses_error_envelope(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("AGENT_SUITE_GITHUB_ADAPTER", "deploy-key")
+    assert main(["bootstrap", "--github-credential", "--json"]) == 1
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == (
+        "GITHUB_CREDENTIAL_ADAPTER_UNSUPPORTED"
+    )

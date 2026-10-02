@@ -1,0 +1,53 @@
+Provenance of ~/.config/agent-suite/gate-template
+==================================================
+
+This directory is the canonical source the identifier gate is rendered from
+(sync-identifier-gate.sh). It lives on mvmcc03 only; it is kept under a LOCAL
+git repository (no remote) from 2026-10-01 so every change to it is recorded.
+
+2026-09-15  Rebuilt on mvmcc03 (the path hraedon/cert-watch#46 cited did not
+            exist here). Gate = common ancestor + B1 visibility fix (closed set
+            owned by Visibility in check_publication_plumbing.py). Rolled to 7
+            hraedon user repos (agent-notes#35, agent-capability-broker#28,
+            agent-provenance#22, regista#80, usage-dashboard#39, vitrine#10,
+            touchstone#3).
+
+2026-10-01  Hardened to hash 93dec6f49825a3c2. check_committed_identifiers.py is
+            byte-for-byte hraedon/dossier's gate as merged in dossier#26
+            (head 3038f6ff, merge 11dac09f), with DOSSIER_FORBIDDEN_IDENTIFIERS
+            re-templated to @@DENYLIST_VAR@@. That gate (identical in
+            agent-suite#39, sysadmin_competence_evaluation#1, ad-steward#6) passed
+            six rounds of two-lineage executing review (codex gpt-5.6-sol +
+            opencode ollama-cloud/deepseek-v4.1-flash); reports preserved in
+            ~/gate-review-reports-20261001/. Adds test_identifier_gate_visibility.py
+            (fleet-shared stdlib contract test) to MANIFEST. Requires git >= 2.45.
+            check_publication_plumbing.py, test_identifier_gate.py and pre-push
+            are unchanged from 2026-09-15 (the hardened repos carry them
+            identically, modulo names).
+            Ported the same day to the 7 repos above (PRs chore/gate-harden-20261001);
+            see identifier-gate-fleet memory note for review rounds.
+            sync-identifier-gate.sh: resolves the bare org var FORBIDDEN_IDENTIFIERS
+            (read from environ.get(...) in code; org secrets via the repo's
+            actions/organization-secrets API), and reads visibility case-insensitively.
+            Port review (2 rounds, codex gpt-5.6-sol + ollama-cloud/deepseek-v4.1-flash,
+            both executing): r1 found the agent-provenance legacy ACM argv test (fixed);
+            r1/r2 hook fail-open-without-denylist and fork-PR-red-without-secret were
+            adjudicated PRE-EXISTING (open owner decision, see fleet note). Reports in
+            ~/gate-review-reports-20261001/port-r{1,2}-{sol,ds}.md.
+
+2026-10-01  Follow-up, hash 34c91c522e4a2419 (bare 827fd9bc). The absence verdict
+            (publication.toml absent -> walk history) now refuses a history it
+            cannot see whole or trust: shallow, partial/--filter (missing
+            objects), grafts file; reads with --no-replace-objects and
+            core.commitGraph=false; git fsck --full must pass (also before the
+            "unborn" verdict); GIT_OBJECT_DIRECTORY/ALTERNATES refused; unborn
+            only with no commit objects; HEAD and every ref tip (not refs/stash)
+            must be safe. Documented limit: a lineage whose refs were all deleted
+            locally is not judged. _git_or_none's dead UnicodeDecodeError arm
+            removed. fetch-depth: 0 on the gate CI job in 16 repos. Shared test
+            extended (see MANIFEST). Rolled to all 29 by per-repo patch (identical
+            functions in all 9 families), merged as chore/gate-followup-20261001.
+            Review: 4 rounds, codex gpt-5.6-sol + ollama-cloud/deepseek-v4.1-flash,
+            both executing; r4 both PASS. Reports ~/gate-review-reports-20261001/
+            followup-r{1..4}-{sol,ds}.md. sync-identifier-gate.sh refuses a dirty
+            or unpinned template (AOS BR-50).

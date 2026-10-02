@@ -33,6 +33,7 @@ from typing import Protocol, assert_never
 
 from agent_suite import (
     artifact_attestation,
+    github_credentials,
     key_watch,
     lock,
     runtime_provenance,
@@ -296,6 +297,7 @@ class SuiteReport:
     artifact_attestation: artifact_attestation.ArtifactAttestation | None = None
     invoking_context: InvokingContext | None = None
     duration_ms: float | None = None
+    github_health: github_credentials.GitHubHealth | None = None
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -307,6 +309,8 @@ class SuiteReport:
             ),
             "duration_ms": self.duration_ms,
         }
+        if self.github_health is not None:
+            d["github_credentials"] = self.github_health.to_dict()
         if self.post_restore is not None:
             d["post_restore"] = self.post_restore.to_dict()
         if self.key_rotation is not None:
@@ -791,6 +795,9 @@ def aggregate(
     require_artifact_binding: bool = False,
     provenance_probe: ProvenanceProbe | None = None,
     invoking_context: InvokingContext | None = None,
+    github_health: github_credentials.GitHubHealth | None = None,
+    github_runner: github_credentials.SecretRunner = github_credentials.run,
+    github_installed: bool | None = None,
 ) -> SuiteReport:
     """Run each component's doctor and fold into one umbrella report.
 
@@ -1066,7 +1073,15 @@ def aggregate(
             required_plugin_ids=frozenset({CodexPluginId.AGENT_NOTES, CodexPluginId.CAIRN}),
         )
 
+    if github_health is None:
+        github_health = github_credentials.check_github_health(
+            runner=github_runner, gh_installed=github_installed,
+        )
+    if not github_health.ok:
+        suite_ok = False
+
     return SuiteReport(
+        github_health=github_health,
         suite_ok=suite_ok,
         components=reports,
         lock=lock_result,
@@ -1090,6 +1105,12 @@ def aggregate(
 def format_text(report: SuiteReport) -> str:
     """Human-readable summary for `doctor` without --json."""
     lines: list[str] = []
+    if report.github_health is not None:
+        health = report.github_health
+        lines.append(f"GitHub credentials: {health.status} ({health.credential})")
+        lines.extend(f"  {issue}" for issue in health.issues)
+        for repo in health.repositories:
+            lines.append(f"  {repo['repository']}: {repo['gate']}; hook_ok={repo['hook_ok']}")
     for c in report.components:
         tag = f"[{c.tier.value.upper()}]"
         ver = f" v{c.version}" if c.version else ""

@@ -386,3 +386,89 @@ This posture means the component repos must be natively Windows-correct
 (DPAPI or ACL, not `chmod 0o600`), and idiomatic config/state directories.
 A `windows-latest` CI job per repo (Plan 003 WI-5.1) catches import-time and
 attribute crashes cheaply and permanently.
+
+## BR-50 / AC-58: GitHub credentials and pinned identifier gate
+
+`bootstrap --github-credential [--dry-run] [--force-identifier-gate] [--json]`
+selects the entire GitHub transaction. Regular bootstrap also appends it when
+`AGENT_SUITE_GITHUB_TOKEN_REF` is configured, after the existing suite steps
+succeed. There is no credential-only installation path. The only adapter is
+`token`; App tokens, deploy keys and SSH keys return
+`GITHUB_CREDENTIAL_ADAPTER_UNSUPPORTED`.
+
+Configure `AGENT_SUITE_GITHUB_TOKEN_REF` and
+`AGENT_SUITE_GITHUB_DENYLIST_REF` with regista backend references, plus
+`AGENT_SUITE_GITHUB_REPOSITORIES` (a JSON array of explicit worktree paths).
+`AGENT_SUITE_GITHUB_REPOSITORY_ROOTS` optionally lists roots to walk for every
+Git repository with any github.com remote, including its registered worktrees.
+Empty inventory refuses installation. Missing or unreadable inventory paths
+refuse verification. The inventory is an operator assertion of coverage;
+repositories outside configured paths and roots are not discovered.
+
+Under a host lock the order is denylist, gate, hook, verification, credential.
+The denylist is resolved through regista, validated with the pinned parser, and
+written atomically to `$HOME/.config/agent-suite/forbidden-identifiers` (0600,
+parent 0700). An existing group/world-readable denylist refuses provisioning.
+Native Windows token installation returns `GITHUB_CREDENTIAL_PLATFORM_UNSUPPORTED`
+until ACL-backed denylist delivery is available; dry run remains supported. The package ships all ten template files and a content lock from
+commit `5233019143546395b13ee2219045dace75587fb3`. The lock itself is pinned by
+SHA-256 in the installer. Lock or snapshot drift refuses provisioning.
+`scripts/vendor-gate-template.py SOURCE FULL_COMMIT_SHA` regenerates the snapshot
+and lock using Git commit objects; a dirty source, short SHA or an unrecognized
+canonical digest is refused. Re-pinning also requires updating the installer's
+pin and lock hash after gate review. The package snapshot is the backed-up suite
+release artifact; the local source checkout is not needed on deployed hosts.
+
+Provisioning renders the five MANIFEST payloads, preserves a detectable existing
+denylist variable, installs the pinned executable pre-push hook, sets the local
+`core.hooksPath` (worktree config when enabled), then verifies all payloads and
+the host denylist. It installs only canonical-at-pin. Stale known canonicals
+are upgraded; accepted variants and unknown copies require explicit
+`--force-identifier-gate`. No unknown bytes are merged into the canonical.
+
+Only after verification does `gh auth login --hostname github.com --with-token`
+receive the resolved token on stdin. Captured child output is never forwarded.
+A 0600 state file records digests and transaction metadata. Failed or interrupted
+logins are removed with `gh auth logout --hostname github.com` only when token
+readback matches the transaction's recorded digest; rollback failure is reported
+as an error and its recovery marker is retained. A pre-existing ambient login is
+reported and is never adopted or revoked. Reruns repair partial guard installs
+and converge. Dry run emits only the ordered plan, resolves no secrets, probes
+no credentials, and writes nothing.
+
+Doctor performs only read-only probes: `gh auth status --hostname github.com`
+plus available classic-token scopes. Unknown fine-grained push capability is
+named as unverified; mere helper/token-file presence with failed auth is
+`unverified`, never `absent`. Working authentication with empty inventory,
+missing/invalid/readable/stale denylist, invalid template lock, a stale/unknown/
+missing gate, or an absent/mismatched/non-executable/misdirected hook is
+`MISPROVISIONED`. Installed denylist bytes must match the recorded digest and,
+when resolvable, the current backend secret digest. An accepted variant is a
+named healthy gate state when its hook matches the pinned render; it is not
+silently replaced. `MISPROVISIONED` always reds `suite_ok` and exits 1 in both
+text and JSON, even without `--exit-code`.
+
+### AC-58 remains partially unsatisfied at pin 5233019
+
+This release implements host provisioning and drift health. It does **not**
+claim AC-58 fully satisfied. Executing observations and the open-item registry
+in `tests/test_ac58_pinned_gate.py` pin these defects without skips or xfails:
+
+- Item 4: the pre-push hook and range scanner check messages, but miss outgoing
+  diffs, author names and committer identity. The artifact includes no CI
+  full-range installation or scheduled full-history job. A removed historical
+  diff is invisible to its tracked-tree scan and message-only range scan.
+- Item 5: the hook logs INACTIVE and passes when the denylist is missing. The
+  scanner itself fails closed on public repositories, but the hook does not
+  invoke it in that case. `GATE_ALLOW_NO_DENYLIST` has no implemented effect or
+  explicit opt-out log at this pin.
+- Item 6: tracked `.venv` content is skipped by the pinned tree scanner.
+- Item 8 (template diagnostics): pinned violation reports print denylisted values
+  and matching content. Suite provisioning and doctor suppress child output;
+  directly executing the copied scanner/hook still exposes those diagnostics.
+
+The empty-HOME visibility probe returns `1 1 1 0` for public, Public, typo and
+private-until-review. Closing an open item requires a reviewed template re-pin;
+its current-behavior test must then fail and the registry must be updated.
+AOS repository-operation admission and approved ruleset rollout remain outside
+this repository's implementation scope.

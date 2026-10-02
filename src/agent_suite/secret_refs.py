@@ -343,3 +343,27 @@ def discover_refs(
         seen.add(candidate.ref)
         unique.append(candidate)
     return tuple(unique)
+
+
+def resolve_secret_value(ref: str) -> str:
+    """Resolve at the regista edge; discard child diagnostics containing values.
+
+    Unlike the discovery probe this edge returns secret material only to its
+    immediate installer. Errors name the operation, never a value or reference.
+    """
+    import subprocess
+
+    if scheme_of(ref) not in {"vault", "azure", "windows", "file", "env"}:
+        raise ValueError("SECRET_REF_INVALID")
+    if ref_static_problem(ref) is not None:
+        raise ValueError("SECRET_REF_INVALID")
+    try:
+        result = subprocess.run(
+            probe_ref_argv(ref), capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise ValueError("SECRET_RESOLUTION_FAILED") from None
+    if result.returncode != 0 or not result.stdout.strip():
+        raise ValueError("SECRET_RESOLUTION_FAILED")
+    # regista secrets prints the value with one framing newline.
+    return result.stdout.removesuffix("\n")
