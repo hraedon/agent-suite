@@ -1,23 +1,26 @@
 """Install and inspect the immutable suite gate release artifact."""
+
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import re
-import runpy
+import stat
 import subprocess
+import sys
 import tempfile
+import types
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
-from urllib.parse import urlsplit
 
 from agent_suite.config import GitHubCredentialConfig
 
 PIN = "5233019143546395b13ee2219045dace75587fb3"
-LOCK_SHA256 = "38e68959fcb7cc1354fe31fc8d27b0c6dec71b919373cf1f78fddbb499e261d4"
+LOCK_SHA256 = "1198f6d76bf04840c06201c7f4ebe0923d820459afb5639d671d48fb70068cd8"
 DATA = Path(__file__).parent / "data"
 DENYLIST_VAR = "AGENT_SUITE_FORBIDDEN_IDENTIFIERS"
 
@@ -33,8 +36,11 @@ def digest(data: bytes) -> str:
 def git(repo: Path, *args: str, optional: bool = False) -> str:
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo), *args], capture_output=True, text=True,
-            timeout=30, check=False,
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         raise GateError("GATE_REPOSITORY_UNREACHABLE") from None
@@ -69,7 +75,7 @@ class GateTemplate:
     variants: frozenset[str]
 
     def render(self, repo: Path) -> dict[str, tuple[bytes, int]]:
-        # Stable generic display name; existing denylist variable is preserved.
+        # Match the pinned sync script: actual repo name and existing variable.
         variable = DENYLIST_VAR
         gate = repo / "scripts/check_committed_identifiers.py"
         if gate.is_file():
@@ -81,9 +87,13 @@ class GateTemplate:
                 variable = found[0].decode("ascii")
         return {
             destination: (
-                self.payload[source].replace(b"@@DENYLIST_VAR@@", variable.encode()).replace(
-                    b"@@REPO_NAME@@", b"suite-repository",
-                ), mode,
+                self.payload[source]
+                .replace(b"@@DENYLIST_VAR@@", variable.encode())
+                .replace(
+                    b"@@REPO_NAME@@",
+                    repo.name.encode(),
+                ),
+                mode,
             )
             for source, destination, mode in self.manifest
         }
@@ -115,8 +125,11 @@ def load_template(data: Path = DATA) -> GateTemplate:
             )
 
         return GateTemplate(
-            payload, manifest, lock["canonical_gate_hash"],
-            hashes("KNOWN_GATE_HASHES"), hashes("VARIANTS"),
+            payload,
+            manifest,
+            lock["canonical_gate_hash"],
+            hashes("KNOWN_GATE_HASHES"),
+            hashes("VARIANTS"),
         )
     except GateError:
         raise
@@ -125,16 +138,39 @@ def load_template(data: Path = DATA) -> GateTemplate:
 
 
 def validate_denylist(template: GateTemplate, value: str) -> None:
-    # Execute the pinned parser, rather than approximating its quoting/filtering.
-    del template  # load_template verified the executable bytes before this edge.
+    # Execute only verified in-memory bytes. dataclasses requires a module.
+    name = "_suite_gate_parser_" + uuid.uuid4().hex
+    module = types.ModuleType(name)
+    sys.modules[name] = module
     try:
-        namespace = runpy.run_path(str(DATA / "gate-template" / PIN[:7]
-                                       / "check_committed_identifiers.py"))
-        parser = cast(Callable[[str], frozenset[str]], namespace["parse_identifier_set"])
+        exec(
+            compile(
+                template.payload["check_committed_identifiers.py"],
+                "<verified-pinned-identifier-parser>",
+                "exec",
+            ),
+            module.__dict__,
+        )
+        parser = cast(Callable[[str], frozenset[str]], module.__dict__["parse_identifier_set"])
         if not parser(value):
             raise GateError("GITHUB_DENYLIST_INVALID")
     except (ValueError, OSError):
         raise GateError("GITHUB_DENYLIST_INVALID") from None
+    finally:
+        del sys.modules[name]
+
+
+def read_regular(path: Path, *, private: bool = False) -> bytes:
+    """Check and read the same descriptor, refusing nonregular files/symlink swaps."""
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+        raise GateError("GATE_SYMLINK_REFUSED")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as stream:
+        mode = os.fstat(stream.fileno()).st_mode
+        if not stat.S_ISREG(mode) or (private and stat.S_IMODE(mode) & 0o077):
+            raise GateError("GATE_FILE_PERMISSIONS_INVALID")
+        return stream.read()
 
 
 def normalized_gate_hash(value: bytes) -> str:
@@ -153,25 +189,22 @@ def repository_inventory(config: GitHubCredentialConfig) -> tuple[Path, ...]:
         for directory, directories, files in os.walk(root, onerror=unreadable):
             if ".git" in directories or ".git" in files:
                 repo = Path(directory)
-                remotes = git(repo, "remote", "-v")
-                if any(_github_remote(line.split()[1]) for line in remotes.splitlines()):
+                # SSH aliases/URL rewrites cannot be resolved safely. Include
+                # every remote-bearing repository under a configured root.
+                if git(repo, "remote"):
                     candidates.append(repo)
-                    for line in git(repo, "worktree", "list", "--porcelain").splitlines():
-                        if line.startswith("worktree "):
-                            candidates.append(Path(line[9:]))
             directories[:] = [name for name in directories if name != ".git"]
     repositories: list[Path] = []
     for candidate in candidates:
         repo = Path(git(candidate, "rev-parse", "--show-toplevel")).resolve()
         if repo not in repositories:
             repositories.append(repo)
+            candidates.extend(
+                Path(line[9:])
+                for line in git(repo, "worktree", "list", "--porcelain").splitlines()
+                if line.startswith("worktree ")
+            )
     return tuple(repositories)
-
-
-def _github_remote(value: str) -> bool:
-    if re.match(r"^(?:[^/@:]+@)?github\.com:", value, re.IGNORECASE):
-        return True
-    return urlsplit(value).hostname == "github.com"
 
 
 def gate_state(repo: Path, template: GateTemplate) -> str:
@@ -179,17 +212,28 @@ def gate_state(repo: Path, template: GateTemplate) -> str:
     if not gate.is_file() or gate.is_symlink():
         return "missing"
     value = normalized_gate_hash(gate.read_bytes())
-    if value == template.canonical_hash or value == "827fd9bcf64237dd":
+    if value == template.canonical_hash:
         expected = template.render(repo)
         if all(
-            (repo / path).is_file() and not (repo / path).is_symlink()
+            (repo / path).is_file()
+            and not (repo / path).is_symlink()
             and (repo / path).read_bytes() == content
-            for path, (content, _) in expected.items() if path != "githooks/pre-push"
+            for path, (content, _) in expected.items()
+            if path != "githooks/pre-push"
         ):
             return "canonical-at-pin"
         return "unknown"
     if value in template.variants:
-        return "accepted variant"
+        expected = template.render(repo)
+        if all(
+            (repo / path).is_file()
+            and not (repo / path).is_symlink()
+            and (repo / path).read_bytes() == content
+            for path, (content, _) in expected.items()
+            if path not in {"githooks/pre-push", "scripts/check_committed_identifiers.py"}
+        ):
+            return "accepted variant (not the pinned canonical)"
+        return "unknown"
     if value in template.known:
         return "stale"
     return "unknown"
@@ -204,14 +248,44 @@ def hook_ok(repo: Path, template: GateTemplate) -> bool:
     if not target.is_absolute():
         target = repo / target
     return (
-        path.is_file() and not path.is_symlink() and path.read_bytes() == expected
-        and os.access(path, os.X_OK) and target.resolve() == path.parent.resolve()
+        path.is_file()
+        and not path.is_symlink()
+        and path.read_bytes() == expected
+        and os.access(path, os.X_OK)
+        and target.resolve() == path.parent.resolve()
+        and hook_interpreter_ok(repo)
     )
+
+
+def hook_inputs_ok(repo: Path, denylist: bytes) -> bool:
+    """Local denylist overrides must equal the secret delivered to this host."""
+    local = repo / ".identifiers-denylist.local"
+    try:
+        return (not local.exists() and not local.is_symlink()) or read_regular(local) == denylist
+    except (OSError, ValueError):
+        return False
+
+
+def hook_interpreter_ok(repo: Path) -> bool:
+    """Reject stubs without executing repository code.
+
+    Accept a venv symlink or copy of the suite Python. Unknown executable
+    interpreters require recreating the venv using the suite's Python.
+    """
+    interpreter = repo / ".venv/bin/python"
+    if not os.access(interpreter, os.X_OK):
+        return True
+    try:
+        return interpreter.resolve() == Path(sys.executable).resolve() or (
+            digest(interpreter.read_bytes()) == digest(Path(sys.executable).read_bytes())
+        )
+    except OSError:
+        return False
 
 
 def install_gate(repo: Path, template: GateTemplate, *, force: bool = False) -> None:
     state = gate_state(repo, template)
-    if state in {"unknown", "accepted variant"} and not force:
+    if state in {"unknown", "accepted variant (not the pinned canonical)"} and not force:
         raise GateError("GATE_OVERWRITE_REFUSED")
     for destination, (content, mode) in template.render(repo).items():
         if destination == "githooks/pre-push":
@@ -225,8 +299,17 @@ def install_hook(repo: Path, template: GateTemplate) -> None:
     content, mode = template.render(repo)["githooks/pre-push"]
     atomic_write(repo / "githooks/pre-push", content, mode)
     # Worktree-local configuration when enabled, otherwise Git's local config.
-    scope = "--worktree" if git(
-        repo, "config", "--get", "extensions.worktreeConfig", optional=True,
-    ) == "true" else "--local"
+    scope = (
+        "--worktree"
+        if git(
+            repo,
+            "config",
+            "--get",
+            "extensions.worktreeConfig",
+            optional=True,
+        )
+        == "true"
+        else "--local"
+    )
     # A relative path also works across worktrees sharing the common config.
     git(repo, "config", scope, "core.hooksPath", "githooks")

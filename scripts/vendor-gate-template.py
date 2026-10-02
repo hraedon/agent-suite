@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Vendor a clean, committed gate template; never read payloads from its worktree."""
+
 from __future__ import annotations
 
 import argparse
@@ -10,9 +11,16 @@ import subprocess
 from pathlib import Path
 
 FILES = (
-    "MANIFEST", "KNOWN_GATE_HASHES", "VARIANTS", "PROVENANCE",
-    "check_committed_identifiers.py", "check_publication_plumbing.py", "pre-push",
-    "sync-identifier-gate.sh", "test_identifier_gate.py", "test_identifier_gate_visibility.py",
+    "MANIFEST",
+    "KNOWN_GATE_HASHES",
+    "VARIANTS",
+    "PROVENANCE",
+    "check_committed_identifiers.py",
+    "check_publication_plumbing.py",
+    "pre-push",
+    "sync-identifier-gate.sh",
+    "test_identifier_gate.py",
+    "test_identifier_gate_visibility.py",
 )
 
 
@@ -22,16 +30,32 @@ def vendor(source: Path, commit: str, destination: Path) -> None:
 
     def git(*args: str) -> bytes:
         return subprocess.run(
-            ["git", "-C", str(source), *args], capture_output=True, check=True,
+            ["git", "-C", str(source), *args],
+            capture_output=True,
+            check=True,
         ).stdout
 
     if git("status", "--porcelain", "--untracked-files=all").strip():
         raise ValueError("dirty template source refused")
     if git("rev-parse", f"{commit}^{{commit}}").decode().strip() != commit:
         raise ValueError("source must be a commit")
+    if git("symbolic-ref", "--short", "HEAD").decode().strip() != "main":
+        raise ValueError("template source must be on main")
+    ancestry = subprocess.run(
+        ["git", "-C", str(source), "merge-base", "--is-ancestor", commit, "refs/heads/main"],
+        capture_output=True,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise ValueError("template commit must be an ancestor of main HEAD")
+    for name in FILES:
+        entry = git("ls-tree", commit, "--", name).decode().split()
+        if len(entry) < 3 or entry[0] not in {"100644", "100755"} or entry[1] != "blob":
+            raise ValueError("template payload must be a regular blob")
     payload = {name: git("show", f"{commit}:{name}") for name in FILES}
     rendered = payload["check_committed_identifiers.py"].replace(
-        b"@@DENYLIST_VAR@@", b"PIN_FORBIDDEN_IDENTIFIERS",
+        b"@@DENYLIST_VAR@@",
+        b"PIN_FORBIDDEN_IDENTIFIERS",
     )
     normalized = re.sub(rb"[A-Z][A-Z0-9_]*_FORBIDDEN_IDENTIFIERS", b"XX", rendered)
     gate_hash = hashlib.sha256(normalized).hexdigest()[:16]
@@ -41,13 +65,19 @@ def vendor(source: Path, commit: str, destination: Path) -> None:
     ):
         raise ValueError("unrecognized template digest refused")
     hashes = {name: hashlib.sha256(data).hexdigest() for name, data in payload.items()}
-    lock = {"revision": commit, "files": hashes, "canonical_gate_hash": gate_hash}
+    lock = {
+        "revision": commit,
+        "files": hashes,
+        "canonical_gate_hash": gate_hash,
+        "review_provenance": "PR review of the lock change",
+    }
     snapshot = destination / "gate-template" / commit[:7]
     snapshot.mkdir(parents=True, exist_ok=True)
     for name, data in payload.items():
         (snapshot / name).write_bytes(data)
     (destination / "gate-template.lock.json").write_text(
-        json.dumps(lock, sort_keys=True, indent=2) + "\n", encoding="utf-8",
+        json.dumps(lock, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
     )
 
 
@@ -56,7 +86,8 @@ def main() -> None:
     parser.add_argument("source", type=Path)
     parser.add_argument("commit")
     parser.add_argument(
-        "--destination", type=Path,
+        "--destination",
+        type=Path,
         default=Path(__file__).resolve().parents[1] / "src/agent_suite/data",
     )
     args = parser.parse_args()

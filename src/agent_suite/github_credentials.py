@@ -1,9 +1,13 @@
 """BR-50: reference-only GitHub token installation after gate verification."""
+
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -25,7 +29,9 @@ FailureInjector = Callable[[str], None]
 
 class SecretRunner(Protocol):
     def __call__(
-        self, argv: tuple[str, ...], stdin: str | None = None,
+        self,
+        argv: tuple[str, ...],
+        stdin: str | None = None,
     ) -> subprocess.CompletedProcess[str]: ...
 
 
@@ -37,12 +43,19 @@ def run(argv: tuple[str, ...], stdin: str | None = None) -> subprocess.Completed
             raise gate.GateError("GITHUB_CLI_UNREACHABLE")
         argv = (executable, *argv[1:])
     return subprocess.run(
-        argv, input=stdin, capture_output=True, text=True, timeout=30, check=False,
+        argv,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
     )
 
 
 def _gh(
-    runner: SecretRunner, *args: str, stdin: str | None = None,
+    runner: SecretRunner,
+    *args: str,
+    stdin: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         return runner(("gh", *args), stdin)
@@ -56,7 +69,8 @@ class GitHubHealth:
     credential: str = "absent"
     issues: list[str] = field(default_factory=list)
     repositories: list[dict[str, object]] = field(default_factory=list)
-    denylist_sha256: str | None = None
+    denylist_fingerprint: str | None = None
+    notes: list[str] = field(default_factory=lambda: ["ssh credential not inspected"])
 
     @property
     def ok(self) -> bool:
@@ -64,9 +78,13 @@ class GitHubHealth:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "status": self.status, "credential": self.credential, "ok": self.ok,
-            "issues": self.issues, "repositories": self.repositories,
-            "denylist_sha256": self.denylist_sha256,
+            "status": self.status,
+            "credential": self.credential,
+            "ok": self.ok,
+            "issues": self.issues,
+            "repositories": self.repositories,
+            "denylist_fingerprint": self.denylist_fingerprint,
+            "notes": self.notes,
         }
 
 
@@ -76,11 +94,11 @@ def _directory(home: Path) -> Path:
 
 def _read_state(directory: Path) -> dict[str, object]:
     path = directory / "github-credential-state.json"
-    if not path.exists():
+    try:
+        raw = gate.read_regular(path, private=True)
+    except FileNotFoundError:
         return {}
-    if path.is_symlink() or stat.S_IMODE(path.stat().st_mode) & 0o077:
-        raise gate.GateError("GITHUB_STATE_PERMISSIONS_INVALID")
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(raw)
     if not isinstance(value, dict):
         raise gate.GateError("GITHUB_STATE_INVALID")
     return value
@@ -89,8 +107,16 @@ def _read_state(directory: Path) -> dict[str, object]:
 def _write_state(directory: Path, state: dict[str, object]) -> None:
     gate.atomic_write(
         directory / "github-credential-state.json",
-        (json.dumps(state, sort_keys=True) + "\n").encode(), 0o600,
+        (json.dumps(state, sort_keys=True) + "\n").encode(),
+        0o600,
     )
+
+
+def _fingerprint(state: dict[str, object], value: bytes) -> str:
+    key = state.get("fingerprint_key")
+    if not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None:
+        raise gate.GateError("GITHUB_FINGERPRINT_KEY_INVALID")
+    return hmac.new(bytes.fromhex(key), value, hashlib.sha256).hexdigest()
 
 
 def _credential_present(home: Path, repositories: tuple[Path, ...]) -> bool:
@@ -102,8 +128,13 @@ def _credential_present(home: Path, repositories: tuple[Path, ...]) -> bool:
     # Read effective Git config; no writes and no helper execution.
     targets = repositories or (home,)
     return any(
-        gate.git(repo, "config", "--get-regexp", r"credential\..*helper|credential\.helper",
-                 optional=True)
+        gate.git(
+            repo,
+            "config",
+            "--get-regexp",
+            r"credential\..*helper|credential\.helper",
+            optional=True,
+        )
         for repo in targets
     )
 
@@ -124,64 +155,96 @@ def _probe(runner: SecretRunner) -> tuple[bool, str]:
 
 
 def check_github_health(
-    config: GitHubCredentialConfig | None = None, *, home: Path | None = None,
-    runner: SecretRunner = run, resolver: Resolver = resolve_secret_value,
+    config: GitHubCredentialConfig | None = None,
+    *,
+    home: Path | None = None,
+    runner: SecretRunner = run,
+    resolver: Resolver = resolve_secret_value,
     gh_installed: bool | None = None,
 ) -> GitHubHealth:
     """Read-only host and per-repository health. Never emit child output."""
     home = Path.home() if home is None else home
     report = GitHubHealth()
     authenticated = False
+    credential_present = False
     try:
         present = (
             shutil.which("gh", path=os.environ.get("PATH", "")) is not None
-            if gh_installed is None else gh_installed
+            if gh_installed is None
+            else gh_installed
         )
         if present:
-            authenticated, report.credential = _probe(runner)
+            try:
+                authenticated, report.credential = _probe(runner)
+            except (ValueError, OSError, subprocess.SubprocessError):
+                report.notes.append("GitHub authentication probe unverified")
         config = GitHubCredentialConfig.from_env() if config is None else config
-        if not authenticated:
-            if _credential_present(home, config.repositories):
-                report.status = report.credential = "unverified"
-            elif present:
-                report.credential = "absent"
-            return report
-        report.status = "ok"
-        template = gate.load_template()
         repositories = gate.repository_inventory(config)
+        credential_present = _credential_present(home, repositories)
+        if not authenticated and not credential_present:
+            report.credential = "absent"
+            return report
+        report.status = "ok" if authenticated else "unverified"
+        if not authenticated:
+            report.credential = "unverified"
+        template = gate.load_template()
         if not repositories:
             report.issues.append("no gate repository inventory")
         directory = _directory(home)
         state = _read_state(directory)
+        if state.get("credential_phase") == "installing":
+            report.issues.append("credential transaction interrupted; recovery required")
         path = directory / "forbidden-identifiers"
-        if (path.is_symlink() or not path.is_file()
-                or any(parent.is_symlink() for parent in path.parents)):
+        denylist: bytes | None = None
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or any(parent.is_symlink() for parent in path.parents)
+        ):
             report.issues.append("denylist absent or unsafe")
-        elif stat.S_IMODE(path.stat().st_mode) & 0o077:
-            report.issues.append("denylist group/world readable")
         elif stat.S_IMODE(directory.stat().st_mode) & 0o077:
             report.issues.append("denylist parent permissions invalid")
         else:
-            value = path.read_text(encoding="utf-8")
-            gate.validate_denylist(template, value)
-            report.denylist_sha256 = gate.digest(value.encode())
-            if report.denylist_sha256 != state.get("denylist_sha256"):
-                report.issues.append("denylist recorded digest mismatch")
-            if config.denylist_ref:
-                try:
-                    current = resolver(config.denylist_ref)
-                except (ValueError, OSError, subprocess.SubprocessError):
-                    report.issues.append("denylist secret resolution unverified")
-                else:
-                    gate.validate_denylist(template, current)
-                    if gate.digest(current.encode()) != report.denylist_sha256:
-                        report.issues.append("denylist stale digest")
+            try:
+                denylist = gate.read_regular(path, private=True)
+                value = denylist.decode("utf-8")
+                gate.validate_denylist(template, value)
+                report.denylist_fingerprint = _fingerprint(state, denylist)
+                if report.denylist_fingerprint != state.get("denylist_fingerprint"):
+                    report.issues.append("denylist recorded digest mismatch")
+                if config.denylist_ref:
+                    try:
+                        current = resolver(config.denylist_ref)
+                    except (ValueError, OSError, subprocess.SubprocessError):
+                        report.issues.append("denylist secret resolution unverified")
+                    else:
+                        gate.validate_denylist(template, current)
+                        if _fingerprint(state, current.encode()) != report.denylist_fingerprint:
+                            report.issues.append("denylist stale digest")
+            except (ValueError, OSError):
+                report.issues.append("denylist invalid or unsafe")
         for repo in repositories:
             state_name = gate.gate_state(repo, template)
             hook = gate.hook_ok(repo, template)
-            ok = state_name in {"canonical-at-pin", "accepted variant"} and hook
-            report.repositories.append({"repository": str(repo), "gate": state_name,
-                                        "hook_ok": hook, "ok": ok})
+            inputs = denylist is not None and gate.hook_inputs_ok(repo, denylist)
+            ok = (
+                state_name
+                in {
+                    "canonical-at-pin",
+                    "accepted variant (not the pinned canonical)",
+                }
+                and hook
+                and inputs
+            )
+            report.repositories.append(
+                {
+                    "repository": str(repo),
+                    "gate": state_name,
+                    "hook_ok": hook,
+                    "denylist_ok": inputs,
+                    "ok": ok,
+                }
+            )
             if not ok:
                 report.issues.append("repository gate or hook misprovisioned")
     except (ValueError, OSError, subprocess.SubprocessError):
@@ -189,7 +252,7 @@ def check_github_health(
         if not authenticated:
             report.credential = "unverified"
     if report.issues:
-        report.status = "MISPROVISIONED" if authenticated else "unverified"
+        report.status = "MISPROVISIONED"
     return report
 
 
@@ -206,9 +269,11 @@ def _locked(directory: Path) -> Iterator[None]:
     try:
         if sys.platform == "win32":
             import msvcrt
+
             msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
+
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield
     finally:
@@ -231,9 +296,14 @@ def _remove_owned(runner: SecretRunner, token_digest: str) -> None:
 
 
 def provision_github_credential(
-    config: GitHubCredentialConfig, *, dry_run: bool = False, force: bool = False,
-    home: Path | None = None, runner: SecretRunner = run,
-    resolver: Resolver = resolve_secret_value, inject: FailureInjector | None = None,
+    config: GitHubCredentialConfig,
+    *,
+    dry_run: bool = False,
+    force: bool = False,
+    home: Path | None = None,
+    runner: SecretRunner = run,
+    resolver: Resolver = resolve_secret_value,
+    inject: FailureInjector | None = None,
 ) -> dict[str, object]:
     """Denylist -> gate -> hook -> verify -> credential, under one host lock."""
     if config.adapter != "token":
@@ -248,8 +318,8 @@ def provision_github_credential(
             raise gate.GateError("GITHUB_SECRET_REF_INVALID")
         if ref_static_problem(ref) is not None:
             raise gate.GateError("GITHUB_SECRET_REF_INVALID")
-    template = gate.load_template()
     if dry_run:
+        gate.load_template()
         return {"ok": True, "dry_run": True, "plan": list(PLAN)}
     if sys.platform == "win32":
         raise gate.GateError("GITHUB_CREDENTIAL_PLATFORM_UNSUPPORTED")
@@ -258,78 +328,114 @@ def provision_github_credential(
     try:
         with _locked(directory):
             state = _read_state(directory)
-            # Recover an interrupted login only when its recorded digest still
-            # proves ownership; never adopt or revoke a different ambient login.
-            if state.get("credential_phase") == "installing":
-                owned_digest = state.get("token_sha256")
-                if not isinstance(owned_digest, str):
-                    raise gate.GateError("GITHUB_STATE_INVALID")
-                _remove_owned(runner, owned_digest)
-                state["credential_phase"] = "removed"
-                _write_state(directory, state)
-            ambient = _probe(runner)[0]
-            if not ambient and _credential_present(home, config.repositories):
-                raise gate.GateError("GITHUB_AMBIENT_CREDENTIAL_UNVERIFIED")
-            repositories = gate.repository_inventory(config)
-            if not repositories:
-                raise gate.GateError("GITHUB_GATE_INVENTORY_EMPTY")
-            denylist_path = directory / "forbidden-identifiers"
-            if denylist_path.exists() and stat.S_IMODE(denylist_path.stat().st_mode) & 0o077:
-                raise gate.GateError("GITHUB_DENYLIST_PERMISSIONS_INVALID")
-            denylist = resolver(config.denylist_ref)
-            gate.validate_denylist(template, denylist)
-            state["denylist_sha256"] = gate.digest(denylist.encode())
-            state["template_revision"] = gate.PIN
-            gate.atomic_write(directory / "forbidden-identifiers", denylist.encode(), 0o600)
-            _write_state(directory, state)
-
-            def checkpoint(step: str) -> None:
-                if inject is not None:
-                    inject(step)
-
-            checkpoint("denylist")
-            for repo in repositories:
-                gate.install_gate(repo, template, force=force)
-            checkpoint("gate")
-            for repo in repositories:
-                gate.install_hook(repo, template)
-            checkpoint("hook")
-            if any(gate.gate_state(repo, template) != "canonical-at-pin"
-                   or not gate.hook_ok(repo, template) for repo in repositories):
-                raise gate.GateError("GITHUB_GATE_VERIFICATION_FAILED")
-            installed = directory / "forbidden-identifiers"
-            if (gate.digest(installed.read_bytes()) != state["denylist_sha256"]
-                    or stat.S_IMODE(installed.stat().st_mode) != 0o600):
-                raise gate.GateError("GITHUB_DENYLIST_VERIFICATION_FAILED")
-            checkpoint("verify")
-            if ambient:
-                return {"ok": True, "dry_run": False, "credential": "ambient; not adopted",
-                        "plan": list(PLAN)}
-            token = resolver(config.token_ref)
-            if not token.strip() or "\n" in token or "\r" in token:
-                raise gate.GateError("GITHUB_TOKEN_INVALID")
-            token_digest = gate.digest(token.encode())
-            state.update(token_sha256=token_digest, credential_phase="installing")
-            _write_state(directory, state)
             try:
-                result = _gh(runner, "auth", "login", "--hostname", "github.com",
-                             "--with-token", stdin=token + "\n")
-                if result.returncode != 0 or not _probe(runner)[0]:
-                    raise gate.GateError("GITHUB_CREDENTIAL_INSTALL_FAILED")
-                readback = _gh(runner, "auth", "token", "--hostname", "github.com")
-                if (readback.returncode != 0
-                        or gate.digest(readback.stdout.strip().encode()) != token_digest):
-                    raise gate.GateError("GITHUB_CREDENTIAL_READBACK_FAILED")
-                checkpoint("credential")
-                state["credential_phase"] = "installed"
+                template = gate.load_template()
+                # Recover an interrupted login only when its recorded digest still
+                # proves ownership; never adopt or revoke a different ambient login.
+                if state.get("credential_phase") == "installing":
+                    owned_digest = state.get("token_sha256")
+                    if not isinstance(owned_digest, str):
+                        raise gate.GateError("GITHUB_STATE_INVALID")
+                    _remove_owned(runner, owned_digest)
+                    state["credential_phase"] = "removed"
+                    _write_state(directory, state)
+                ambient = _probe(runner)[0]
+                if not ambient and _credential_present(home, config.repositories):
+                    raise gate.GateError("GITHUB_AMBIENT_CREDENTIAL_UNVERIFIED")
+                repositories = gate.repository_inventory(config)
+                if not repositories:
+                    raise gate.GateError("GITHUB_GATE_INVENTORY_EMPTY")
+                denylist_path = directory / "forbidden-identifiers"
+                if denylist_path.exists() and stat.S_IMODE(denylist_path.stat().st_mode) & 0o077:
+                    raise gate.GateError("GITHUB_DENYLIST_PERMISSIONS_INVALID")
+                denylist = resolver(config.denylist_ref)
+                gate.validate_denylist(template, denylist)
+                state.setdefault("fingerprint_key", secrets.token_hex(32))
+                state.pop("denylist_sha256", None)
+                state["denylist_fingerprint"] = _fingerprint(state, denylist.encode())
+                state["template_revision"] = gate.PIN
+                gate.atomic_write(directory / "forbidden-identifiers", denylist.encode(), 0o600)
                 _write_state(directory, state)
+
+                def checkpoint(step: str) -> None:
+                    if inject is not None:
+                        inject(step)
+
+                checkpoint("denylist")
+                for repo in repositories:
+                    gate.install_gate(repo, template, force=force)
+                checkpoint("gate")
+                for repo in repositories:
+                    gate.install_hook(repo, template)
+                checkpoint("hook")
+                if any(
+                    gate.gate_state(repo, template) != "canonical-at-pin"
+                    or not gate.hook_ok(repo, template)
+                    or not gate.hook_inputs_ok(repo, denylist.encode())
+                    for repo in repositories
+                ):
+                    raise gate.GateError("GITHUB_GATE_VERIFICATION_FAILED")
+                installed = directory / "forbidden-identifiers"
+                if (
+                    _fingerprint(state, gate.read_regular(installed, private=True))
+                    != state["denylist_fingerprint"]
+                    or stat.S_IMODE(installed.stat().st_mode) != 0o600
+                ):
+                    raise gate.GateError("GITHUB_DENYLIST_VERIFICATION_FAILED")
+                checkpoint("verify")
+                if ambient:
+                    return {
+                        "ok": True,
+                        "dry_run": False,
+                        "credential": (
+                            "suite-owned; already installed"
+                            if state.get("credential_phase") == "installed"
+                            else "ambient; not adopted"
+                        ),
+                        "plan": list(PLAN),
+                    }
+                token = resolver(config.token_ref)
+                if not token.strip() or "\n" in token or "\r" in token:
+                    raise gate.GateError("GITHUB_TOKEN_INVALID")
+                token_digest = gate.digest(token.encode())
+                state.update(token_sha256=token_digest, credential_phase="installing")
+                _write_state(directory, state)
+                try:
+                    result = _gh(
+                        runner,
+                        "auth",
+                        "login",
+                        "--hostname",
+                        "github.com",
+                        "--with-token",
+                        stdin=token + "\n",
+                    )
+                    if result.returncode != 0 or not _probe(runner)[0]:
+                        raise gate.GateError("GITHUB_CREDENTIAL_INSTALL_FAILED")
+                    readback = _gh(runner, "auth", "token", "--hostname", "github.com")
+                    if (
+                        readback.returncode != 0
+                        or gate.digest(readback.stdout.strip().encode()) != token_digest
+                    ):
+                        raise gate.GateError("GITHUB_CREDENTIAL_READBACK_FAILED")
+                    checkpoint("credential")
+                    state["credential_phase"] = "installed"
+                    _write_state(directory, state)
+                except Exception:
+                    _remove_owned(runner, token_digest)
+                    state["credential_phase"] = "removed"
+                    _write_state(directory, state)
+                    raise
+                return {"ok": True, "dry_run": False, "credential": "installed", "plan": list(PLAN)}
             except Exception:
-                _remove_owned(runner, token_digest)
-                state["credential_phase"] = "removed"
-                _write_state(directory, state)
+                if state.get("credential_phase") in {"installing", "installed"}:
+                    owned_digest = state.get("token_sha256")
+                    if not isinstance(owned_digest, str):
+                        raise gate.GateError("GITHUB_STATE_INVALID") from None
+                    _remove_owned(runner, owned_digest)
+                    state["credential_phase"] = "removed"
+                    _write_state(directory, state)
                 raise
-            return {"ok": True, "dry_run": False, "credential": "installed",
-                    "plan": list(PLAN)}
     except gate.GateError:
         raise
     except Exception:

@@ -1,8 +1,11 @@
-"""Execute pin 5233019; open items assert observed behavior, never skip/xfail.
+"""Execute pin 5233019; open items assert observed behavior without xfails.
+
+Only the explicitly unsupported Windows adapter dependencies are skipped.
 
 A future pin closing one of these gaps must fail the corresponding observation
 and force this registry and the bootstrap contract to be updated.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -19,7 +22,7 @@ from tests.test_github_credentials import sandbox as sandbox  # pytest fixture
 
 OPEN_AC58_ITEMS = {
     "4": "pre-push and range scanner miss outgoing diff, author name and committer identity; "
-         "no CI full-range installer or scheduled full-history job is in the artifact",
+    "no CI full-range installer or scheduled full-history job is in the artifact",
     "5": "pre-push passes without denylist; GATE_ALLOW_NO_DENYLIST opt-out is not implemented",
     "6": "tracked .venv files are skipped by the tree scan",
     "8-template-diagnostics": "pinned scanners print denylisted values in diagnostics",
@@ -45,12 +48,17 @@ def scan(sandbox: Sandbox, *args: str, denylist: bool = True) -> subprocess.Comp
         env[gate.DENYLIST_VAR] = sandbox.denylist
     return subprocess.run(
         [sys.executable, str(sandbox.repo / "scripts/check_committed_identifiers.py"), *args],
-        cwd=sandbox.repo, env=env, capture_output=True, text=True, check=False,
+        cwd=sandbox.repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 
-def push(sandbox: Sandbox, base: str, *, denylist: bool = True,
-         opt_out: bool = False) -> subprocess.CompletedProcess[str]:
+def push(
+    sandbox: Sandbox, base: str, *, denylist: bool = True, opt_out: bool = False
+) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     if denylist:
         env[gate.DENYLIST_VAR] = sandbox.denylist
@@ -58,16 +66,30 @@ def push(sandbox: Sandbox, base: str, *, denylist: bool = True,
         env["GATE_ALLOW_NO_DENYLIST"] = "1"
     head = git(sandbox.repo, "rev-parse", "HEAD")
     return subprocess.run(
-        ["bash", str(sandbox.repo / "githooks/pre-push"), "origin",
-         "https://github.com/example/repository.git"],
+        [
+            "bash",
+            str(sandbox.repo / "githooks/pre-push"),
+            "origin",
+            "https://github.com/example/repository.git",
+        ],
         input=f"refs/heads/main {head} refs/heads/main {base}\n",
-        cwd=sandbox.repo, env=env, capture_output=True, text=True, check=False,
+        cwd=sandbox.repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 
 @pytest.mark.parametrize("surface", ["diff", "message", "author", "committer"])
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
 def test_ac58_4_pre_push_observation_not_satisfied_at_pin_5233019(
-    sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch, surface: str,
+    sandbox: Sandbox,
+    monkeypatch: pytest.MonkeyPatch,
+    surface: str,
 ) -> None:
     setup_public(sandbox)
     base = git(sandbox.repo, "rev-parse", "HEAD")
@@ -89,6 +111,10 @@ def test_ac58_4_pre_push_observation_not_satisfied_at_pin_5233019(
     assert history.returncode == (1 if surface == "message" else 0)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
 def test_ac58_4_removed_diff_ci_full_range_not_satisfied_at_pin_5233019(sandbox: Sandbox) -> None:
     setup_public(sandbox)
     (sandbox.repo / "safe.txt").write_text(sandbox.denylist)
@@ -104,8 +130,13 @@ def test_ac58_4_removed_diff_ci_full_range_not_satisfied_at_pin_5233019(sandbox:
 
 
 @pytest.mark.parametrize("opt_out", [False, True])
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
 def test_ac58_5_missing_denylist_not_satisfied_at_pin_5233019(
-    sandbox: Sandbox, opt_out: bool,
+    sandbox: Sandbox,
+    opt_out: bool,
 ) -> None:
     setup_public(sandbox)
     git(sandbox.repo, "commit", "--allow-empty", "-qm", "safe outgoing message")
@@ -117,6 +148,10 @@ def test_ac58_5_missing_denylist_not_satisfied_at_pin_5233019(
     assert scan(sandbox, "--rev-range", "HEAD", denylist=False).returncode == 1
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
 def test_ac58_6_tracked_venv_not_satisfied_at_pin_5233019(sandbox: Sandbox) -> None:
     setup_public(sandbox)
     directory = sandbox.repo / ".venv"
@@ -128,22 +163,37 @@ def test_ac58_6_tracked_venv_not_satisfied_at_pin_5233019(sandbox: Sandbox) -> N
     assert scan(sandbox, "--staged").returncode == 0
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
 def test_ac58_8_template_diagnostics_not_satisfied_at_pin_5233019(sandbox: Sandbox) -> None:
     setup_public(sandbox)
     (sandbox.repo / "safe.txt").write_text(sandbox.denylist)
     git(sandbox.repo, "add", ".")
     git(sandbox.repo, "commit", "-qm", sandbox.denylist)
-    for result in (scan(sandbox), scan(sandbox, "--rev-range", "HEAD"),
-                   push(sandbox, "HEAD~1")):
+    for result in (scan(sandbox), scan(sandbox, "--rev-range", "HEAD"), push(sandbox, "HEAD~1")):
         assert result.returncode == 1
         assert sandbox.denylist in result.stderr
 
 
-@pytest.mark.parametrize(("visibility", "expected"), [
-    ("public", 1), ("Public", 1), ("pubilc", 1), ("private-until-review", 0),
-])
+@pytest.mark.parametrize(
+    ("visibility", "expected"),
+    [
+        ("public", 1),
+        ("Public", 1),
+        ("pubilc", 1),
+        ("private-until-review", 0),
+    ],
+)
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
 def test_ac58_9_visibility_probe_empty_home(
-    sandbox: Sandbox, visibility: str, expected: int,
+    sandbox: Sandbox,
+    visibility: str,
+    expected: int,
 ) -> None:
     setup_public(sandbox)
     (sandbox.repo / "publication.toml").write_text(
@@ -162,7 +212,7 @@ def test_ac58_4a_vendor_reads_commit_and_refuses_dirty_or_short_sha(
     spec.loader.exec_module(module)
     source = tmp_path / "source"
     source.mkdir()
-    git(source, "init", "-q")
+    git(source, "init", "-q", "-b", "main")
     git(source, "config", "user.name", "Example")
     git(source, "config", "user.email", "author@example.invalid")
     payload = gate.load_template().payload
@@ -194,15 +244,21 @@ def test_ac58_4a_vendor_reads_commit_and_refuses_dirty_or_short_sha(
 
 
 @pytest.mark.parametrize("state", ["dirty", "unpinned", "not-git"])
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
 def test_ac58_4a_pinned_sync_refuses_bad_template_source(
-    sandbox: Sandbox, tmp_path: Path, state: str,
+    sandbox: Sandbox,
+    tmp_path: Path,
+    state: str,
 ) -> None:
     source = tmp_path / "template"
     source.mkdir()
     for name, content in gate.load_template().payload.items():
         (source / name).write_bytes(content)
     if state != "not-git":
-        git(source, "init", "-q")
+        git(source, "init", "-q", "-b", "main")
         git(source, "config", "user.name", "Example")
         git(source, "config", "user.email", "author@example.invalid")
         git(source, "add", ".")
@@ -216,9 +272,72 @@ def test_ac58_4a_pinned_sync_refuses_bad_template_source(
     result = subprocess.run(
         ["bash", str(source / "sync-identifier-gate.sh"), "--check", str(sandbox.repo)],
         env={**os.environ, "GATE_TEMPLATE_DIR": str(source)},
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 2
     message = {"dirty": "uncommitted", "unpinned": "not pinned", "not-git": "not a git"}
     assert message[state] in result.stderr
     assert sandbox.calls() == []
+
+
+@pytest.mark.parametrize("bad_source", ["symlink", "off-main"])
+def test_vendor_refuses_nonregular_or_off_main_commit(tmp_path: Path, bad_source: str) -> None:
+    script = Path(__file__).parents[1] / "scripts/vendor-gate-template.py"
+    spec = importlib.util.spec_from_file_location("vendor_gate_review", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = tmp_path / "source"
+    source.mkdir()
+    git(source, "init", "-q", "-b", "main")
+    git(source, "config", "user.name", "Example")
+    git(source, "config", "user.email", "author@example.invalid")
+    for name, value in gate.load_template().payload.items():
+        (source / name).write_bytes(value)
+    git(source, "add", ".")
+    git(source, "commit", "-qm", "main template")
+    if bad_source == "off-main":
+        git(source, "checkout", "-qb", "unreviewed")
+        (source / "PROVENANCE").write_text("side branch")
+    else:
+        (source / "pre-push").unlink()
+        git(source, "config", "core.symlinks", "false")
+        (source / "pre-push").write_text("check_committed_identifiers.py")
+    git(source, "add", ".")
+    if bad_source == "symlink":
+        blob = git(source, "hash-object", "-w", "pre-push")
+        git(source, "update-index", "--cacheinfo", "120000", blob, "pre-push")
+    git(source, "commit", "-qm", "unacceptable source")
+    commit = git(source, "rev-parse", "HEAD")
+    if bad_source == "off-main":
+        git(source, "checkout", "-q", "main")
+    with pytest.raises(ValueError, match=r"regular|main"):
+        module.vendor(source, commit, tmp_path / "vendored")
+    assert not (tmp_path / "vendored").exists()
+
+
+def test_lock_records_review_provenance() -> None:
+    import json
+
+    lock = json.loads((gate.DATA / "gate-template.lock.json").read_text())
+    assert lock["review_provenance"] == "PR review of the lock change"
+
+
+def test_open_registry_matches_contract_and_executing_observations() -> None:
+    contract = (Path(__file__).parents[1] / "docs/bootstrap-contract.md").read_text()
+    section = contract.split("### AC-58 remains partially unsatisfied at pin 5233019", 1)[1]
+    import re
+
+    items = re.findall(r"^- Item (\d+)([^:]*):", section, re.MULTILINE)
+    documented = {
+        number + ("-template-diagnostics" if "template diagnostics" in label else "")
+        for number, label in items
+    }
+    assert set(OPEN_AC58_ITEMS) == documented
+    for item in OPEN_AC58_ITEMS:
+        prefix = "test_ac58_" + item.split("-", 1)[0] + "_"
+        assert any(
+            name.startswith(prefix) and "not_satisfied_at_pin_5233019" in name for name in globals()
+        )

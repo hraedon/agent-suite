@@ -359,7 +359,8 @@ def resolve_secret_value(ref: str) -> str:
         raise ValueError("SECRET_REF_INVALID")
     try:
         result = subprocess.run(
-            probe_ref_argv(ref), capture_output=True, text=True, timeout=30, check=False,
+            ("regista", "secrets", "--ref", ref),
+            capture_output=True, text=True, timeout=30, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         raise ValueError("SECRET_RESOLUTION_FAILED") from None

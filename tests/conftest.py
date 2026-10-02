@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -132,9 +133,18 @@ class HostConfigGuard:
                 if self.protected(Path(os.fsdecode(raw_path))):
                     pytest.fail("Test isolation blocked real gh/git/agent-suite config access")
         elif event == "subprocess.Popen":
-            executable, _argv, cwd, environment = arguments
+            executable, argv, cwd, environment = arguments
             source = os.environ if environment is None else environment
             assert isinstance(source, dict) or source is os.environ
+            if executable is None:
+                # Windows passes executable=None and a rendered command line.
+                if isinstance(argv, (str, bytes)):
+                    words = shlex.split(os.fsdecode(argv), posix=False)
+                    executable = words[0].strip('"') if words else None
+                elif isinstance(argv, (list, tuple)) and argv:
+                    executable = argv[0]
+            if not isinstance(executable, (str, bytes, os.PathLike)):
+                pytest.fail("Test isolation could not identify subprocess executable")
             command = os.fsdecode(executable)
             working = Path(os.fsdecode(cwd)) if cwd is not None else Path.cwd()
             selected = command if os.path.dirname(command) else shutil.which(

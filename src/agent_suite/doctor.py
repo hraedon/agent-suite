@@ -1109,6 +1109,7 @@ def format_text(report: SuiteReport) -> str:
         health = report.github_health
         lines.append(f"GitHub credentials: {health.status} ({health.credential})")
         lines.extend(f"  {issue}" for issue in health.issues)
+        lines.extend(f"  note: {note}" for note in health.notes)
         for repo in health.repositories:
             lines.append(f"  {repo['repository']}: {repo['gate']}; hook_ok={repo['hook_ok']}")
     for c in report.components:

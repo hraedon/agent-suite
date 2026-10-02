@@ -400,7 +400,8 @@ Configure `AGENT_SUITE_GITHUB_TOKEN_REF` and
 `AGENT_SUITE_GITHUB_DENYLIST_REF` with regista backend references, plus
 `AGENT_SUITE_GITHUB_REPOSITORIES` (a JSON array of explicit worktree paths).
 `AGENT_SUITE_GITHUB_REPOSITORY_ROOTS` optionally lists roots to walk for every
-Git repository with any github.com remote, including its registered worktrees.
+Git repository with any remote, including SSH aliases and registered worktrees.
+Explicitly listed repositories also include all their linked worktrees.
 Empty inventory refuses installation. Missing or unreadable inventory paths
 refuse verification. The inventory is an operator assertion of coverage;
 repositories outside configured paths and roots are not discovered.
@@ -415,44 +416,70 @@ commit `5233019143546395b13ee2219045dace75587fb3`. The lock itself is pinned by
 SHA-256 in the installer. Lock or snapshot drift refuses provisioning.
 `scripts/vendor-gate-template.py SOURCE FULL_COMMIT_SHA` regenerates the snapshot
 and lock using Git commit objects; a dirty source, short SHA or an unrecognized
-canonical digest is refused. Re-pinning also requires updating the installer's
+canonical digest is refused. Nonregular Git blobs (including symlinks) are
+refused. The source must be on main, and the commit must be an ancestor of
+main HEAD. The lock records PR review of the lock change as its review
+provenance; the source's own hash registry is a consistency check, not proof
+of review. Re-pinning also requires updating the installer's
 pin and lock hash after gate review. The package snapshot is the backed-up suite
 release artifact; the local source checkout is not needed on deployed hosts.
 
 Provisioning renders the five MANIFEST payloads, preserves a detectable existing
 denylist variable, installs the pinned executable pre-push hook, sets the local
 `core.hooksPath` (worktree config when enabled), then verifies all payloads and
-the host denylist. It installs only canonical-at-pin. Stale known canonicals
+the host denylist. A repo-local `.identifiers-denylist.local` must be absent
+or byte-for-byte equal to the host denylist. A preferred `.venv/bin/python`
+must resolve to, or be a byte copy of, the suite Python; unfamiliar executables
+are refused without running repository code. Recreate such venvs with the suite
+Python. It installs only canonical-at-pin. Stale known canonicals
 are upgraded; accepted variants and unknown copies require explicit
 `--force-identifier-gate`. No unknown bytes are merged into the canonical.
 
 Only after verification does `gh auth login --hostname github.com --with-token`
 receive the resolved token on stdin. Captured child output is never forwarded.
-A 0600 state file records digests and transaction metadata. Failed or interrupted
-logins are removed with `gh auth logout --hostname github.com` only when token
+A 0600 state file records digests, transaction metadata and a random per-host
+fingerprint key. Denylist comparisons and output use HMAC-SHA256 with that key;
+raw denylist hashes and the key are never emitted. Failed logins and failed
+re-runs remove suite-owned credentials with `gh auth logout --hostname github.com` only when token
 readback matches the transaction's recorded digest; rollback failure is reported
 as an error and its recovery marker is retained. A pre-existing ambient login is
-reported and is never adopted or revoked. Reruns repair partial guard installs
-and converge. Dry run emits only the ordered plan, resolves no secrets, probes
+reported and is never adopted or revoked. SIGINT or process termination can
+leave an `installing` recovery marker: doctor reports it as MISPROVISIONED and
+the next run removes the matching owned credential before retrying. Reruns
+repair missing hooks and complete recorded install steps. Missing or changed
+supporting MANIFEST payloads classify as unknown and require explicit force;
+runs do not silently overwrite them. Dry run emits only the ordered plan, resolves no secrets, probes
 no credentials, and writes nothing.
 
 Doctor performs only read-only probes: `gh auth status --hostname github.com`
 plus available classic-token scopes. Unknown fine-grained push capability is
 named as unverified; mere helper/token-file presence with failed auth is
-`unverified`, never `absent`. Working authentication with empty inventory,
+`unverified`, never `absent`. Present but unverified credentials undergo the
+same guard checks; any incomplete guard makes doctor non-ok and exits 1.
+Working authentication with empty inventory,
 missing/invalid/readable/stale denylist, invalid template lock, a stale/unknown/
 missing gate, or an absent/mismatched/non-executable/misdirected hook is
 `MISPROVISIONED`. Installed denylist bytes must match the recorded digest and,
 when resolvable, the current backend secret digest. An accepted variant is a
-named healthy gate state when its hook matches the pinned render; it is not
-silently replaced. `MISPROVISIONED` always reds `suite_ok` and exits 1 in both
+named healthy state, labeled `accepted variant (not the pinned canonical)`,
+when its hook and supporting MANIFEST payloads match the pinned render;
+provisioning still requires force to replace its gate body. `MISPROVISIONED` always reds `suite_ok` and exits 1 in both
 text and JSON, even without `--exit-code`.
+
+Provisioning and health are per invoking user: each pushing account needs its
+own delivered denylist and state under its own HOME. Running doctor as the
+installer does not certify another user. SSH keys, SSH configuration and
+ssh-agent credentials are outside the current inspection boundary; every
+doctor report names the gap `ssh credential not inspected`. Doctor performs
+no SSH network probes.
 
 ### AC-58 remains partially unsatisfied at pin 5233019
 
 This release implements host provisioning and drift health. It does **not**
 claim AC-58 fully satisfied. Executing observations and the open-item registry
-in `tests/test_ac58_pinned_gate.py` pin these defects without skips or xfails:
+in `tests/test_ac58_pinned_gate.py` pin these defects without xfails or POSIX skips. On native Windows, tests
+requiring the explicitly unsupported POSIX token adapter are skipped with a
+recorded reason; refusal and audit-isolation tests still run:
 
 - Item 4: the pre-push hook and range scanner check messages, but miss outgoing
   diffs, author names and committer identity. The artifact includes no CI

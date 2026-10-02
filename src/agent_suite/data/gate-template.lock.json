@@ -12,5 +12,6 @@
     "test_identifier_gate.py": "ae7a440c03a1f7226e2d734b42d6696856936e3bc93d82aca0ecaa8b92453a24",
     "test_identifier_gate_visibility.py": "90259ed6c3896de79cd6e024dcbb093c79e2c2082071c9de08267783634bf8eb"
   },
+  "review_provenance": "PR review of the lock change",
   "revision": "5233019143546395b13ee2219045dace75587fb3"
 }
