@@ -44,6 +44,8 @@ artifacts = ["src/agent_suite/data/gate-template.lock.json",
 strict = true
 python_version = "3.12"
 files = ["src"]
+# The vendored gate template is pinned bytes, not suite source (BR-50).
+exclude = ["^src/agent_suite/data/"]
 
 [[tool.mypy.overrides]]
 module = "jwt.*"
