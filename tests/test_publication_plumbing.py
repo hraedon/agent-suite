@@ -438,6 +438,13 @@ def _make_hook_repo(repo: Path) -> Path:
     return hook
 
 
+def _hook_env() -> dict[str, str]:
+    """The caller's environment with a synthetic, never-matching denylist."""
+    import os
+
+    return {**os.environ, "AGENT_SUITE_FORBIDDEN_IDENTIFIERS": "zzzsynthetictoken"}
+
+
 def _head_sha(repo: Path) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"],
@@ -468,6 +475,10 @@ def test_pre_push_hook_survives_a_rewritten_remote_sha(tmp_path: Path) -> None:
         [str(hook), "origin", "https://github.com/expected-owner/repo.git"],
         cwd=repo,
         input=f"refs/heads/main {local_sha} refs/heads/main {unreachable}\n",
+        # A public repo needs a usable denylist since the hooks fail closed
+        # without one (owner decision 2026-10-01); a synthetic token keeps this
+        # test about range handling.
+        env=_hook_env(),
         capture_output=True, text=True, timeout=60, check=False,
     )
     assert result.returncode == 0, (
@@ -497,6 +508,10 @@ def test_pre_push_hook_direct_url_push_new_branch(tmp_path: Path) -> None:
         [str(hook), direct_url, direct_url],
         cwd=repo,
         input=f"refs/heads/new-branch {local_sha} refs/heads/new-branch {zero_sha}\n",
+        # A public repo needs a usable denylist since the hooks fail closed
+        # without one (owner decision 2026-10-01); a synthetic token keeps this
+        # test about range handling.
+        env=_hook_env(),
         capture_output=True, text=True, timeout=60, check=False,
     )
     assert result.returncode == 0, (
@@ -540,7 +555,7 @@ def test_pre_push_hook_later_ref_violation_fails_whole_push(tmp_path: Path) -> N
         [str(hook), "origin", "https://github.com/expected-owner/repo.git"],
         cwd=repo,
         input=stdin_lines,
-        capture_output=True, text=True, timeout=60, check=False,
+        env=_hook_env(), capture_output=True, text=True, timeout=60, check=False,
     )
     assert result.returncode == 1, (
         "a violation in a later ref must fail the whole push\n"
@@ -566,7 +581,7 @@ def test_pre_push_hook_branch_deletion_only_passes(tmp_path: Path) -> None:
         [str(hook), "origin", "https://github.com/expected-owner/repo.git"],
         cwd=repo,
         input=f"refs/heads/old-branch {zero_sha} refs/heads/old-branch {remote_sha}\n",
-        capture_output=True, text=True, timeout=60, check=False,
+        env=_hook_env(), capture_output=True, text=True, timeout=60, check=False,
     )
     assert result.returncode == 0, (
         "a deletion-only push must pass\n"
