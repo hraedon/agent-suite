@@ -271,11 +271,29 @@ def hook_ok(repo: Path, template: GateTemplate) -> bool:
     return (
         path.is_file()
         and not path.is_symlink()
+        and not any(parent.is_symlink() or parent.is_junction() for parent in path.parents)
         and path.read_bytes() == expected
         and os.access(path, os.X_OK)
         and target.resolve() == path.parent.resolve()
         and hook_interpreter_ok(repo)
+        and script_imports_ok(repo)
     )
+
+
+def script_imports_ok(repo: Path) -> bool:
+    """The pinned scripts directory must not override standard-library imports."""
+    try:
+        return all(
+            entry.name != "__pycache__"
+            and entry.suffix != ".pyc"
+            and not (
+                (entry.is_dir() or entry.suffix in {".py", ".pyi", ".so", ".pyd"})
+                and entry.name.split(".", 1)[0] in sys.stdlib_module_names
+            )
+            for entry in (repo / "scripts").iterdir()
+        )
+    except OSError:
+        return False
 
 
 def hook_inputs_ok(repo: Path, denylist: bytes) -> bool:
@@ -325,6 +343,15 @@ def check_hook_overwrite(repo: Path, template: GateTemplate, *, force: bool = Fa
         if not target.is_absolute():
             target = repo / target
         if target.resolve() != (repo / "githooks").resolve():
+            raise GateError("GATE_HOOK_OVERWRITE_REFUSED")
+    else:
+        hooks = Path(git(repo, "rev-parse", "--git-path", "hooks"))
+        if not hooks.is_absolute():
+            hooks = repo / hooks
+        if hooks.is_dir() and any(
+            entry.is_file() and not entry.name.endswith(".sample") and os.access(entry, os.X_OK)
+            for entry in hooks.iterdir()
+        ):
             raise GateError("GATE_HOOK_OVERWRITE_REFUSED")
     path = repo / "githooks/pre-push"
     if path.exists() or path.is_symlink():

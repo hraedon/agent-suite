@@ -55,7 +55,10 @@ def test_empty_inventory_is_misprovisioned_and_cannot_install(sandbox: Sandbox) 
     with pytest.raises(gate.GateError, match="GITHUB_GATE_INVENTORY_EMPTY"):
         sandbox.provision()
     (sandbox.fake / "active").touch()
-    assert sandbox.health().issues == ["no gate repository inventory", "denylist absent or unsafe"]
+    assert sandbox.health().issues == [
+        "no gate repository inventory", "GITHUB_STATE_REPROVISION_REQUIRED",
+        "denylist absent or unsafe",
+    ]
     assert sandbox.health().status == "MISPROVISIONED"
 
 
@@ -537,3 +540,69 @@ def test_r2_inventory_directory_cycle_terminates(sandbox: Sandbox) -> None:
     else:
         (root / "cycle").symlink_to(root, target_is_directory=True)
     assert gate.repository_inventory(replace(sandbox.config, roots=(root,))) == (root,)
+
+
+@pytest.mark.parametrize(
+    "entry", ["shlex.py", "argparse", "tomllib.pyi", "shlex.pyc", "__pycache__"],
+)
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_script_shadow_or_bytecode_reds_health_and_provisioning(
+    sandbox: Sandbox, entry: str,
+) -> None:
+    sandbox.provision()
+    path = sandbox.repo / "scripts" / entry
+    if entry in {"argparse", "__pycache__"}:
+        path.mkdir()
+    else:
+        path.write_text("unused fixture")
+    health = sandbox.health()
+    assert health.status == "MISPROVISIONED"
+    assert "GATE_SCRIPT_IMPORT_SHADOW" in json.dumps(health.to_dict())
+    with pytest.raises(gate.GateError, match="GITHUB_GATE_VERIFICATION_FAILED"):
+        sandbox.provision()
+    assert not sandbox.working()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_symlinked_githooks_directory_is_not_healthy(sandbox: Sandbox) -> None:
+    sandbox.provision()
+    hooks = sandbox.repo / "githooks"
+    target = sandbox.repo / "actual-hooks"
+    hooks.rename(target)
+    hooks.symlink_to(target, target_is_directory=True)
+    assert not gate.hook_ok(sandbox.repo, gate.load_template())
+    assert not sandbox.health().ok
+
+
+@pytest.mark.parametrize("hook", ["pre-push", "pre-commit"])
+def test_r3_default_active_hooks_require_force(sandbox: Sandbox, hook: str) -> None:
+    hooks = Path(git(sandbox.repo, "rev-parse", "--git-path", "hooks"))
+    if not hooks.is_absolute():
+        hooks = sandbox.repo / hooks
+    path = hooks / hook
+    path.write_text("#!/bin/sh\nexit 0\n")
+    path.chmod(0o755)
+    template = gate.load_template()
+    with pytest.raises(gate.GateError, match="GATE_HOOK_OVERWRITE_REFUSED"):
+        gate.check_hook_overwrite(sandbox.repo, template)
+    gate.check_hook_overwrite(sandbox.repo, template, force=True)
+    path.unlink()
+    gate.check_hook_overwrite(sandbox.repo, template)
+
+
+def test_r3_template_local_main_review_boundary_is_documented() -> None:
+    contract = (Path(__file__).parents[1] / "docs/bootstrap-contract.md").read_text()
+    assert "template repository has no remote" in contract
+    assert "local main" in contract
+
+
+@pytest.mark.parametrize("entry", ["json.md", "stat.sh", "shlex.txt", "utility.py"])
+def test_r3_non_module_data_files_do_not_shadow_stdlib(sandbox: Sandbox, entry: str) -> None:
+    scripts = sandbox.repo / "scripts"
+    scripts.mkdir()
+    (scripts / entry).write_text("unused fixture")
+    assert gate.script_imports_ok(sandbox.repo)

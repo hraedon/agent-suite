@@ -105,6 +105,7 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Sandbox:
         + """
 import hashlib
 import json
+import os
 import pathlib
 import sys
 root = pathlib.Path(__file__).parent
@@ -112,17 +113,22 @@ args = sys.argv[1:]
 with (root / "calls").open("a") as log:
     log.write(json.dumps(args) + "\\n")
 active = root / "active"
+hosts = pathlib.Path(os.environ["GH_CONFIG_DIR"]) / "hosts.yml"
 if args[:2] == ["auth", "login"]:
     value = sys.stdin.read().strip()
     if value != (root / "secret-input").read_text():
         sys.exit(1)
     active.write_text(hashlib.sha256(value.encode()).hexdigest())
+    hosts.parent.mkdir(parents=True, exist_ok=True)
+    hosts.write_text("github.com: {}\\n")
     print(value)
     print(value, file=sys.stderr)
     if (root / "fail-login").exists():
         sys.exit(1)
 elif args[:2] == ["auth", "logout"]:
     active.unlink(missing_ok=True)
+    hosts.parent.mkdir(parents=True, exist_ok=True)
+    hosts.write_text("{}\\n")
 elif args[:2] == ["auth", "token"]:
     if not active.exists():
         sys.exit(1)
@@ -346,7 +352,7 @@ def test_rollback_refuses_to_revoke_replaced_ambient_credential(sandbox: Sandbox
             (sandbox.fake / "secret-input").write_text("different-ambient-credential")
             raise RuntimeError("fail after credential replaced")
 
-    with pytest.raises(gate.GateError, match="GITHUB_ROLLBACK_OWNERSHIP_MISMATCH"):
+    with pytest.raises(gate.GateError, match="GITHUB_PROVISIONING_FAILED"):
         sandbox.provision(inject=replaced)
     assert sandbox.working()
     assert not any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
@@ -752,7 +758,7 @@ def test_r2_unreadable_owned_token_retains_recovery_and_reds_doctor(sandbox: San
     assert sandbox.health().ok
 
 
-@pytest.mark.parametrize("damage", ["permissions", "json", "missing-key"])
+@pytest.mark.parametrize("damage", ["permissions", "json", "invalid-key"])
 @pytest.mark.skipif(
     sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
 )
@@ -767,7 +773,7 @@ def test_r2_corrupt_health_state_cannot_bypass_owned_rollback(
         path.write_text("{")
     else:
         value = json.loads(path.read_text())
-        value.pop("fingerprint_key")
+        value["fingerprint_key"] = "invalid"
         path.write_text(json.dumps(value))
     with pytest.raises(gate.GateError):
         sandbox.provision()
@@ -855,3 +861,224 @@ def test_r2_windows_audit_reads_only_the_executable_not_python_code(tmp_path: Pa
     guard = HostConfigGuard(tmp_path, (), active=True)
     argv = subprocess.list2cmdline([sys.executable, "-c", 'exec("abc \' def")'])
     guard.audit("subprocess.Popen", (None, argv, None, dict(os.environ)))
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_failed_login_without_credential_converges(sandbox: Sandbox) -> None:
+    def rejected(
+        argv: tuple[str, ...], stdin: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if argv[1:3] == ("auth", "login"):
+            return subprocess.CompletedProcess(argv, 1, "", "rejected")
+        return credentials.run(argv, stdin)
+    with pytest.raises(gate.GateError):
+        sandbox.provision(runner=rejected)
+    assert not sandbox.working()
+    assert sandbox.provision()["credential"] == "installed"
+    assert sandbox.health().ok
+
+
+@pytest.mark.parametrize("phase", ["installing", "rollback_pending", "installed"])
+@pytest.mark.parametrize("replacement", [False, True])
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_recovery_after_logout_or_replacement_converges(
+    sandbox: Sandbox, phase: str, replacement: bool,
+) -> None:
+    sandbox.provision()
+    directory = sandbox.home / ".config/agent-suite"
+    journal_path = directory / "github-credential-ownership.json"
+    journal = json.loads(journal_path.read_text())
+    journal["phase"] = phase
+    journal_path.write_text(json.dumps(journal))
+    if replacement:
+        (sandbox.fake / "secret-input").write_text("different-operator-token")
+    else:
+        credentials.run(("gh", "auth", "logout", "--hostname", "github.com"))
+    result = sandbox.provision()
+    assert result["credential"] == ("ambient; not adopted" if replacement else "installed")
+    assert sandbox.health().ok
+    if replacement:
+        assert not any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
+
+
+@pytest.mark.parametrize("hosts", ["", "{}\n", "example.invalid: {}\n",
+                                   "example.invalid:\n    user: example\n"])
+def test_r3_empty_or_other_host_config_is_not_github_credential(
+    sandbox: Sandbox, hosts: str,
+) -> None:
+    path = sandbox.home / ".config/gh/hosts.yml"
+    path.parent.mkdir(parents=True)
+    path.write_text(hosts)
+    assert sandbox.health().credential == "absent"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_rollback_preserves_first_failure_and_records_cleanup_failure(sandbox: Sandbox) -> None:
+    def failed(argv: tuple[str, ...], stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+        if argv[1:3] == ("auth", "logout"):
+            return subprocess.CompletedProcess(argv, 1, "", sandbox.token)
+        return credentials.run(argv, stdin)
+    (sandbox.fake / "fail-login").touch()
+    with pytest.raises(gate.GateError, match=r"^GITHUB_CREDENTIAL_INSTALL_FAILED$"):
+        sandbox.provision(runner=failed)
+    journal_path = sandbox.home / ".config/agent-suite/github-credential-ownership.json"
+    journal = json.loads(journal_path.read_text())
+    assert journal["phase"] == "rollback_pending"
+    assert journal["recovery_error"] == "GITHUB_ROLLBACK_FAILED"
+    assert "GITHUB_ROLLBACK_FAILED" in json.dumps(sandbox.health().to_dict())
+    assert sandbox.token not in json.dumps(journal)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_corrupt_state_has_actionable_first_error(sandbox: Sandbox) -> None:
+    sandbox.provision()
+    (sandbox.home / ".config/agent-suite/github-credential-state.json").write_text("{")
+    with pytest.raises(gate.GateError, match=r"^GITHUB_STATE_INVALID$"):
+        sandbox.provision()
+    assert not sandbox.working()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_missing_fingerprint_key_is_named_and_reprovisioned(sandbox: Sandbox) -> None:
+    sandbox.provision()
+    path = sandbox.home / ".config/agent-suite/github-credential-state.json"
+    value = json.loads(path.read_text())
+    value.pop("fingerprint_key")
+    path.write_text(json.dumps(value))
+    before = path.read_bytes()
+    health = sandbox.health()
+    assert "GITHUB_STATE_REPROVISION_REQUIRED" in health.issues
+    assert not health.ok and path.read_bytes() == before
+    sandbox.provision()
+    assert sandbox.health().ok
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_token_metadata_is_keyed_and_legacy_journal_migrates(sandbox: Sandbox) -> None:
+    sandbox.provision()
+    directory = sandbox.home / ".config/agent-suite"
+    for name in ("github-credential-state.json", "github-credential-ownership.json"):
+        value = json.loads((directory / name).read_text())
+        assert "token_fingerprint" in value and "token_sha256" not in value
+        assert gate.digest(sandbox.token.encode()) not in json.dumps(value)
+    journal = directory / "github-credential-ownership.json"
+    journal.write_text(json.dumps({"phase": "installed",
+                                   "token_sha256": gate.digest(sandbox.token.encode())}))
+    sandbox.provision()
+    assert "token_sha256" not in journal.read_text()
+    assert sandbox.health().ok
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_residual_matching_credential_is_named_without_adoption(sandbox: Sandbox) -> None:
+    sandbox.provision()
+    directory = sandbox.home / ".config/agent-suite"
+    journal = directory / "github-credential-ownership.json"
+    metadata = json.loads(journal.read_text())
+    metadata["phase"] = "removed"
+    journal.write_text(json.dumps(metadata))
+    state = directory / "github-credential-state.json"
+    metadata = json.loads(state.read_text())
+    metadata["credential_phase"] = "removed"
+    state.write_text(json.dumps(metadata))
+    assert "residual credential matches prior transaction" in str(sandbox.provision()["credential"])
+    assert sandbox.working()
+    assert not any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
+
+
+def test_r3_failed_probe_without_config_is_unverified(sandbox: Sandbox) -> None:
+    def unreachable(
+        argv: tuple[str, ...], stdin: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        raise OSError("unreachable")
+    health = credentials.check_github_health(sandbox.config, home=sandbox.home,
+                                             runner=unreachable, gh_installed=True)
+    assert health.credential == "unverified"
+    assert health.status == "MISPROVISIONED"
+    assert health.notes and health.repositories
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_provisioning_denylist_override_refuses_before_login(
+    sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_SUITE_FORBIDDEN_IDENTIFIERS", "decoy-only")
+    with pytest.raises(gate.GateError, match=r"^GITHUB_DENYLIST_ENVIRONMENT_MISMATCH$"):
+        sandbox.provision()
+    assert not any(call[:2] == ["auth", "login"] for call in sandbox.calls())
+    monkeypatch.setenv("AGENT_SUITE_FORBIDDEN_IDENTIFIERS", sandbox.denylist)
+    assert sandbox.provision()["ok"]
+
+
+@pytest.mark.parametrize("hosts", [
+    "  example.invalid: {}\n  github.com: {}\n",
+    "'github.com': {}\n", '"github.com": {}\n',
+    "{github.com: {}}\n", "malformed yaml",
+])
+def test_r3_host_mapping_never_proves_false_absence(sandbox: Sandbox, hosts: str) -> None:
+    path = sandbox.home / ".config/gh/hosts.yml"
+    path.parent.mkdir(parents=True)
+    path.write_text(hosts)
+    assert sandbox.health().credential == "unverified"
+    assert not sandbox.health().ok
+
+
+@pytest.mark.parametrize("phase", ["removed", "replaced"])
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_legacy_terminal_state_drops_plain_token_digest(
+    sandbox: Sandbox, phase: str,
+) -> None:
+    sandbox.provision()
+    directory = sandbox.home / ".config/agent-suite"
+    (directory / "github-credential-ownership.json").unlink()
+    path = directory / "github-credential-state.json"
+    state = json.loads(path.read_text())
+    state.pop("token_fingerprint")
+    state["token_sha256"] = gate.digest(sandbox.token.encode())
+    state["credential_phase"] = phase
+    path.write_text(json.dumps(state))
+    result = sandbox.provision()
+    assert "residual credential matches prior transaction" in str(result["credential"])
+    for name in ("github-credential-state.json", "github-credential-ownership.json"):
+        assert gate.digest(sandbox.token.encode()) not in (directory / name).read_text()
+    assert not any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_empty_health_state_is_named_and_repaired(sandbox: Sandbox) -> None:
+    sandbox.provision()
+    path = sandbox.home / ".config/agent-suite/github-credential-state.json"
+    path.write_text("{}")
+    assert "GITHUB_STATE_REPROVISION_REQUIRED" in sandbox.health().issues
+    sandbox.provision()
+    assert sandbox.health().ok
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r3_outer_token_whitespace_refuses_before_login(sandbox: Sandbox) -> None:
+    sandbox.token = " " + sandbox.token + " "
+    with pytest.raises(gate.GateError, match="GITHUB_TOKEN_INVALID"):
+        sandbox.provision()
+    assert not any(call[:2] == ["auth", "login"] for call in sandbox.calls())

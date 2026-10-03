@@ -423,7 +423,9 @@ and lock using Git commit objects; a dirty source, short SHA or an unrecognized
 canonical digest is refused. Nonregular Git blobs (including symlinks) are
 refused, as are replace refs and grafts. Git object reads disable replacements
 and compare each payload with its actual blob object. The source must be on main, and the commit must be an ancestor of
-main HEAD. The lock records PR review of the lock change as its review
+local main HEAD. The template repository has no remote; this local ancestry
+check proves lineage, while review of the suite lock change authorizes the release.
+The lock records PR review of the lock change as its review
 provenance; the source's own hash registry is a consistency check, not proof
 of review. Re-pinning also requires updating the installer's
 pin and lock hash after gate review. The package snapshot is the backed-up suite
@@ -440,31 +442,73 @@ in `FORBIDDEN_IDENTIFIERS` must have the same keyed fingerprint as the delivered
 denylist; mismatches make doctor MISPROVISIONED and prevent token installation. A preferred `.venv/bin/python`
 must resolve to, or be a byte copy of, the suite Python; unfamiliar executables
 are refused without running repository code. This checks binary identity only.
-Python startup customization (`.pth`, `sitecustomize`, imports) is not inspected;
+Entries in the gate's `scripts/` directory that shadow standard-library modules
+(including package directories and Python extension modules), stray `*.pyc`
+files and `__pycache__` directories make doctor MISPROVISIONED and prevent
+credential installation. Ordinary data files such as `json.md` are allowed.
+Python startup customization (`.pth`, `sitecustomize`, external imports) is not inspected;
 doctor names that gap. This is accident prevention, not interpreter attestation.
 Recreate such venvs with the suite Python. It installs only canonical-at-pin. Stale known canonicals
 are upgraded; accepted variants and unknown copies require explicit
 `--force-identifier-gate`. An existing different `core.hooksPath` or pre-push body
-also requires explicit force. No unknown bytes are merged into the canonical.
+also requires explicit force. When `core.hooksPath` is unset, active nonsample
+hooks in Git's default hooks directory require force too, including the shared
+hooks directory of a linked worktree. Symlinked or junction hook ancestors
+are unhealthy. No unknown bytes are merged into the canonical.
 
 Only after verification does `gh auth login --hostname github.com --with-token`
 receive the resolved token on stdin. Captured child output is never forwarded.
-A 0600 state file records digests, transaction metadata and a random per-host
-fingerprint key. A separate 0600 ownership journal records only the token digest
-and transaction phase, so damage to health state cannot bypass owned rollback. Denylist comparisons and output use HMAC-SHA256 with that key;
-raw denylist hashes and the key are never emitted. Failed logins and failed
-re-runs remove suite-owned credentials with `gh auth logout --hostname github.com` only when token
-readback matches the transaction's recorded digest; rollback failure is reported
-as an error and its recovery marker is retained. Failed token readback does not
-prove absence: the journal remains `rollback_pending`, doctor stays non-ok, and
-the next run retries recovery. Corrupt or inaccessible ownership evidence is a
-named refusal; no unknown credential is revoked. A pre-existing ambient login is
-reported and is never adopted or revoked. This includes `GH_TOKEN` and
-`GITHUB_TOKEN`; the suite does not install, take ownership of, or revoke those
-ambient values. If the operator replaces a suite login, readable mismatching
-token metadata relinquishes ownership before further provisioning. SIGINT or process termination can
-leave an `installing` recovery marker: doctor reports it as MISPROVISIONED and
-the next run removes the matching owned credential before retrying. Reruns
+A 0600 state file records keyed fingerprints, transaction metadata and a random
+per-host fingerprint key. A separate 0600 ownership journal records the token
+fingerprint, its key and transaction phase, so damage to health state cannot
+bypass owned rollback. Token fingerprints use HMAC-SHA256 with the
+`github-token` domain prefix; denylist comparisons and output use HMAC-SHA256
+with the same host key. Raw hashes, secret values and the key are never emitted.
+Legacy token SHA-256 metadata is read only to establish prior ownership, then
+migrated to keyed metadata or discarded when the old credential is gone.
+
+Failed logins and failed re-runs remove suite-owned credentials with
+`gh auth logout --hostname github.com` only when token readback matches the
+transaction fingerprint. The first failure code remains the returned error;
+cleanup failure has a separate recovery code in the private journal and doctor
+output. Recovery distinguishes three cases:
+
+- A readable matching token is suite-owned and can be removed before retrying.
+- Failed token and status probes, with no GitHub host entry, token environment
+  value or credential-helper evidence, prove the old credential absent. Recovery
+  clears the pending phase and continues, including a crash before login or an
+  operator logout. An empty or other-host `hosts.yml` is not a GitHub credential.
+- A readable different token relinquishes ownership without logout. Further
+  provisioning treats the operator's credential as ambient. A matching token
+  found after a recorded removal is explicitly labeled a residual credential;
+  it remains ambient and is never silently re-adopted.
+
+The host-entry rule follows [gh's logout implementation](https://github.com/cli/cli/blob/trunk/internal/config/config.go):
+last-user logout removes the host entry; with multiple users, gh removes the
+selected user and retains the remaining host configuration. Unsupported,
+malformed or unreadable host configuration remains unverified rather than proving
+absence. Probe errors and timeouts are unverified too. A configured helper is
+credential evidence even after gh logout; the suite cannot prove what that
+helper stores merely from a failed gh probe.
+
+Unverifiable ownership retains `rollback_pending` and doctor stays non-ok. For
+manual recovery, the operator repairs gh/config access, removes any stale helper
+configuration only after checking its credentials, and reruns provisioning. If
+removal is intended, the operator logs out the applicable GitHub account and
+checks that no token environment value or helper still supplies a credential,
+then reruns. Do not delete the ownership journal to bypass recovery. If journal
+metadata or its key is damaged, restore the private metadata from backup, or
+independently confirm the recorded credential is gone before archiving damaged
+metadata and reprovisioning. No unknown credential is revoked. Missing health
+state or a missing health fingerprint key is named
+`GITHUB_STATE_REPROVISION_REQUIRED`; doctor stays non-ok and read-only, while a
+rerun can restore it from the independently protected ownership journal.
+
+A pre-existing ambient login is reported and is never adopted or revoked. This
+includes `GH_TOKEN` and `GITHUB_TOKEN`; the suite does not install, take ownership
+of, or revoke those ambient values. SIGINT or process termination can leave an
+`installing` recovery marker: doctor reports it as MISPROVISIONED and the next
+run applies the same matching/absent/replaced recovery rules. Reruns
 repair missing hooks and complete recorded install steps. Missing or changed
 supporting MANIFEST payloads classify as unknown and require explicit force;
 runs do not silently overwrite them. Dry run emits only the ordered plan, resolves no secrets, probes

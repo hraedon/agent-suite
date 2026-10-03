@@ -17,7 +17,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol, assert_never
 
 from agent_suite import identifier_gate as gate
 from agent_suite.config import GitHubCredentialConfig
@@ -103,10 +103,14 @@ def _read_state(directory: Path) -> dict[str, object]:
         raw = gate.read_regular(path, private=True)
     except FileNotFoundError:
         return {}
-    value = json.loads(raw)
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise gate.GateError("GITHUB_STATE_INVALID") from None
     if not isinstance(value, dict):
         raise gate.GateError("GITHUB_STATE_INVALID")
-    _fingerprint(value, b"")
+    if "fingerprint_key" in value:
+        _fingerprint(value, b"")
     return value
 
 
@@ -125,7 +129,50 @@ def _fingerprint(state: dict[str, object], value: bytes) -> str:
     return hmac.new(bytes.fromhex(key), value, hashlib.sha256).hexdigest()
 
 
-def _credential_present(home: Path, repositories: tuple[Path, ...]) -> bool:
+def _hosts_has_github(path: Path) -> bool:
+    """Read gh's top-level host mapping; uncertainty is credential evidence.
+
+    gh removes the last user's host entry, but can leave an empty hosts.yml.
+    Recognize the block mapping gh writes, quoted keys, and JSON mappings.
+    Unsupported/malformed YAML is unverified, never proof of absence.
+    """
+    try:
+        text = gate.read_regular(path).decode("utf-8-sig")
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+    if not text.strip():
+        return False
+    if text.lstrip().startswith("{"):
+        try:
+            mapping = json.loads(text)
+        except ValueError:
+            return True
+        return not isinstance(mapping, dict) or any(
+            str(key).casefold() == "github.com" for key in mapping
+        )
+    host_seen = False
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#") or line in {"---", "..."}:
+            continue
+        if line[0].isspace():
+            if not host_seen or "\t" in line or ":" not in line:
+                return True
+            continue
+        match = re.fullmatch(r'''(?:'((?:[^']|'')+)'|"([^"\\]+)"|([\w.-]+))\s*:\s*.*''', line)
+        if match is None:
+            return True
+        host_seen = True
+        key = next(value for value in match.groups() if value is not None).replace("''", "'")
+        if key.casefold() == "github.com":
+            return True
+    return False
+
+
+def _credential_present(
+    home: Path, repositories: tuple[Path, ...], *, require_git: bool = False,
+) -> bool:
     override = os.environ.get("GH_CONFIG_DIR")
     xdg = os.environ.get("XDG_CONFIG_HOME")
     appdata = os.environ.get("APPDATA")
@@ -135,22 +182,28 @@ def _credential_present(home: Path, repositories: tuple[Path, ...]) -> bool:
         Path(appdata) / "GitHub CLI" if _GH_WINDOWS and appdata else
         home / ".config/gh"
     )
-    if (config_home / "hosts.yml").exists() or any(
+    if _hosts_has_github(config_home / "hosts.yml") or any(
         os.environ.get(name) for name in ("GH_TOKEN", "GITHUB_TOKEN")
     ):
         return True
     # Missing PATH must never use a platform's implicit system search path.
     search_path = os.environ.get("PATH", "")
     if not search_path or shutil.which("git", path=search_path) is None:
+        if require_git:
+            raise gate.GateError("GITHUB_CREDENTIAL_CONFIG_UNVERIFIED")
         return False
     targets = repositories or (home,)
-    return any(
-        gate.git(
-            repo, "config", "--get-regexp",
-            r"credential\..*helper|credential\.helper", optional=True,
+    for repo in targets:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "config", "--get-regexp",
+             r"credential\..*helper|credential\.helper"],
+            capture_output=True, text=True, timeout=30, check=False,
         )
-        for repo in targets
-    )
+        if result.returncode == 0 and result.stdout.strip():
+            return True
+        if result.returncode not in {0, 1}:
+            raise gate.GateError("GITHUB_CREDENTIAL_CONFIG_UNVERIFIED")
+    return False
 
 
 def _read_ownership(directory: Path) -> dict[str, object]:
@@ -164,9 +217,16 @@ def _read_ownership(directory: Path) -> dict[str, object]:
             "installing", "installed", "rollback_pending", "removed", "replaced",
         }:
             raise ValueError
-        token_digest = value.get("token_sha256")
-        if not isinstance(token_digest, str) or re.fullmatch(r"[0-9a-f]{64}", token_digest) is None:
+        recorded = value.get("token_fingerprint", value.get("token_sha256"))
+        if recorded is None and value["phase"] in {"removed", "replaced"}:
+            return value
+        if not isinstance(recorded, str) or re.fullmatch(r"[0-9a-f]{64}", recorded) is None:
             raise ValueError
+        if "token_fingerprint" in value:
+            _fingerprint(value, b"")
+        for name in ("failure_code", "recovery_error"):
+            if name in value and not _named_code(value[name]):
+                raise ValueError
         return value
     except (ValueError, TypeError):
         raise gate.GateError("GITHUB_OWNERSHIP_JOURNAL_INVALID") from None
@@ -182,17 +242,22 @@ def _write_ownership(directory: Path, ownership: dict[str, object]) -> None:
 def _phase(
     directory: Path, state: dict[str, object], ownership: dict[str, object], phase: str,
 ) -> None:
+    _host_key(state, ownership)
+    state.pop("token_sha256", None)
+    if phase in {"removed", "replaced"}:
+        ownership.pop("token_sha256", None)
     ownership["phase"] = phase
     # Persist recovery evidence before touching the mutable health state.
     _write_ownership(directory, ownership)
     state["credential_phase"] = phase
-    state["token_sha256"] = ownership["token_sha256"]
-    state.setdefault("fingerprint_key", secrets.token_hex(32))
+    if "token_fingerprint" in ownership:
+        state["token_fingerprint"] = ownership["token_fingerprint"]
     _write_state(directory, state)
 
 
 def _rollback(
     directory: Path, state: dict[str, object], ownership: dict[str, object], runner: SecretRunner,
+    home: Path, config: GitHubCredentialConfig,
 ) -> None:
     ownership["phase"] = "rollback_pending"
     _write_ownership(directory, ownership)
@@ -201,10 +266,68 @@ def _rollback(
     except (ValueError, OSError):
         # A damaged health file must not prevent independently proven removal.
         pass
-    token_digest = ownership["token_sha256"]
-    assert isinstance(token_digest, str)
-    _remove_owned(runner, token_digest)
-    _phase(directory, state, ownership, "removed")
+    disposition, token = _observe_ownership(runner, ownership, home, config)
+    if disposition == "owned":
+        assert token is not None
+        _key_token(directory, state, ownership, token)
+        _remove_owned(runner)
+        _phase(directory, state, ownership, "removed")
+    elif disposition == "removed" or disposition == "replaced":
+        _phase(directory, state, ownership, disposition)
+    else:
+        assert_never(disposition)
+
+
+def _host_key(state: dict[str, object], ownership: dict[str, object]) -> None:
+    key = ownership.get("fingerprint_key", state.get("fingerprint_key", secrets.token_hex(32)))
+    _fingerprint({"fingerprint_key": key}, b"")
+    state["fingerprint_key"] = ownership["fingerprint_key"] = key
+
+
+def _matches_token(ownership: dict[str, object], token: str) -> bool:
+    if "token_fingerprint" in ownership:
+        return hmac.compare_digest(
+            _fingerprint(ownership, b"github-token\0" + token.encode()),
+            str(ownership["token_fingerprint"]),
+        )
+    # Read legacy SHA only to establish the old transaction's ownership.
+    return hmac.compare_digest(gate.digest(token.encode()), str(ownership.get("token_sha256")))
+
+
+def _key_token(
+    directory: Path, state: dict[str, object], ownership: dict[str, object], token: str,
+) -> None:
+    _host_key(state, ownership)
+    ownership["token_fingerprint"] = _fingerprint(ownership, b"github-token\0" + token.encode())
+    ownership.pop("token_sha256", None)
+    _phase(directory, state, ownership, str(ownership["phase"]))
+
+
+def _named_code(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"(?:GITHUB|GATE|SECRET)_[A-Z0-9_]+", value) is not None
+    )
+
+
+def _error_code(error: Exception) -> str:
+    if isinstance(error, gate.GateError) and _named_code(str(error)):
+        return str(error)
+    return "GITHUB_PROVISIONING_FAILED"
+
+
+def _observe_ownership(
+    runner: SecretRunner, ownership: dict[str, object], home: Path, config: GitHubCredentialConfig,
+) -> tuple[Literal["owned", "removed", "replaced"], str | None]:
+    actual = _gh(runner, "auth", "token", "--hostname", "github.com")
+    token = actual.stdout.strip()
+    if actual.returncode == 0 and token:
+        return ("owned" if _matches_token(ownership, token) else "replaced"), token
+    if not _probe(runner)[0] and not _credential_present(
+        home, gate.repository_inventory(config), require_git=True,
+    ):
+        return "removed", None
+    raise gate.GateError("GITHUB_ROLLBACK_OWNERSHIP_UNVERIFIED")
 
 
 def _environment_inputs_ok(state: dict[str, object], denylist: bytes) -> bool:
@@ -242,6 +365,7 @@ def check_github_health(
     home = Path.home() if home is None else home
     report = GitHubHealth()
     authenticated = False
+    probe_failed = False
     credential_present = False
     try:
         present = (
@@ -254,6 +378,7 @@ def check_github_health(
             try:
                 authenticated, report.credential = _probe(runner)
             except (ValueError, OSError, subprocess.SubprocessError):
+                probe_failed = True
                 report.notes.append("GitHub authentication probe unverified")
         config = GitHubCredentialConfig.from_env() if config is None else config
         repositories = gate.repository_inventory(config)
@@ -262,7 +387,7 @@ def check_github_health(
         credential_present = _credential_present(home, repositories) or bool(
             ownership.get("phase") in {"installing", "installed", "rollback_pending"}
         )
-        if not authenticated and not credential_present:
+        if not authenticated and not credential_present and not probe_failed:
             report.credential = "absent"
             return report
         report.status = "ok" if authenticated else "unverified"
@@ -273,9 +398,14 @@ def check_github_health(
             report.issues.append("no gate repository inventory")
         directory = _directory(home)
         state = _read_state(directory)
+        needs_reprovision = "fingerprint_key" not in state
+        if needs_reprovision:
+            report.issues.append("GITHUB_STATE_REPROVISION_REQUIRED")
         if (state.get("credential_phase") in {"installing", "rollback_pending"}
                 or ownership.get("phase") in {"installing", "rollback_pending"}):
             report.issues.append("credential transaction interrupted; recovery required")
+            if "recovery_error" in ownership:
+                report.issues.append(str(ownership["recovery_error"]))
         path = directory / "forbidden-identifiers"
         denylist: bytes | None = None
         if (
@@ -291,6 +421,8 @@ def check_github_health(
                 denylist = gate.read_regular(path, private=True)
                 value = denylist.decode("utf-8")
                 gate.validate_denylist(template, value)
+                if needs_reprovision:
+                    raise gate.GateError("GITHUB_STATE_REPROVISION_REQUIRED")
                 report.denylist_fingerprint = _fingerprint(state, denylist)
                 if not _environment_inputs_ok(state, denylist):
                     report.issues.append("denylist environment override mismatch")
@@ -331,6 +463,8 @@ def check_github_health(
             )
             if not ok:
                 report.issues.append("repository gate or hook misprovisioned")
+            if not gate.script_imports_ok(repo):
+                report.issues.append("GATE_SCRIPT_IMPORT_SHADOW")
     except (ValueError, OSError, subprocess.SubprocessError):
         report.issues.append("GitHub gate verification failed")
         if not authenticated:
@@ -370,12 +504,7 @@ def _locked(directory: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def _remove_owned(runner: SecretRunner, token_digest: str) -> None:
-    actual = _gh(runner, "auth", "token", "--hostname", "github.com")
-    if actual.returncode != 0:
-        raise gate.GateError("GITHUB_ROLLBACK_OWNERSHIP_UNVERIFIED")
-    if gate.digest(actual.stdout.strip().encode()) != token_digest:
-        raise gate.GateError("GITHUB_ROLLBACK_OWNERSHIP_MISMATCH")
+def _remove_owned(runner: SecretRunner) -> None:
     if _gh(runner, "auth", "logout", "--hostname", "github.com").returncode != 0:
         raise gate.GateError("GITHUB_ROLLBACK_FAILED")
     if (_gh(runner, "auth", "token", "--hostname", "github.com").returncode == 0
@@ -422,26 +551,44 @@ def provision_github_credential(
                 state = _read_state(directory)
                 # Migrate existing suite-owned state, never an ambient login.
                 if not ownership and state.get("credential_phase") in {
-                    "installing", "installed", "rollback_pending",
+                    "installing", "installed", "rollback_pending", "removed", "replaced",
                 }:
-                    token_digest = state.get("token_sha256")
+                    token_digest = state.get("token_fingerprint", state.get("token_sha256"))
                     if (not isinstance(token_digest, str)
                             or re.fullmatch(r"[0-9a-f]{64}", token_digest) is None):
                         raise gate.GateError("GITHUB_STATE_INVALID")
-                    ownership = {"phase": state["credential_phase"], "token_sha256": token_digest}
-                    _write_ownership(directory, ownership)
+                    ownership = {"phase": state["credential_phase"]}
+                    if "token_fingerprint" in state:
+                        ownership.update(token_fingerprint=token_digest,
+                                         fingerprint_key=state.get("fingerprint_key"))
+                    else:
+                        ownership["token_sha256"] = token_digest
                 if (ownership.get("phase") in {"installing", "rollback_pending"}
                         or (ownership.get("phase") == "installed"
                             and state.get("credential_phase") in {
                                 "installing", "rollback_pending",
                             })):
-                    _rollback(directory, state, ownership, runner)
+                    _rollback(directory, state, ownership, runner, home, config)
                 elif ownership.get("phase") == "installed":
+                    disposition, actual_token = _observe_ownership(runner, ownership, home, config)
+                    if disposition == "owned":
+                        assert actual_token is not None
+                        _key_token(directory, state, ownership, actual_token)
+                    elif disposition == "removed" or disposition == "replaced":
+                        _phase(directory, state, ownership, disposition)
+                    else:
+                        assert_never(disposition)
+                residual = False
+                if ownership.get("phase") in {"removed", "replaced"}:
                     actual = _gh(runner, "auth", "token", "--hostname", "github.com")
-                    if actual.returncode != 0:
-                        raise gate.GateError("GITHUB_ROLLBACK_OWNERSHIP_UNVERIFIED")
-                    if gate.digest(actual.stdout.strip().encode()) != ownership["token_sha256"]:
-                        _phase(directory, state, ownership, "replaced")
+                    residual = actual.returncode == 0 and _matches_token(
+                        ownership, actual.stdout.strip(),
+                    )
+                    if residual:
+                        _key_token(directory, state, ownership, actual.stdout.strip())
+                    else:
+                        _phase(directory, state, ownership, str(ownership["phase"]))
+                _host_key(state, ownership)
                 template = gate.load_template()
                 repositories = gate.repository_inventory(config)
                 ambient = _probe(runner)[0]
@@ -492,21 +639,25 @@ def provision_github_credential(
                     raise gate.GateError("GITHUB_DENYLIST_VERIFICATION_FAILED")
                 checkpoint("verify")
                 if ambient:
+                    label = (
+                        "suite-owned; already installed"
+                        if state.get("credential_phase") == "installed"
+                        else "ambient; not adopted"
+                    )
+                    if residual:
+                        label += "; residual credential matches prior transaction"
                     return {
                         "ok": True,
                         "dry_run": False,
-                        "credential": (
-                            "suite-owned; already installed"
-                            if state.get("credential_phase") == "installed"
-                            else "ambient; not adopted"
-                        ),
+                        "credential": label,
                         "plan": list(PLAN),
                     }
                 token = resolver(config.token_ref)
-                if not token.strip() or "\n" in token or "\r" in token:
+                if not token.strip() or token != token.strip() or "\n" in token or "\r" in token:
                     raise gate.GateError("GITHUB_TOKEN_INVALID")
-                token_digest = gate.digest(token.encode())
-                ownership = {"token_sha256": token_digest, "phase": "installing"}
+                ownership = {"fingerprint_key": state["fingerprint_key"], "phase": "installing"}
+                token_fingerprint = _fingerprint(ownership, b"github-token\0" + token.encode())
+                ownership["token_fingerprint"] = token_fingerprint
                 _phase(directory, state, ownership, "installing")
                 result = _gh(
                     runner, "auth", "login", "--hostname", "github.com", "--with-token",
@@ -516,15 +667,24 @@ def provision_github_credential(
                     raise gate.GateError("GITHUB_CREDENTIAL_INSTALL_FAILED")
                 readback = _gh(runner, "auth", "token", "--hostname", "github.com")
                 if (readback.returncode != 0
-                        or gate.digest(readback.stdout.strip().encode()) != token_digest):
+                        or not _matches_token(ownership, readback.stdout.strip())):
                     raise gate.GateError("GITHUB_CREDENTIAL_READBACK_FAILED")
                 checkpoint("credential")
                 _phase(directory, state, ownership, "installed")
                 return {"ok": True, "dry_run": False, "credential": "installed", "plan": list(PLAN)}
-            except Exception:
+            except Exception as error:
+                first_code = _error_code(error)
                 if ownership.get("phase") in {"installing", "installed", "rollback_pending"}:
-                    _rollback(directory, state, ownership, runner)
-                raise
+                    ownership.setdefault("failure_code", first_code)
+                    try:
+                        _rollback(directory, state, ownership, runner, home, config)
+                    except Exception as recovery_error:
+                        ownership["recovery_error"] = _error_code(recovery_error)
+                        try:
+                            _write_ownership(directory, ownership)
+                        except (ValueError, OSError):
+                            pass  # Keep the first cause; earlier journal writes retain recovery.
+                raise gate.GateError(first_code) from None
     except gate.GateError:
         raise
     except Exception:
