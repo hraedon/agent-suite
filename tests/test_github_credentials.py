@@ -779,6 +779,15 @@ def test_r2_corrupt_health_state_cannot_bypass_owned_rollback(
         sandbox.provision()
     assert not sandbox.working()
     assert any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
+    if damage == "invalid-key":
+        # Round 5 requires manual reconciliation of disagreeing keys, even
+        # after the independently proven credential has been removed.
+        with pytest.raises(gate.GateError, match="GITHUB_FINGERPRINT_KEY_INVALID"):
+            sandbox.provision()
+        journal = credentials._read_ownership(path.parent)
+        repaired = json.loads(path.read_text())
+        repaired["fingerprint_key"] = journal["fingerprint_key"]
+        path.write_text(json.dumps(repaired))
     sandbox.provision()
     assert sandbox.health().ok
 
@@ -1363,3 +1372,150 @@ def test_r4_corrupt_terminal_journal_never_emits_untrusted_diagnostics(sandbox: 
     health = sandbox.health()
     assert not health.ok
     assert sandbox.token not in json.dumps(health.to_dict())
+
+
+@pytest.mark.parametrize("damaged", [
+    "journal", "state", "malformed-journal", "malformed-state",
+])
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
+def test_r5_divergent_keys_refuse_preserve_evidence_and_remove_proven_token(
+    sandbox: Sandbox, damaged: str,
+) -> None:
+    sandbox.provision()
+    directory = sandbox.home / ".config/agent-suite"
+    state_path = directory / "github-credential-state.json"
+    journal_path = directory / "github-credential-ownership.json"
+    target = state_path if damaged in {"state", "malformed-state"} else journal_path
+    record = json.loads(target.read_text())
+    record["fingerprint_key"] = "not-a-key" if damaged.startswith("malformed") else "ab" * 32
+    target.write_text(json.dumps(record))
+    before = (state_path.read_bytes(), journal_path.read_bytes())
+    health = sandbox.health()
+    assert not health.ok
+    assert "GITHUB_OWNERSHIP_KEY_UNVERIFIED" in health.issues
+    code = ("GITHUB_FINGERPRINT_KEY_INVALID" if damaged == "malformed-state"
+            else "GITHUB_OWNERSHIP_KEY_UNVERIFIED")
+    with pytest.raises(gate.GateError, match=code):
+        sandbox.provision()
+    assert not sandbox.working()
+    assert any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
+    assert before == (state_path.read_bytes(), journal_path.read_bytes())
+    assert not sandbox.health().ok
+    # Restoring the damaged record permits convergence after the proven logout.
+    record["fingerprint_key"] = json.loads(
+        (journal_path if target == state_path else state_path).read_text()
+    )["fingerprint_key"]
+    target.write_text(json.dumps(record))
+    assert sandbox.provision()["ok"]
+    assert sandbox.health().ok
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
+def test_r5_divergent_keys_never_revoke_an_unproven_ambient_token(sandbox: Sandbox) -> None:
+    sandbox.provision()
+    directory = sandbox.home / ".config/agent-suite"
+    journal_path = directory / "github-credential-ownership.json"
+    journal = json.loads(journal_path.read_text())
+    journal["fingerprint_key"] = "ab" * 32
+    journal_path.write_text(json.dumps(journal))
+    (sandbox.fake / "secret-input").write_text("operator-ambient-token")
+    before = journal_path.read_bytes()
+    with pytest.raises(gate.GateError, match="GITHUB_OWNERSHIP_KEY_UNVERIFIED"):
+        sandbox.provision()
+    assert sandbox.working()
+    assert not any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
+    assert journal_path.read_bytes() == before
+    assert not sandbox.health().ok
+
+
+@pytest.mark.parametrize("ref_kind", ["denylist", "token"])
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
+def test_r5_resolver_named_failure_is_preserved(sandbox: Sandbox, ref_kind: str) -> None:
+    failed_ref = sandbox.config.denylist_ref if ref_kind == "denylist" else sandbox.config.token_ref
+    def resolve(ref: str) -> str:
+        if ref == failed_ref:
+            raise ValueError("SECRET_RESOLUTION_FAILED")
+        return sandbox.resolve(ref)
+    with pytest.raises(gate.GateError, match=r"^SECRET_RESOLUTION_FAILED$"):
+        credentials.provision_github_credential(sandbox.config, home=sandbox.home, resolver=resolve)
+    assert not sandbox.working()
+
+
+def test_r5_unconfigured_authenticated_host_has_actionable_remediation(sandbox: Sandbox) -> None:
+    (sandbox.fake / "active").touch()
+    health = credentials.check_github_health(GitHubCredentialConfig(), home=sandbox.home,
+                                             gh_installed=True)
+    assert not health.ok
+    assert any("AGENT_SUITE_GITHUB_REPOSITORIES" in note and
+               "bootstrap --github-credential" in note for note in health.notes)
+
+
+@pytest.mark.parametrize("value", ["12345", "true", "null", "1.5", "0xFF", "2026-10-03"])
+def test_r5_yaml_non_string_scalars_are_unverified(sandbox: Sandbox, value: str) -> None:
+    hosts = sandbox.home / ".config/gh/hosts.yml"
+    hosts.parent.mkdir(parents=True)
+    hosts.write_text(f"example.invalid:\n    user: {value}\n")
+    assert sandbox.health().credential == "unverified"
+    assert not sandbox.health().ok
+
+
+def test_r5_contract_does_not_certify_unverified_authentication() -> None:
+    contract = (Path(__file__).parents[1] / "docs/bootstrap-contract.md").read_text()
+    assert "unverified is not proof of authentication or push capability" in contract
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
+def test_r5_either_key_can_prove_the_retained_ownership_fingerprint(sandbox: Sandbox) -> None:
+    sandbox.provision()
+    directory = sandbox.home / ".config/agent-suite"
+    state_path = directory / "github-credential-state.json"
+    journal_path = directory / "github-credential-ownership.json"
+    state = json.loads(state_path.read_text())
+    state.pop("token_fingerprint")  # Health metadata lost this duplicate, but retained its key.
+    state_path.write_text(json.dumps(state))
+    journal = json.loads(journal_path.read_text())
+    journal["fingerprint_key"] = "ab" * 32
+    journal_path.write_text(json.dumps(journal))
+    before = (state_path.read_bytes(), journal_path.read_bytes())
+    with pytest.raises(gate.GateError, match="GITHUB_OWNERSHIP_KEY_UNVERIFIED"):
+        sandbox.provision()
+    assert not sandbox.working()
+    assert before == (state_path.read_bytes(), journal_path.read_bytes())
+
+
+def test_r5_resolver_diagnostic_that_looks_like_a_code_cannot_leak() -> None:
+    secret_diagnostic = "SECRET_THROWAWAY_IDENTIFIER_CANARY"
+    assert credentials._error_code(ValueError(secret_diagnostic)) == "GITHUB_PROVISIONING_FAILED"
+
+
+@pytest.mark.parametrize("phase", ["installed", "removed", "replaced"])
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
+def test_r5_state_ownership_proof_survives_journal_disposition(
+    sandbox: Sandbox, phase: str,
+) -> None:
+    sandbox.provision()
+    directory = sandbox.home / ".config/agent-suite"
+    path = directory / "github-credential-ownership.json"
+    journal = json.loads(path.read_text())
+    journal.update(phase=phase, token_fingerprint="00" * 32)
+    path.write_text(json.dumps(journal))
+    (sandbox.repo / "scripts/check_committed_identifiers.py").write_text("unknown gate")
+    with pytest.raises(gate.GateError, match="GATE_OVERWRITE_REFUSED"):
+        sandbox.provision()
+    assert not sandbox.working()
+    assert any(call[:2] == ["auth", "logout"] for call in sandbox.calls())

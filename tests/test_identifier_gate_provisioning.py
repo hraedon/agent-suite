@@ -616,3 +616,55 @@ def test_r4_render_refuses_unsafe_repository_name(sandbox: Sandbox, name: str) -
     # Pure rendering: invalid Windows filenames need not exist on disk.
     with pytest.raises(gate.GateError, match="GATE_REPOSITORY_NAME_UNSAFE"):
         gate.load_template().render(sandbox.repo.parent / name)
+
+
+@pytest.mark.parametrize("configured", [
+    "nonexistent/../githooks", "~/../githooks", "%(prefix)/../githooks",
+])
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
+def test_r5_git_resolved_hook_directory_is_required(sandbox: Sandbox, configured: str) -> None:
+    sandbox.provision()
+    git(sandbox.repo, "config", "core.hooksPath", configured)
+    assert not gate.hook_ok(sandbox.repo, gate.load_template())
+    assert not sandbox.health().ok
+    with pytest.raises(gate.GateError, match="GATE_HOOK_OVERWRITE_REFUSED"):
+        gate.check_hook_overwrite(sandbox.repo, gate.load_template())
+    assert sandbox.provision(force=True)["ok"]
+    assert sandbox.health().ok
+
+
+@pytest.mark.parametrize("condition", ["include", 'includeIf "onbranch:other"'])
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
+def test_r5_included_hook_config_requires_force_and_is_named(
+    sandbox: Sandbox, condition: str,
+) -> None:
+    included = sandbox.repo.parent / "included.cfg"
+    included.write_text("[core]\n\thooksPath = githooks\n")
+    with (sandbox.repo / ".git/config").open("a") as stream:
+        stream.write(f"[{condition}]\n\tpath = {included.as_posix()}\n")
+    with pytest.raises(gate.GateError, match="GATE_HOOK_CONFIG_UNVERIFIED"):
+        sandbox.provision()
+    assert not sandbox.working()
+    (sandbox.fake / "active").touch()
+    assert "GATE_HOOK_CONFIG_UNVERIFIED" in sandbox.health().issues
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
+)
+def test_r5_included_override_fails_effective_post_install_verification(sandbox: Sandbox) -> None:
+    included = sandbox.repo.parent / "included.cfg"
+    included.write_text("[core]\n\thooksPath = nonexistent/../githooks\n")
+    with (sandbox.repo / ".git/config").open("a") as stream:
+        stream.write(f"[include]\n\tpath = {included.as_posix()}\n")
+    with pytest.raises(gate.GateError, match="GITHUB_GATE_VERIFICATION_FAILED"):
+        sandbox.provision(force=True)
+    assert not sandbox.working()
+    assert not any(call[:2] == ["auth", "login"] for call in sandbox.calls())

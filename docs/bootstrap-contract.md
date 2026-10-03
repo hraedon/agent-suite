@@ -459,6 +459,14 @@ also requires explicit force. When `core.hooksPath` is unset, active nonsample
 hooks in Git's default hooks directory require force too, including the shared
 hooks directory of a linked worktree. Symlinked or junction hook ancestors
 are unhealthy. No unknown bytes are merged into the canonical.
+Hook effectiveness uses `git rev-parse --git-path hooks` from each worktree:
+the returned directory must exist and identify the installed `githooks` directory
+via `samefile`. Lexical path normalization does not establish hook effectiveness.
+Included hook configuration, including currently inactive `includeIf` files,
+is named `GATE_HOOK_CONFIG_UNVERIFIED`: the suite cannot certify future conditional
+configuration changes. Provisioning requires force for these configurations;
+after writing hooksPath it verifies Git's effective directory again. An include
+that still overrides it prevents credential installation even with force.
 
 Only after verification does `gh auth login --hostname github.com --with-token`
 receive the resolved token on stdin. Captured child output is never forwarded.
@@ -533,6 +541,12 @@ credential absent, provisioning can discard that obsolete fingerprint and
 converge without a backup. A damaged journal must be restored from backup or
 archived only after independently confirming the credential gone; a state-only
 repair does not repair a damaged journal.
+If state and journal keys disagree, or the journal key is invalid, doctor reports
+`GITHUB_OWNERSHIP_KEY_UNVERIFIED` and provisioning refuses. Neither key is rewritten
+and ownership is never relinquished on that evidence. On failure, either intact
+record can independently prove a matching live token and authorize logout before
+metadata writes; divergent records remain unchanged for manual repair. Restore
+the original matching private records from backup, then rerun provisioning.
 
 A pre-existing ambient login is reported and is never adopted or revoked. This
 includes `GH_TOKEN` and `GITHUB_TOKEN`; the suite does not install, take ownership
@@ -551,6 +565,12 @@ named as unverified; mere helper/token-file presence with failed auth is
 `XDG_CONFIG_HOME/gh`, then the native Windows `APPDATA/GitHub CLI` or
 `HOME/.config/gh` fallback. Present but unverified credentials undergo the
 same guard checks; any incomplete guard makes doctor non-ok and exits 1.
+The credential label unverified is not proof of authentication or push capability;
+a healthy gate with that label only certifies the inspected guard, including the
+named inspection gaps. An existing gh login without suite configuration remains
+MISPROVISIONED. Configure the repository inventory and denylist/token backend
+references in suite.env, run `agent-suite bootstrap --github-credential`, then
+`agent-suite doctor`; doctor prints that remediation when inventory is empty.
 Missing or unreadable `scripts/` is named separately from an import-shadow issue.
 Working authentication with empty inventory,
 missing/invalid/readable/stale denylist, invalid template lock, a stale/unknown/

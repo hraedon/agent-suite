@@ -155,8 +155,8 @@ def _hosts_has_github(path: Path) -> bool:
             or any(str(key).casefold() == "github.com" for key in mapping)
             or any(not _host_mapping_valid(value) for value in mapping.values())
         )
-    # Deliberate subset: one block document, string keys, nested mappings,
-    # simple string scalars or empty maps. Anything else is unverified.
+    # Presence-only subset: one block document, string keys and values,
+    # nested mappings or empty maps. Unsupported input remains unverified.
     levels: list[tuple[int, set[str]]] = [(0, set())]
     previous_indent = -1
     previous_mapping = False
@@ -217,6 +217,10 @@ def _host_scalar_valid(value: str) -> bool:
             return False
     if value.startswith("'"):
         return re.fullmatch(r"'(?:[^']|'')*'", value) is not None
+    if (value.casefold() in {"true", "false", "yes", "no", "on", "off", "null", "~"}
+            or re.match(r"[+-]?(?:[0-9]|\.[0-9])", value)
+            or value.casefold() in {".nan", ".inf", "+.inf", "-.inf"}):
+        return False
     return re.fullmatch(r"[A-Za-z0-9_./@+-][A-Za-z0-9_.@/+=:-]*", value) is not None
 
 
@@ -338,17 +342,20 @@ def _phase(
 def _rollback(
     directory: Path, state: dict[str, object], ownership: dict[str, object], runner: SecretRunner,
     home: Path, config: GitHubCredentialConfig,
-    *, current_transaction: bool = False,
+    *, current_transaction: bool = False, metadata_unverified: bool = False,
 ) -> None:
+    metadata_unverified = metadata_unverified or _keys_disagree(state, ownership)
     ownership["phase"] = "rollback_pending"
     try:
         disposition, token = _observe_ownership(
-            runner, ownership, home, config, current_transaction=current_transaction,
+            runner, ownership, home, config, current_transaction=current_transaction, state=state,
         )
         if disposition == "owned":
             assert token is not None
             # No metadata write may prevent removal of a proven-owned token.
             _remove_owned(runner)
+            if metadata_unverified:
+                return  # Preserve both independent records for manual repair.
             _host_key(state, ownership)
             ownership["token_fingerprint"] = _fingerprint(
                 ownership, b"github-token\0" + token.encode(),
@@ -360,9 +367,11 @@ def _rollback(
         else:
             assert_never(disposition)
     except Exception:
-        _recovery_phase(directory, state, ownership, "rollback_pending")
+        if not metadata_unverified:
+            _recovery_phase(directory, state, ownership, "rollback_pending")
         raise
-    _recovery_phase(directory, state, ownership, disposition)
+    if not metadata_unverified:
+        _recovery_phase(directory, state, ownership, disposition)
 
 
 def _recovery_phase(
@@ -375,7 +384,16 @@ def _recovery_phase(
         pass
 
 
+def _keys_disagree(state: dict[str, object], ownership: dict[str, object]) -> bool:
+    return (
+        "fingerprint_key" in state and "fingerprint_key" in ownership
+        and state["fingerprint_key"] != ownership["fingerprint_key"]
+    )
+
+
 def _host_key(state: dict[str, object], ownership: dict[str, object]) -> None:
+    if _keys_disagree(state, ownership):
+        raise gate.GateError("GITHUB_OWNERSHIP_KEY_UNVERIFIED")
     key = ownership.get("fingerprint_key", state.get("fingerprint_key", secrets.token_hex(32)))
     _fingerprint({"fingerprint_key": key}, b"")
     state["fingerprint_key"] = ownership["fingerprint_key"] = key
@@ -389,6 +407,13 @@ def _matches_token(ownership: dict[str, object], token: str) -> bool:
         )
     # Read legacy SHA only to establish the old transaction's ownership.
     return hmac.compare_digest(gate.digest(token.encode()), str(ownership.get("token_sha256")))
+
+
+def _proves_token(record: dict[str, object], token: str) -> bool:
+    try:
+        return bool(token) and _matches_token(record, token)
+    except ValueError:
+        return False  # This record cannot prove ownership; keep the other evidence.
 
 
 def _key_token(
@@ -408,20 +433,30 @@ def _named_code(value: object) -> bool:
 
 
 def _error_code(error: Exception) -> str:
-    if isinstance(error, gate.GateError) and _named_code(str(error)):
+    if _named_code(str(error)) and (
+        isinstance(error, gate.GateError)
+        or (isinstance(error, ValueError)
+            and str(error) in {"SECRET_REF_INVALID", "SECRET_RESOLUTION_FAILED"})
+    ):
         return str(error)
     return "GITHUB_PROVISIONING_FAILED"
 
 
 def _observe_ownership(
     runner: SecretRunner, ownership: dict[str, object], home: Path, config: GitHubCredentialConfig,
-    *, current_transaction: bool = False,
+    *, current_transaction: bool = False, state: dict[str, object] | None = None,
 ) -> tuple[Literal["owned", "removed", "replaced"], str | None]:
     actual = _gh(runner, "auth", "token", "--hostname", "github.com")
     token = actual.stdout.strip()
     if actual.returncode == 0 and token:
-        if _matches_token(ownership, token):
+        records = (ownership,) if state is None else (ownership, state)
+        # Either retained key can authenticate either recorded fingerprint.
+        # Do not repair or reconcile the records merely because one proves ownership.
+        if any(_proves_token({**record, "fingerprint_key": key.get("fingerprint_key")}, token)
+               for record in records for key in records):
             return "owned", token
+        if state is not None and _keys_disagree(state, ownership):
+            raise gate.GateError("GITHUB_OWNERSHIP_KEY_UNVERIFIED")
         if not current_transaction:
             return "replaced", token
         raise gate.GateError("GITHUB_ROLLBACK_OWNERSHIP_UNVERIFIED")
@@ -502,8 +537,16 @@ def check_github_health(
         template = gate.load_template()
         if not repositories:
             report.issues.append("no gate repository inventory")
+            report.notes.append(
+                "Configure AGENT_SUITE_GITHUB_REPOSITORIES "
+                "(or AGENT_SUITE_GITHUB_REPOSITORY_ROOTS), "
+                "AGENT_SUITE_GITHUB_DENYLIST_REF and AGENT_SUITE_GITHUB_TOKEN_REF in suite.env; "
+                "run agent-suite bootstrap --github-credential, then agent-suite doctor."
+            )
         directory = _directory(home)
         state = _read_state(directory)
+        if _keys_disagree(state, ownership):
+            report.issues.append("GITHUB_OWNERSHIP_KEY_UNVERIFIED")
         needs_reprovision = "fingerprint_key" not in state
         if needs_reprovision:
             report.issues.append("GITHUB_STATE_REPROVISION_REQUIRED")
@@ -546,6 +589,8 @@ def check_github_health(
             except (ValueError, OSError):
                 report.issues.append("denylist invalid or unsafe")
         for repo in repositories:
+            if gate.hook_config_included(repo):
+                report.issues.append("GATE_HOOK_CONFIG_UNVERIFIED")
             state_name = gate.gate_state(repo, template)
             hook = gate.hook_ok(repo, template)
             inputs = denylist is not None and gate.hook_inputs_ok(repo, denylist)
@@ -572,7 +617,11 @@ def check_github_health(
             import_issue = gate.script_import_issue(repo)
             if import_issue is not None:
                 report.issues.append(import_issue)
-    except (ValueError, OSError, subprocess.SubprocessError):
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        if isinstance(error, gate.GateError) and _named_code(str(error)):
+            report.issues.append(str(error))
+            if str(error) in {"GITHUB_OWNERSHIP_JOURNAL_INVALID", "GITHUB_FINGERPRINT_KEY_INVALID"}:
+                report.issues.append("GITHUB_OWNERSHIP_KEY_UNVERIFIED")
         report.issues.append("GitHub gate verification failed")
         if not authenticated:
             report.credential = "unverified"
@@ -654,9 +703,26 @@ def provision_github_credential(
             state: dict[str, object] = {}
             ownership: dict[str, object] = {}
             login_attempted = False
+            metadata_unverified = False
             try:
-                ownership = _read_ownership(directory)
-                state = _read_state(directory)
+                try:
+                    ownership = _read_ownership(directory)
+                except gate.GateError as error:
+                    if str(error) != "GITHUB_OWNERSHIP_JOURNAL_INVALID":
+                        raise
+                    metadata_unverified = True
+                    state = _read_state(directory)
+                    raise gate.GateError("GITHUB_OWNERSHIP_KEY_UNVERIFIED") from None
+                try:
+                    state = _read_state(directory)
+                except gate.GateError as error:
+                    if (str(error) == "GITHUB_FINGERPRINT_KEY_INVALID"
+                            and "fingerprint_key" in ownership):
+                        metadata_unverified = True
+                    raise
+                if _keys_disagree(state, ownership):
+                    metadata_unverified = True
+                    raise gate.GateError("GITHUB_OWNERSHIP_KEY_UNVERIFIED")
                 if (not ownership and "token_fingerprint" in state
                         and "fingerprint_key" not in state):
                     # HMAC ownership cannot be reconstructed with a fresh key.
@@ -674,6 +740,7 @@ def provision_github_credential(
                     except (ValueError, OSError, subprocess.SubprocessError):
                         absent = False
                     if not absent:
+                        metadata_unverified = True
                         raise gate.GateError("GITHUB_STATE_REPROVISION_REQUIRED")
                     state.pop("token_fingerprint")
                     state.pop("credential_phase", None)
@@ -700,7 +767,9 @@ def provision_github_credential(
                             })):
                     _rollback(directory, state, ownership, runner, home, config)
                 elif ownership.get("phase") == "installed":
-                    disposition, actual_token = _observe_ownership(runner, ownership, home, config)
+                    disposition, actual_token = _observe_ownership(
+                        runner, ownership, home, config, state=state,
+                    )
                     if disposition == "owned":
                         assert actual_token is not None
                         _key_token(directory, state, ownership, actual_token)
@@ -711,8 +780,9 @@ def provision_github_credential(
                 residual = False
                 if ownership.get("phase") in {"removed", "replaced"}:
                     actual = _gh(runner, "auth", "token", "--hostname", "github.com")
-                    residual = actual.returncode == 0 and _matches_token(
-                        ownership, actual.stdout.strip(),
+                    residual = actual.returncode == 0 and (
+                        _proves_token(ownership, actual.stdout.strip())
+                        or _proves_token(state, actual.stdout.strip())
                     )
                     if residual:
                         _key_token(directory, state, ownership, actual.stdout.strip())
@@ -749,6 +819,10 @@ def provision_github_credential(
                 for repo in repositories:
                     gate.install_gate(repo, template, force=force)
                 checkpoint("gate")
+                # Shared hooksPath updates affect linked worktrees immediately.
+                # Prepare every target before comparing Git's effective directories.
+                for repo in repositories:
+                    (repo / "githooks").mkdir(exist_ok=True)
                 for repo in repositories:
                     gate.install_hook(repo, template, force=force)
                 checkpoint("hook")
@@ -809,15 +883,18 @@ def provision_github_credential(
                 return {"ok": True, "dry_run": False, "credential": label, "plan": list(PLAN)}
             except Exception as error:
                 first_code = _error_code(error)
-                if "token_fingerprint" in ownership or "token_sha256" in ownership:
+                if any(name in record for record in (ownership, state)
+                       for name in ("token_fingerprint", "token_sha256")):
                     ownership.setdefault("failure_code", first_code)
                     try:
                         _rollback(directory, state, ownership, runner, home, config,
-                                  current_transaction=login_attempted)
+                                  current_transaction=login_attempted,
+                                  metadata_unverified=metadata_unverified)
                     except Exception as recovery_error:
                         ownership["recovery_error"] = _error_code(recovery_error)
                         try:
-                            _write_ownership(directory, ownership)
+                            if not metadata_unverified:
+                                _write_ownership(directory, ownership)
                         except (ValueError, OSError):
                             pass  # Keep the first cause; earlier journal writes retain recovery.
                 raise gate.GateError(first_code) from None

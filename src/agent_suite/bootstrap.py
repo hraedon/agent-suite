@@ -876,8 +876,12 @@ def _is_terminal(status: StepStatus) -> bool:
             assert_never(other)
 
 
-def _compute_ok(steps: list[StepResult]) -> bool:
+def _compute_ok(steps: list[StepResult], *, dry_run: bool = False) -> bool:
     for s in steps:
+        if s.step is StepKind.GITHUB_CREDENTIALS and s.status not in {
+            StepStatus.DONE, StepStatus.ALREADY_DONE,
+        } and not (dry_run and s.status is StepStatus.PENDING):
+            return False
         match s.status:
             case StepStatus.FAILED | StepStatus.REFUSED:
                 return False
@@ -997,7 +1001,7 @@ def run_bootstrap(
             break
 
     return BootstrapResult(
-        ok=_compute_ok(results),
+        ok=_compute_ok(results, dry_run=dry_run),
         dry_run=dry_run,
         steps=results,
     )

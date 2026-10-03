@@ -974,3 +974,8 @@ def test_github_transaction_cannot_run_user_onboarding_after_credential() -> Non
     result = run_bootstrap(github_credential=True, user="example-user", env={})
     assert not result.ok
     assert result.steps[0].detail == "GITHUB_PROVISIONING_FLAG_CONFLICT"
+
+
+@pytest.mark.parametrize("status", [StepStatus.PENDING, StepStatus.SKIPPED])
+def test_r5_incomplete_github_step_is_not_success(status: StepStatus) -> None:
+    assert not _compute_ok([StepResult(StepKind.GITHUB_CREDENTIALS, status)])

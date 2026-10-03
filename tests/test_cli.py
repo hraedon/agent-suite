@@ -1186,3 +1186,18 @@ def test_github_unsupported_adapter_uses_error_envelope(
     assert json.loads(capsys.readouterr().out)["error"]["code"] == (
         "GITHUB_CREDENTIAL_ADAPTER_UNSUPPORTED"
     )
+
+
+@pytest.mark.parametrize("status", [
+    bootstrap_mod.StepStatus.PENDING, bootstrap_mod.StepStatus.SKIPPED,
+])
+def test_r5_incomplete_github_bootstrap_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    status: bootstrap_mod.StepStatus,
+) -> None:
+    monkeypatch.setattr(bootstrap_mod, "run_bootstrap", lambda **_: bootstrap_mod.BootstrapResult(
+        True, False, [bootstrap_mod.StepResult(bootstrap_mod.StepKind.GITHUB_CREDENTIALS,
+                                             status, "incomplete")],
+    ))
+    assert main(["bootstrap", "--github-credential", "--json"]) != 0
+    assert capsys.readouterr().out

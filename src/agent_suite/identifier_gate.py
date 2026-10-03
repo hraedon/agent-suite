@@ -263,21 +263,68 @@ def gate_state(repo: Path, template: GateTemplate) -> str:
     return "unknown"
 
 
+def effective_hooks(repo: Path) -> Path:
+    """Ask Git to expand and resolve hooksPath for this particular worktree."""
+    path = Path(git(repo, "rev-parse", "--git-path", "hooks"))
+    return path if path.is_absolute() else repo / path
+
+
+def hooks_directory_matches(repo: Path) -> bool:
+    try:
+        return os.path.samefile(effective_hooks(repo), repo / "githooks")
+    except OSError:
+        return False
+
+
+def hook_config_included(repo: Path) -> bool:
+    """Inspect all declared includes, including currently inactive includeIf files.
+
+    Git parses the files and expands path values; conditional applicability can
+    change later, so an included hooksPath cannot be certified statically.
+    """
+    pattern = r"^(include|includeif\..*)\.path$"
+    pending = [git(repo, "config", "--null", "--show-origin", "--type=path",
+                   "--get-regexp", pattern, optional=True)]
+    seen: set[Path] = set()
+    while pending:
+        entries = pending.pop().split("\0")
+        for index in range(0, len(entries) - 1, 2):
+            origin, entry = entries[index:index + 2]
+            if not origin.startswith("file:") or "\n" not in entry:
+                return True
+            source = Path(origin.removeprefix("file:"))
+            if not source.is_absolute():
+                source = repo / source
+            included = Path(entry.split("\n", 1)[1])
+            if not included.is_absolute():
+                included = source.parent / included
+            included = included.absolute()
+            if included in seen:
+                continue
+            seen.add(included)
+            if not included.exists():
+                # A missing conditional file can acquire hook settings later.
+                return True
+            git(repo, "config", "--file", str(included), "--no-includes", "--list")
+            if git(repo, "config", "--file", str(included), "--no-includes",
+                   "--get-regexp", r"^core\.hookspath$", optional=True):
+                return True
+            pending.append(git(repo, "config", "--file", str(included), "--no-includes",
+                               "--null", "--show-origin", "--type=path",
+                               "--get-regexp", pattern, optional=True))
+    return False
+
+
 def hook_ok(repo: Path, template: GateTemplate) -> bool:
     path = repo / "githooks/pre-push"
     expected, _ = template.render(repo)["githooks/pre-push"]
-    configured = git(repo, "config", "--get", "core.hooksPath", optional=True)
-    # Relative hooksPath is relative to the worktree for pre-push (non-bare).
-    target = Path(configured) if configured else Path(".git/hooks")
-    if not target.is_absolute():
-        target = repo / target
     return (
         path.is_file()
         and not path.is_symlink()
         and not any(parent.is_symlink() or parent.is_junction() for parent in path.parents)
         and path.read_bytes() == expected
         and os.access(path, os.X_OK)
-        and target.resolve() == path.parent.resolve()
+        and hooks_directory_matches(repo)
         and hook_interpreter_ok(repo)
         and script_imports_ok(repo)
     )
@@ -348,17 +395,14 @@ def install_gate(repo: Path, template: GateTemplate, *, force: bool = False) -> 
 def check_hook_overwrite(repo: Path, template: GateTemplate, *, force: bool = False) -> None:
     if force:
         return
+    if hook_config_included(repo):
+        raise GateError("GATE_HOOK_CONFIG_UNVERIFIED")
     configured = git(repo, "config", "--get", "core.hooksPath", optional=True)
     if configured:
-        target = Path(configured)
-        if not target.is_absolute():
-            target = repo / target
-        if target.resolve() != (repo / "githooks").resolve():
+        if not hooks_directory_matches(repo):
             raise GateError("GATE_HOOK_OVERWRITE_REFUSED")
     else:
-        hooks = Path(git(repo, "rev-parse", "--git-path", "hooks"))
-        if not hooks.is_absolute():
-            hooks = repo / hooks
+        hooks = effective_hooks(repo)
         if hooks.is_dir() and any(
             entry.is_file() and not entry.name.endswith(".sample") and os.access(entry, os.X_OK)
             for entry in hooks.iterdir()
@@ -390,3 +434,5 @@ def install_hook(repo: Path, template: GateTemplate, *, force: bool = False) -> 
     )
     # A relative path also works across worktrees sharing the common config.
     git(repo, "config", scope, "core.hooksPath", "githooks")
+    if not hooks_directory_matches(repo):
+        raise GateError("GITHUB_GATE_VERIFICATION_FAILED")

@@ -899,6 +899,12 @@ def main(argv: list[str] | None = None) -> int:
                 if step.step.value == "github_credentials" and step.status.value == "refused":
                     return emit_error(step.detail, "GitHub credential provisioning refused",
                                       json_mode=args.json)
+                if (step.step.value == "github_credentials"
+                        and step.status.value not in {"done", "already_done"}
+                        and not (args.dry_run and step.status.value == "pending")):
+                    return emit_error("GITHUB_PROVISIONING_INCOMPLETE",
+                                      "GitHub credential transaction did not complete",
+                                      json_mode=args.json)
             if getattr(args, "json", False):
                 import json as _json
 
