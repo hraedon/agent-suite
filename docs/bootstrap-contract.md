@@ -433,6 +433,10 @@ release artifact; the local source checkout is not needed on deployed hosts.
 Git attributes preserve byte-exact snapshot and lock contents on Windows
 checkouts regardless of `core.autocrlf`; verification never normalizes bytes.
 
+Repository leaf names must match `[A-Za-z0-9_.-]+` (excluding `.` and `..`);
+unsafe names return `GATE_REPOSITORY_NAME_UNSAFE` before rendering Bash. Parent
+directory names may contain spaces.
+
 Provisioning renders the five MANIFEST payloads, preserves a detectable existing
 denylist variable, installs the pinned executable pre-push hook, sets the local
 `core.hooksPath` (worktree config when enabled), then verifies all payloads and
@@ -469,40 +473,66 @@ migrated to keyed metadata or discarded when the old credential is gone.
 
 Failed logins and failed re-runs remove suite-owned credentials with
 `gh auth logout --hostname github.com` only when token readback matches the
-transaction fingerprint. The first failure code remains the returned error;
+transaction fingerprint, even if the journal currently says `removed` or
+`replaced`. A proven-owned token is logged out before any rollback metadata
+write. Metadata updates after removal are best-effort; damaged state paths,
+symlinks and unavailable storage cannot block that logout. The first failure
+code remains the returned error;
 cleanup failure has a separate recovery code in the private journal and doctor
 output. Recovery distinguishes three cases:
 
 - A readable matching token is suite-owned and can be removed before retrying.
+  A healthy rerun can label a matching residual credential without adopting it
+  anew; a failed rerun still removes that proven-owned credential.
 - Failed token and status probes, with no GitHub host entry, token environment
-  value or credential-helper evidence, prove the old credential absent. Recovery
+  value, with Git configuration successfully inspected, prove the old gh token
+  absent. Credential helpers are a separate ambient path. Recovery
   clears the pending phase and continues, including a crash before login or an
   operator logout. An empty or other-host `hosts.yml` is not a GitHub credential.
-- A readable different token relinquishes ownership without logout. Further
-  provisioning treats the operator's credential as ambient. A matching token
-  found after a recorded removal is explicitly labeled a residual credential;
-  it remains ambient and is never silently re-adopted.
+- A readable different token from a previous transaction relinquishes ownership
+  without logout. Further provisioning treats the operator's credential as
+  ambient. During the current login transaction, a different readback is
+  unverified rather than replaced: the suite may have installed an inactive
+  account. Recovery stays pending until the matching account is readable again
+  or the operator confirms removal. Failed token commands with nonempty stdout
+  never prove absence.
 
 The host-entry rule follows [gh's logout implementation](https://github.com/cli/cli/blob/trunk/internal/config/config.go):
 last-user logout removes the host entry; with multiple users, gh removes the
 selected user and retains the remaining host configuration. Unsupported,
 malformed or unreadable host configuration remains unverified rather than proving
-absence. Probe errors and timeouts are unverified too. A configured helper is
-credential evidence even after gh logout; the suite cannot prove what that
-helper stores merely from a failed gh probe.
+absence. The supported subset is a single block document with string keys,
+nested mappings, simple string scalars, empty maps and full-line comments, or
+a JSON mapping of host mappings. Unsupported syntax, duplicate keys,
+malformed quoting, invalid indentation or an unparseable document stays
+unverified. Probe errors and timeouts are unverified too. A configured helper
+is an ambient credential path whose stored credentials are not inspected.
+Provisioning reports it and still installs denylist, gate, hook and verification
+before the gh token. It never adopts, modifies or revokes the helper. Doctor
+keeps this path unverified; a complete verified gate is healthy with the named
+note `git credential helper not inspected`.
 
 Unverifiable ownership retains `rollback_pending` and doctor stays non-ok. For
-manual recovery, the operator repairs gh/config access, removes any stale helper
-configuration only after checking its credentials, and reruns provisioning. If
+manual recovery, the operator repairs gh/config access and reruns provisioning. If
 removal is intended, the operator logs out the applicable GitHub account and
-checks that no token environment value or helper still supplies a credential,
+checks that no token environment value or gh host entry still supplies a credential,
 then reruns. Do not delete the ownership journal to bypass recovery. If journal
 metadata or its key is damaged, restore the private metadata from backup, or
 independently confirm the recorded credential is gone before archiving damaged
 metadata and reprovisioning. No unknown credential is revoked. Missing health
 state or a missing health fingerprint key is named
-`GITHUB_STATE_REPROVISION_REQUIRED`; doctor stays non-ok and read-only, while a
-rerun can restore it from the independently protected ownership journal.
+`GITHUB_STATE_REPROVISION_REQUIRED`; doctor stays non-ok and read-only. A rerun
+can restore the health key when a valid independently protected journal retains
+the original key. If both the journal and original fingerprint key are lost,
+a live credential cannot be identified by the old fingerprint. Generating a new key cannot prove prior token ownership.
+Provisioning preserves that evidence and returns `GITHUB_STATE_REPROVISION_REQUIRED`
+without creating an invalid journal. Restore the original key from private
+backup, then rerun; restoring an arbitrary new key cannot authenticate the old
+fingerprint. If token and status probes plus configuration prove the old gh
+credential absent, provisioning can discard that obsolete fingerprint and
+converge without a backup. A damaged journal must be restored from backup or
+archived only after independently confirming the credential gone; a state-only
+repair does not repair a damaged journal.
 
 A pre-existing ambient login is reported and is never adopted or revoked. This
 includes `GH_TOKEN` and `GITHUB_TOKEN`; the suite does not install, take ownership
@@ -521,6 +551,7 @@ named as unverified; mere helper/token-file presence with failed auth is
 `XDG_CONFIG_HOME/gh`, then the native Windows `APPDATA/GitHub CLI` or
 `HOME/.config/gh` fallback. Present but unverified credentials undergo the
 same guard checks; any incomplete guard makes doctor non-ok and exits 1.
+Missing or unreadable `scripts/` is named separately from an import-shadow issue.
 Working authentication with empty inventory,
 missing/invalid/readable/stale denylist, invalid template lock, a stale/unknown/
 missing gate, or an absent/mismatched/non-executable/misdirected hook is

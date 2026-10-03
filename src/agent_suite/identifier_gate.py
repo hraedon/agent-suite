@@ -76,6 +76,9 @@ class GateTemplate:
 
     def render(self, repo: Path) -> dict[str, tuple[bytes, int]]:
         # Match the pinned sync script: actual repo name and existing variable.
+        # The name also appears inside Bash strings and comments. Keep it data.
+        if repo.name in {".", ".."} or re.fullmatch(r"[A-Za-z0-9_.-]+", repo.name) is None:
+            raise GateError("GATE_REPOSITORY_NAME_UNSAFE")
         variable = DENYLIST_VAR
         gate = repo / "scripts/check_committed_identifiers.py"
         if gate.is_file():
@@ -282,18 +285,26 @@ def hook_ok(repo: Path, template: GateTemplate) -> bool:
 
 def script_imports_ok(repo: Path) -> bool:
     """The pinned scripts directory must not override standard-library imports."""
+    return script_import_issue(repo) is None
+
+
+def script_import_issue(repo: Path) -> str | None:
+    scripts = repo / "scripts"
+    if not scripts.exists():
+        return "GATE_SCRIPTS_MISSING"
     try:
-        return all(
+        safe = all(
             entry.name != "__pycache__"
             and entry.suffix != ".pyc"
             and not (
                 (entry.is_dir() or entry.suffix in {".py", ".pyi", ".so", ".pyd"})
                 and entry.name.split(".", 1)[0] in sys.stdlib_module_names
             )
-            for entry in (repo / "scripts").iterdir()
+            for entry in scripts.iterdir()
         )
     except OSError:
-        return False
+        return "GATE_SCRIPTS_UNREADABLE"
+    return None if safe else "GATE_SCRIPT_IMPORT_SHADOW"
 
 
 def hook_inputs_ok(repo: Path, denylist: bytes) -> bool:

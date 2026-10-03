@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_suite import github_credentials as credentials
 from agent_suite import identifier_gate as gate
 from agent_suite.config import GitHubCredentialConfig
 from tests.test_github_credentials import Sandbox, git
@@ -103,11 +104,13 @@ def test_absent_vs_unverified_helper_and_token_file(sandbox: Sandbox) -> None:
     git(sandbox.repo, "config", "credential.helper", "example-helper")
     assert sandbox.health().credential == "unverified"
     assert not sandbox.health().ok
-    with pytest.raises(gate.GateError, match="GITHUB_AMBIENT_CREDENTIAL_UNVERIFIED"):
-        sandbox.provision()
+    assert sandbox.provision()["ok"]
+    assert "git credential helper not inspected" in " ".join(sandbox.health().notes)
+    credentials.run(("gh", "auth", "logout", "--hostname", "github.com"))
     git(sandbox.repo, "config", "--unset", "credential.helper")
+    (sandbox.home / ".config/agent-suite/forbidden-identifiers").unlink()
     path = sandbox.home / ".config/gh/hosts.yml"
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("placeholder")
     assert sandbox.health().credential == "unverified"
     assert not sandbox.health().ok
@@ -606,3 +609,10 @@ def test_r3_non_module_data_files_do_not_shadow_stdlib(sandbox: Sandbox, entry: 
     scripts.mkdir()
     (scripts / entry).write_text("unused fixture")
     assert gate.script_imports_ok(sandbox.repo)
+
+
+@pytest.mark.parametrize("name", ["two words", "quoted'name", "dollar$name", "line\nname"])
+def test_r4_render_refuses_unsafe_repository_name(sandbox: Sandbox, name: str) -> None:
+    # Pure rendering: invalid Windows filenames need not exist on disk.
+    with pytest.raises(gate.GateError, match="GATE_REPOSITORY_NAME_UNSAFE"):
+        gate.load_template().render(sandbox.repo.parent / name)

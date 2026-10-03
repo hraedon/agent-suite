@@ -1082,3 +1082,284 @@ def test_r3_outer_token_whitespace_refuses_before_login(sandbox: Sandbox) -> Non
     with pytest.raises(gate.GateError, match="GITHUB_TOKEN_INVALID"):
         sandbox.provision()
     assert not any(call[:2] == ["auth", "login"] for call in sandbox.calls())
+
+
+@pytest.mark.parametrize("damage", ["directory", "symlink", "state-write", "journal-write"])
+@pytest.mark.parametrize("phase", ["installed", "installing"])
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r4_metadata_damage_cannot_prevent_owned_logout(
+    sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch, damage: str, phase: str,
+) -> None:
+    sandbox.provision()
+    directory = sandbox.home / ".config/agent-suite"
+    journal = directory / "github-credential-ownership.json"
+    value = json.loads(journal.read_text())
+    value["phase"] = phase
+    journal.write_text(json.dumps(value))
+    state = directory / "github-credential-state.json"
+    if damage == "directory":
+        state.unlink()
+        state.mkdir()
+    elif damage == "symlink":
+        target = directory / "state-backup.json"
+        state.rename(target)
+        state.symlink_to(target)
+    else:
+        original_writer = getattr(credentials, (
+            "_write_state" if damage == "state-write" else "_write_ownership"
+        ))
+        def unwritable(*args: object, **kwargs: object) -> None:
+            raise PermissionError("simulated unavailable metadata storage")
+        name = "_write_state" if damage == "state-write" else "_write_ownership"
+        monkeypatch.setattr(credentials, name, unwritable)
+    with pytest.raises(gate.GateError):
+        sandbox.provision()
+    assert not sandbox.working()
+    assert any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
+    if damage == "journal-write":
+        assert credentials._read_state(directory)["credential_phase"] == "removed"
+    if damage == "directory":
+        state.rmdir()
+    elif damage == "symlink":
+        state.unlink()
+    else:
+        monkeypatch.setattr(credentials, name, original_writer)
+    assert sandbox.provision()["ok"]
+    assert sandbox.health().ok
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r4_rollback_logs_out_before_metadata_writes(
+    sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox.provision()
+    directory = sandbox.home / ".config/agent-suite"
+    state = credentials._read_state(directory)
+    ownership = credentials._read_ownership(directory)
+    events: list[str] = []
+    original_state = credentials._write_state
+    original_journal = credentials._write_ownership
+
+    def write_state(path: Path, value: dict[str, object]) -> None:
+        events.append("state")
+        original_state(path, value)
+
+    def write_journal(path: Path, value: dict[str, object]) -> None:
+        events.append("journal")
+        original_journal(path, value)
+
+    def observed(
+        argv: tuple[str, ...], stdin: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if argv[1:3] == ("auth", "logout"):
+            events.append("logout")
+        return credentials.run(argv, stdin)
+
+    monkeypatch.setattr(credentials, "_write_state", write_state)
+    monkeypatch.setattr(credentials, "_write_ownership", write_journal)
+    credentials._rollback(directory, state, ownership, observed, sandbox.home, sandbox.config)
+    assert events[0] == "logout"
+    assert not sandbox.working()
+
+
+@pytest.mark.parametrize("logged_out", [False, True])
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r4_key_loss_without_journal_never_poisons_recovery(
+    sandbox: Sandbox, logged_out: bool,
+) -> None:
+    sandbox.provision()
+    directory = sandbox.home / ".config/agent-suite"
+    path = directory / "github-credential-state.json"
+    original = json.loads(path.read_text())
+    damaged = dict(original)
+    damaged.pop("fingerprint_key")
+    path.write_text(json.dumps(damaged))
+    journal = directory / "github-credential-ownership.json"
+    journal.unlink()
+    (sandbox.repo / "scripts/check_committed_identifiers.py").write_text("unknown gate")
+    if logged_out:
+        credentials.run(("gh", "auth", "logout", "--hostname", "github.com"))
+        with pytest.raises(gate.GateError, match="GATE_OVERWRITE_REFUSED"):
+            sandbox.provision()
+    else:
+        before = path.read_bytes()
+        for _ in range(2):
+            with pytest.raises(gate.GateError, match="GITHUB_STATE_REPROVISION_REQUIRED"):
+                sandbox.provision()
+            assert path.read_bytes() == before
+            assert not journal.exists()
+        # Restore the actual original key, never a newly invented key.
+        path.write_text(json.dumps(original))
+        with pytest.raises(gate.GateError, match="GATE_OVERWRITE_REFUSED"):
+            sandbox.provision()
+    assert not sandbox.working()
+    assert sandbox.provision(force=True)["ok"]
+    assert sandbox.health().ok
+
+
+@pytest.mark.parametrize("phase", ["removed", "replaced"])
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r4_matching_terminal_credential_is_removed_on_failure(
+    sandbox: Sandbox, phase: str,
+) -> None:
+    sandbox.provision()
+    directory = sandbox.home / ".config/agent-suite"
+    journal = directory / "github-credential-ownership.json"
+    value = json.loads(journal.read_text())
+    value["phase"] = phase
+    journal.write_text(json.dumps(value))
+    (sandbox.repo / "scripts/check_committed_identifiers.py").write_text("unknown gate")
+    with pytest.raises(gate.GateError, match="GATE_OVERWRITE_REFUSED"):
+        sandbox.provision()
+    assert not sandbox.working()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r4_current_readback_mismatch_retains_unverified_recovery(sandbox: Sandbox) -> None:
+    def raced(
+        argv: tuple[str, ...], stdin: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if argv[1:3] == ("auth", "token"):
+            return subprocess.CompletedProcess(argv, 0, "different-active-account-token", "")
+        return credentials.run(argv, stdin)
+    with pytest.raises(gate.GateError, match="GITHUB_CREDENTIAL_READBACK_FAILED"):
+        sandbox.provision(runner=raced)
+    directory = sandbox.home / ".config/agent-suite"
+    journal = json.loads((directory / "github-credential-ownership.json").read_text())
+    assert journal["phase"] == "rollback_pending"
+    assert journal["recovery_error"] == "GITHUB_ROLLBACK_OWNERSHIP_UNVERIFIED"
+    assert not sandbox.health().ok
+    assert not any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
+    # The matching account becomes active again; recovery removes it and retries.
+    assert sandbox.provision()["ok"]
+    assert any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r4_helper_path_is_reported_and_does_not_block_provisioning(sandbox: Sandbox) -> None:
+    git(sandbox.repo, "config", "credential.helper", "example-helper")
+    assert not sandbox.health().ok
+    visited: list[str] = []
+
+    def ordered(step: str) -> None:
+        visited.append(step)
+        assert sandbox.working() == (step == "credential")
+
+    outcome = sandbox.provision(inject=ordered)
+    assert visited == list(credentials.PLAN)
+    assert git(sandbox.repo, "config", "credential.helper") == "example-helper"
+    assert "git credential helper not inspected" in str(outcome)
+    assert sandbox.health().ok
+    assert "git credential helper not inspected" in " ".join(sandbox.health().notes)
+    credentials.run(("gh", "auth", "logout", "--hostname", "github.com"))
+    health = sandbox.health()
+    assert health.credential == "unverified" and health.ok
+    assert sandbox.provision()["ok"]
+
+
+def test_r4_missing_scripts_has_accurate_health_label(sandbox: Sandbox) -> None:
+    (sandbox.fake / "active").touch()
+    health = sandbox.health()
+    assert not health.ok
+    assert "GATE_SCRIPTS_MISSING" in health.issues
+    assert "GATE_SCRIPT_IMPORT_SHADOW" not in health.issues
+
+
+@pytest.mark.parametrize("failure", ["missing-git", "invalid-config"])
+def test_r4_recovery_requires_verified_git_configuration(
+    sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    if failure == "missing-git":
+        monkeypatch.setenv("PATH", "")
+    else:
+        (sandbox.home / ".gitconfig").write_text("[unterminated")
+    with pytest.raises(gate.GateError, match="GITHUB_CREDENTIAL_CONFIG_UNVERIFIED"):
+        credentials._credential_present(sandbox.home, (sandbox.repo,), require_git=True)
+
+
+def test_r4_failed_token_command_with_stdout_is_not_absence(sandbox: Sandbox) -> None:
+    ownership: dict[str, object] = {"phase": "installed", "fingerprint_key": "00" * 32}
+    ownership["token_fingerprint"] = credentials._fingerprint(
+        ownership, b"github-token\0" + sandbox.token.encode(),
+    )
+    def failed(
+        argv: tuple[str, ...], stdin: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 1,
+                                           sandbox.token if argv[1:3] == ("auth", "token") else "",
+                                           "")
+    with pytest.raises(gate.GateError, match="GITHUB_ROLLBACK_OWNERSHIP_UNVERIFIED"):
+        credentials._observe_ownership(failed, ownership, sandbox.home, sandbox.config)
+
+
+@pytest.mark.parametrize("hosts", [
+    "example.invalid: {\n", "example.invalid: foo: bar\n",
+    "example.invalid:\n    user: 'unterminated\n",
+    'example.invalid:\n    user: "unterminated\n',
+    "example.invalid:\n    - user: example\n",
+    "example.invalid: {}\nexample.invalid: {}\n",
+])
+def test_r4_malformed_yaml_never_proves_absence(sandbox: Sandbox, hosts: str) -> None:
+    path = sandbox.home / ".config/gh/hosts.yml"
+    path.parent.mkdir(parents=True)
+    path.write_text(hosts)
+    assert sandbox.health().credential == "unverified"
+    assert not sandbox.health().ok
+
+
+def test_r4_contract_limits_key_loss_recovery() -> None:
+    contract = (Path(__file__).parents[1] / "docs/bootstrap-contract.md").read_text()
+    assert "both the journal and original fingerprint key are lost" in contract
+    assert "Generating a new key cannot prove prior token ownership" in contract
+
+
+@pytest.mark.parametrize("hosts", [
+    '{"example.invalid": {"user": "example"}}',
+    "---\nexample.invalid:\n    user: 'example'\n    git_protocol: https\n"
+    "    users:\n        example:\n            oauth_token: example-token\n...\n",
+])
+def test_r4_supported_other_host_mapping_is_absent(sandbox: Sandbox, hosts: str) -> None:
+    path = sandbox.home / ".config/gh/hosts.yml"
+    path.parent.mkdir(parents=True)
+    path.write_text(hosts)
+    assert sandbox.health().credential == "absent"
+
+
+@pytest.mark.parametrize("hosts", [
+    '{"example.invalid": []}', '{"example.invalid": null}',
+    '{"example.invalid": {}, "example.invalid": {}}',
+    '{"example.invalid": {"user": "example", "user": "other"}}',
+    '{"example.invalid": {"user": NaN}}',
+    '{"example.invalid": ' + '{"nested":' * 1100 + '{}' + '}' * 1100 + '}',
+], ids=["array", "null", "duplicate-host", "duplicate-field", "non-finite", "deep"])
+def test_r4_unsupported_host_json_is_unverified(sandbox: Sandbox, hosts: str) -> None:
+    path = sandbox.home / ".config/gh/hosts.yml"
+    path.parent.mkdir(parents=True)
+    path.write_text(hosts)
+    assert sandbox.health().credential == "unverified"
+    assert not sandbox.health().ok
+
+
+def test_r4_corrupt_terminal_journal_never_emits_untrusted_diagnostics(sandbox: Sandbox) -> None:
+    directory = sandbox.home / ".config/agent-suite"
+    directory.mkdir(parents=True, mode=0o700)
+    credentials._write_state(directory, {
+        "fingerprint_key": "00" * 32, "credential_phase": "rollback_pending",
+    })
+    credentials._write_ownership(directory, {"phase": "removed", "recovery_error": sandbox.token})
+    (sandbox.fake / "active").touch()
+    health = sandbox.health()
+    assert not health.ok
+    assert sandbox.token not in json.dumps(health.to_dict())
