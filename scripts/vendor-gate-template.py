@@ -30,11 +30,18 @@ def vendor(source: Path, commit: str, destination: Path) -> None:
 
     def git(*args: str) -> bytes:
         return subprocess.run(
-            ["git", "-C", str(source), *args],
+            ["git", "--no-optional-locks", "--no-replace-objects", "-C", str(source), *args],
             capture_output=True,
             check=True,
         ).stdout
 
+    if git("for-each-ref", "--format=%(refname)", "refs/replace").strip():
+        raise ValueError("template replace refs refused")
+    grafts = Path(git("rev-parse", "--git-path", "info/grafts").decode().strip())
+    if not grafts.is_absolute():
+        grafts = source / grafts
+    if grafts.exists() or grafts.is_symlink():
+        raise ValueError("template grafts refused")
     if git("status", "--porcelain", "--untracked-files=all").strip():
         raise ValueError("dirty template source refused")
     if git("rev-parse", f"{commit}^{{commit}}").decode().strip() != commit:
@@ -42,17 +49,22 @@ def vendor(source: Path, commit: str, destination: Path) -> None:
     if git("symbolic-ref", "--short", "HEAD").decode().strip() != "main":
         raise ValueError("template source must be on main")
     ancestry = subprocess.run(
-        ["git", "-C", str(source), "merge-base", "--is-ancestor", commit, "refs/heads/main"],
+        ["git", "--no-optional-locks", "--no-replace-objects", "-C", str(source), "merge-base",
+         "--is-ancestor", commit, "refs/heads/main"],
         capture_output=True,
         check=False,
     )
     if ancestry.returncode != 0:
         raise ValueError("template commit must be an ancestor of main HEAD")
+    blobs: dict[str, str] = {}
     for name in FILES:
         entry = git("ls-tree", commit, "--", name).decode().split()
         if len(entry) < 3 or entry[0] not in {"100644", "100755"} or entry[1] != "blob":
             raise ValueError("template payload must be a regular blob")
+        blobs[name] = entry[2]
     payload = {name: git("show", f"{commit}:{name}") for name in FILES}
+    if any(payload[name] != git("cat-file", "blob", blobs[name]) for name in FILES):
+        raise ValueError("template blob readback mismatch")
     rendered = payload["check_committed_identifiers.py"].replace(
         b"@@DENYLIST_VAR@@",
         b"PIN_FORBIDDEN_IDENTIFIERS",
@@ -75,9 +87,8 @@ def vendor(source: Path, commit: str, destination: Path) -> None:
     snapshot.mkdir(parents=True, exist_ok=True)
     for name, data in payload.items():
         (snapshot / name).write_bytes(data)
-    (destination / "gate-template.lock.json").write_text(
-        json.dumps(lock, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
+    (destination / "gate-template.lock.json").write_bytes(
+        (json.dumps(lock, sort_keys=True, indent=2) + "\n").encode("utf-8")
     )
 
 

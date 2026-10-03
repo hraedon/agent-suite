@@ -341,3 +341,35 @@ def test_open_registry_matches_contract_and_executing_observations() -> None:
         assert any(
             name.startswith(prefix) and "not_satisfied_at_pin_5233019" in name for name in globals()
         )
+
+
+@pytest.mark.parametrize("replacement", ["blob", "graft"])
+def test_r2_vendor_refuses_replaced_objects_and_grafts(tmp_path: Path, replacement: str) -> None:
+    script = Path(__file__).parents[1] / "scripts/vendor-gate-template.py"
+    spec = importlib.util.spec_from_file_location("vendor_gate_r2", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = tmp_path / "source"
+    source.mkdir()
+    git(source, "init", "-q", "-b", "main")
+    git(source, "config", "user.name", "Example")
+    git(source, "config", "user.email", "author@example.invalid")
+    for name, value in gate.load_template().payload.items():
+        (source / name).write_bytes(value)
+    git(source, "add", ".")
+    git(source, "commit", "-qm", "template fixture")
+    commit = git(source, "rev-parse", "HEAD")
+    if replacement == "blob":
+        old = git(source, "rev-parse", commit + ":pre-push")
+        path = source / "replacement"
+        path.write_text("exit 0\n")
+        new = git(source, "hash-object", "-w", str(path))
+        path.unlink()
+        git(source, "replace", old, new)
+    else:
+        (source / ".git/info/grafts").write_text(commit + "\n")
+    assert git(source, "status", "--porcelain") == ""
+    with pytest.raises(ValueError, match=r"replace|graft"):
+        module.vendor(source, commit, tmp_path / "vendored")
+    assert not (tmp_path / "vendored").exists()

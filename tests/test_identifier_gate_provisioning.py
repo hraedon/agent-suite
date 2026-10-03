@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -230,7 +232,7 @@ def test_host_lock_prevents_overlapping_transactions(sandbox: Sandbox) -> None:
             failures.append(str(exc))
 
     sandbox.provision(inject=overlap)
-    assert failures == ["GITHUB_PROVISIONING_FAILED"] * 5
+    assert failures == ["GITHUB_PROVISIONING_LOCKED"] * 5
     assert sandbox.working()
 
 
@@ -250,9 +252,9 @@ def test_config_paths_with_spaces_and_invalid_inventory(sandbox: Sandbox) -> Non
     reason="Windows adapter refuses POSIX hook/denylist delivery until ACL support",
 )
 def test_provisioning_refuses_existing_readable_denylist(sandbox: Sandbox) -> None:
-    sandbox.provision()
-    (sandbox.fake / "active").unlink()
     denylist = sandbox.home / ".config/agent-suite/forbidden-identifiers"
+    denylist.parent.mkdir(parents=True, mode=0o700)
+    denylist.write_text(sandbox.denylist)
     denylist.chmod(0o644)
     with pytest.raises(gate.GateError, match="GITHUB_DENYLIST_PERMISSIONS_INVALID"):
         sandbox.provision()
@@ -448,3 +450,90 @@ def test_unverified_credential_still_inspects_complete_guard(
     assert health.credential == "unverified"
     assert health.repositories and all(repo["ok"] for repo in health.repositories)
     assert health.ok
+
+
+@pytest.mark.parametrize("kind", ["no-remote", "symlink", "nested"])
+def test_r2_inventory_includes_every_push_capable_worktree(
+    sandbox: Sandbox, tmp_path: Path, kind: str,
+) -> None:
+    root = tmp_path / "inventory"
+    root.mkdir()
+    extra = (tmp_path / "external" if kind == "symlink" else
+             sandbox.repo / "module" if kind == "nested" else root / "no-remote")
+    extra.mkdir()
+    git(extra, "init", "-q")
+    if kind == "symlink":
+        if os.name == "nt":
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(root / "linked"), str(extra)],
+                           check=True, capture_output=True)
+        else:
+            (root / "linked").symlink_to(extra, target_is_directory=True)
+    config = replace(sandbox.config, roots=(root,))
+    assert extra.resolve() in gate.repository_inventory(config)
+
+
+def test_r2_inventory_refuses_bare_repository(sandbox: Sandbox, tmp_path: Path) -> None:
+    root = tmp_path / "inventory"
+    root.mkdir()
+    git(root, "init", "--bare", "-q", "bare.git")
+    config = replace(sandbox.config, roots=(root,))
+    with pytest.raises(gate.GateError, match="GATE_BARE_REPOSITORY_UNSUPPORTED"):
+        gate.repository_inventory(config)
+
+
+@pytest.mark.parametrize("autocrlf", ["true", "false", "input"])
+def test_r2_template_checkout_is_byte_exact_with_any_autocrlf(
+    tmp_path: Path, autocrlf: str,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    git(checkout, "init", "-q")
+    git(checkout, "config", "user.name", "Example")
+    git(checkout, "config", "user.email", "author@example.invalid")
+    git(checkout, "config", "core.autocrlf", autocrlf)
+    git(checkout, "config", "core.safecrlf", "false")
+    source = Path(__file__).parents[1]
+    shutil.copyfile(source / ".gitattributes", checkout / ".gitattributes")
+    data = checkout / "src/agent_suite/data"
+    data.mkdir(parents=True)
+    shutil.copyfile(gate.DATA / "gate-template.lock.json", data / "gate-template.lock.json")
+    shutil.copytree(gate.DATA / "gate-template", data / "gate-template")
+    git(checkout, "add", ".")
+    git(checkout, "commit", "-qm", "fixture snapshot")
+    for path in data.rglob("*"):
+        if path.is_file():
+            path.unlink()
+    git(checkout, "checkout", "--", "src/agent_suite/data")
+    assert gate.load_template(data).payload == gate.load_template().payload
+
+
+def test_r2_explicit_repository_includes_initialized_submodule(
+    sandbox: Sandbox, tmp_path: Path,
+) -> None:
+    source = tmp_path / "module-source"
+    source.mkdir()
+    git(source, "init", "-q")
+    git(source, "config", "user.name", "Example")
+    git(source, "config", "user.email", "author@example.invalid")
+    (source / "README").write_text("fixture")
+    git(source, "add", ".")
+    git(source, "commit", "-qm", "module fixture")
+    git(sandbox.repo, "-c", "protocol.file.allow=always", "submodule", "add",
+        str(source), "modules/example")
+    module = (sandbox.repo / "modules/example").resolve()
+    assert module in gate.repository_inventory(sandbox.config)
+    (sandbox.fake / "active").touch()
+    health = sandbox.health()
+    assert health.status == "MISPROVISIONED"
+    assert any(repo["repository"] == str(module) and not repo["ok"]
+               for repo in health.repositories)
+
+
+def test_r2_inventory_directory_cycle_terminates(sandbox: Sandbox) -> None:
+    root = sandbox.repo
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(root / "cycle"), str(root)],
+                       check=True, capture_output=True)
+    else:
+        (root / "cycle").symlink_to(root, target_is_directory=True)
+    assert gate.repository_inventory(replace(sandbox.config, roots=(root,))) == (root,)

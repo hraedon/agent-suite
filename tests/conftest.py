@@ -6,8 +6,8 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
-import shlex
 import shutil
 import socket
 import subprocess
@@ -139,8 +139,11 @@ class HostConfigGuard:
             if executable is None:
                 # Windows passes executable=None and a rendered command line.
                 if isinstance(argv, (str, bytes)):
-                    words = shlex.split(os.fsdecode(argv), posix=False)
-                    executable = words[0].strip('"') if words else None
+                    # argv[0] has Windows' simple program-name quoting rules.
+                    # Later arguments may contain escaped quotes/Python code;
+                    # parsing them with a POSIX lexer is both wrong and needless.
+                    match = re.match(r'^\s*(?:"([^"]+)"|([^\s]+))', os.fsdecode(argv))
+                    executable = (match.group(1) or match.group(2)) if match else None
                 elif isinstance(argv, (list, tuple)) and argv:
                     executable = argv[0]
             if not isinstance(executable, (str, bytes, os.PathLike)):
@@ -183,6 +186,7 @@ def host_config_guard(tmp_path_factory: pytest.TempPathFactory) -> HostConfigGua
             paths.append(Path(value).expanduser())
     if os.environ.get("APPDATA"):
         paths.append(Path(os.environ["APPDATA"]) / "agent-suite")
+        paths.append(Path(os.environ["APPDATA"]) / "GitHub CLI")
     guard = HostConfigGuard(tmp_path_factory.getbasetemp().resolve(),
                             tuple(path.resolve() for path in paths))
     sys.addaudithook(guard.audit)
@@ -245,8 +249,10 @@ def isolate_host_config(
     if isolated_build_wheels is not None:
         monkeypatch.setenv("PIP_NO_INDEX", "1")
         monkeypatch.setenv("PIP_FIND_LINKS", str(isolated_build_wheels))
-    home = tmp_path / "isolated-home"
-    home.mkdir()
+    # Windows ownership probes classify paths below USERPROFILE as user-owned.
+    # Include all this test's artifacts there, as on the real runner profile.
+    home = tmp_path if os.name == "nt" else tmp_path / "isolated-home"
+    home.mkdir(exist_ok=True)
     values = {
         "HOME": str(home), "USERPROFILE": str(home),
         "APPDATA": str(home / "AppData/Roaming"),

@@ -161,7 +161,8 @@ def test_ac58_1_fresh_host_and_rerun(sandbox: Sandbox) -> None:
     assert sandbox.health().repositories[0]["gate"] == "canonical-at-pin"
     directory = sandbox.home / ".config/agent-suite"
     assert directory.stat().st_mode & 0o777 == 0o700
-    for name in ("forbidden-identifiers", "github-credential-state.json"):
+    for name in ("forbidden-identifiers", "github-credential-state.json",
+                 "github-credential-ownership.json"):
         assert (directory / name).stat().st_mode & 0o777 == 0o600
     assert sandbox.provision()["credential"] == "suite-owned; already installed"
     assert sum(call[:2] == ["auth", "login"] for call in sandbox.calls()) == 1
@@ -328,7 +329,7 @@ print(os.environ[sys.argv[-1].split(":", 1)[1]])
     documents.append(json.dumps(health.to_dict()))
     documents.append(format_text(SuiteReport(True, [], github_health=health)))
     documents.append(json.dumps(sandbox.calls()))
-    documents.extend(p.read_text() for p in (sandbox.home / ".config/agent-suite").glob("*state*"))
+    documents.extend(p.read_text() for p in (sandbox.home / ".config/agent-suite").glob("*.json"))
     for surface in documents:
         assert sandbox.token not in surface
         assert sandbox.denylist not in surface
@@ -384,7 +385,7 @@ def test_shared_isolation_uses_fake_gh_and_clean_config() -> None:
     executable = shutil.which("gh", path=os.environ["PATH"])
     assert executable is not None
     assert Path(executable).parent.name == "isolated-bin"
-    assert Path.home().name == "isolated-home"
+    assert Path.home().name == "isolated-home" or os.name == "nt"
     assert not any(
         key.startswith(("GH_", "GITHUB_")) and key != "GH_CONFIG_DIR" for key in os.environ
     )
@@ -405,9 +406,10 @@ def test_guard_refuses_real_gh_before_process_creation(
     # marker proves the guard rejects process creation, not just the verdict.
     outside = tmp_path / "outside-test-isolation"
     outside.mkdir()
-    executable = outside / "gh"
+    executable = outside / ("gh.cmd" if os.name == "nt" else "gh")
     marker = outside / "executed"
     executable.write_text(
+        f'@echo executed > "{marker}"\n' if os.name == "nt" else
         f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n"
     )
     executable.chmod(0o755)
@@ -582,7 +584,7 @@ def test_verify_blocks_effective_hooks_path_override(
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(sandbox.repo / "disabled-hooks"))
     with pytest.raises(gate.GateError, match="GITHUB_GATE_VERIFICATION_FAILED"):
-        sandbox.provision()
+        sandbox.provision(force=True)
     assert not sandbox.working()
 
 
@@ -639,13 +641,16 @@ def test_windows_refusal_does_not_need_posix_sandbox(
 ) -> None:
     monkeypatch.setattr(credentials.sys, "platform", "win32")
     config = GitHubCredentialConfig("env:EXAMPLE_TOKEN", "env:EXAMPLE_DENYLIST")
+    before = set(tmp_path.iterdir())
     with pytest.raises(gate.GateError, match="GITHUB_CREDENTIAL_PLATFORM_UNSUPPORTED"):
         credentials.provision_github_credential(config, home=tmp_path)
-    assert set(tmp_path.iterdir()) == {tmp_path / "isolated-home", tmp_path / "isolated-bin"}
+    assert set(tmp_path.iterdir()) == before
 
 
 def test_doctor_names_uninspected_ssh_gap() -> None:
-    assert "ssh credential not inspected" in json.dumps(credentials.check_github_health().to_dict())
+    report = json.dumps(credentials.check_github_health().to_dict())
+    assert "ssh credential not inspected" in report
+    assert "Python startup customization not inspected" in report
 
 
 @pytest.mark.parametrize("value", ["value-with-spaces  ", "first\nsecond\n", '"quoted phrase"\n'])
@@ -700,3 +705,153 @@ def test_windows_adapter_dependencies_have_explicit_skip_reasons() -> None:
     ):
         assert any(mark.name == "skipif" and "Windows adapter" in mark.kwargs.get("reason", "")
                    for mark in getattr(function, "pytestmark", []))
+
+
+@pytest.mark.parametrize("location", ["xdg", "appdata"])
+def test_r2_unverified_credential_uses_platform_gh_config(
+    sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch, location: str,
+) -> None:
+    monkeypatch.delenv("GH_CONFIG_DIR")
+    monkeypatch.delenv("XDG_CONFIG_HOME")
+    if location == "xdg":
+        directory = sandbox.home / "other-xdg/gh"
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(directory.parent))
+    else:
+        directory = sandbox.home / "other-appdata/GitHub CLI"
+        monkeypatch.setenv("APPDATA", str(directory.parent))
+        monkeypatch.setattr(credentials, "_GH_WINDOWS", True)
+    directory.mkdir(parents=True)
+    (directory / "hosts.yml").write_text("github.com: {}")
+    health = sandbox.health()
+    assert health.credential == "unverified"
+    assert health.status == "MISPROVISIONED"
+    assert health.repositories and not health.ok
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r2_unreadable_owned_token_retains_recovery_and_reds_doctor(sandbox: Sandbox) -> None:
+    sandbox.provision()
+
+    def unavailable(
+        argv: tuple[str, ...], stdin: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if argv[1:3] in {("auth", "token"), ("auth", "status")}:
+            return subprocess.CompletedProcess(argv, 1, "", "")
+        return credentials.run(argv, stdin)
+
+    with pytest.raises(gate.GateError, match="GITHUB_ROLLBACK_OWNERSHIP_UNVERIFIED"):
+        sandbox.provision(runner=unavailable, inject=lambda _: (_ for _ in ()).throw(ValueError()))
+    path = sandbox.home / ".config/agent-suite/github-credential-state.json"
+    state = json.loads(path.read_text())
+    assert state["credential_phase"] == "rollback_pending"
+    assert sandbox.working() and not sandbox.health().ok
+    assert not any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
+    sandbox.provision()
+    assert sandbox.health().ok
+
+
+@pytest.mark.parametrize("damage", ["permissions", "json", "missing-key"])
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r2_corrupt_health_state_cannot_bypass_owned_rollback(
+    sandbox: Sandbox, damage: str,
+) -> None:
+    sandbox.provision()
+    path = sandbox.home / ".config/agent-suite/github-credential-state.json"
+    if damage == "permissions":
+        path.chmod(0o644)
+    elif damage == "json":
+        path.write_text("{")
+    else:
+        value = json.loads(path.read_text())
+        value.pop("fingerprint_key")
+        path.write_text(json.dumps(value))
+    with pytest.raises(gate.GateError):
+        sandbox.provision()
+    assert not sandbox.working()
+    assert any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
+    sandbox.provision()
+    assert sandbox.health().ok
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r2_denylist_environment_override_is_misprovisioned(
+    sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox.provision()
+    for name in ("AGENT_SUITE_FORBIDDEN_IDENTIFIERS", "OTHER_FORBIDDEN_IDENTIFIERS"):
+        monkeypatch.setenv(name, "decoy-only")
+        health = sandbox.health()
+        assert health.status == "MISPROVISIONED"
+        assert "denylist environment override mismatch" in health.issues
+        assert "decoy-only" not in json.dumps(health.to_dict())
+        monkeypatch.setenv(name, sandbox.denylist)
+        assert sandbox.health().ok
+        monkeypatch.setenv(name, "")
+        assert sandbox.health().ok
+        monkeypatch.delenv(name)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r2_existing_hooks_require_explicit_force(sandbox: Sandbox) -> None:
+    path = sandbox.repo / "githooks/pre-push"
+    path.parent.mkdir()
+    path.write_text("operator hook")
+    git(sandbox.repo, "config", "core.hooksPath", ".husky")
+    with pytest.raises(gate.GateError, match="GATE_HOOK_OVERWRITE_REFUSED"):
+        sandbox.provision()
+    assert path.read_text() == "operator hook"
+    assert git(sandbox.repo, "config", "core.hooksPath") == ".husky"
+    assert not sandbox.working()
+    sandbox.provision(force=True)
+    assert sandbox.health().ok
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r2_replaced_ambient_login_is_not_owned_and_preserves_gate_error(sandbox: Sandbox) -> None:
+    sandbox.provision()
+    (sandbox.fake / "secret-input").write_text("replacement-token")
+    (sandbox.fake / "active").write_text(gate.digest(b"replacement-token"))
+    assert sandbox.provision()["credential"] == "ambient; not adopted"
+    (sandbox.repo / "scripts/check_committed_identifiers.py").write_text("unknown")
+    with pytest.raises(gate.GateError, match="GATE_OVERWRITE_REFUSED"):
+        sandbox.provision()
+    assert sandbox.working()
+    assert not any(call[:2] == ["auth", "logout"] for call in sandbox.calls())
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows adapter refuses POSIX token/denylist delivery",
+)
+def test_r2_post_login_status_is_required_even_with_readable_token(sandbox: Sandbox) -> None:
+    def no_status(
+        argv: tuple[str, ...], stdin: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if argv[1:3] == ("auth", "status"):
+            return subprocess.CompletedProcess(argv, 1, "", "")
+        return credentials.run(argv, stdin)
+    with pytest.raises(gate.GateError, match="GITHUB_CREDENTIAL_INSTALL_FAILED"):
+        sandbox.provision(runner=no_status)
+    assert not sandbox.working()
+
+
+@pytest.mark.parametrize("key", ["00", "x" * 64, 123, None])
+def test_r2_fingerprint_key_shape_is_load_bearing(key: object) -> None:
+    with pytest.raises(gate.GateError, match="GITHUB_FINGERPRINT_KEY_INVALID"):
+        credentials._fingerprint({"fingerprint_key": key}, b"throwaway")
+
+
+def test_r2_windows_audit_reads_only_the_executable_not_python_code(tmp_path: Path) -> None:
+    from tests.conftest import HostConfigGuard
+    guard = HostConfigGuard(tmp_path, (), active=True)
+    argv = subprocess.list2cmdline([sys.executable, "-c", 'exec("abc \' def")'])
+    guard.audit("subprocess.Popen", (None, argv, None, dict(os.environ)))

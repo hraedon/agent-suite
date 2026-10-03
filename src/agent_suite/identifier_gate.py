@@ -164,7 +164,8 @@ def read_regular(path: Path, *, private: bool = False) -> bytes:
     """Check and read the same descriptor, refusing nonregular files/symlink swaps."""
     if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
         raise GateError("GATE_SYMLINK_REFUSED")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_BINARY", 0))
     descriptor = os.open(path, flags)
     with os.fdopen(descriptor, "rb") as stream:
         mode = os.fstat(stream.fileno()).st_mode
@@ -179,31 +180,51 @@ def normalized_gate_hash(value: bytes) -> str:
 
 def repository_inventory(config: GitHubCredentialConfig) -> tuple[Path, ...]:
     candidates = list(config.repositories)
-    for root in config.roots:
+    visited: set[Path] = set()
+
+    def unreadable(error: OSError) -> None:
+        raise GateError("GATE_INVENTORY_UNREADABLE") from error
+
+    def discover(root: Path) -> None:
         if not root.is_dir():
             raise GateError("GATE_INVENTORY_ROOT_MISSING")
-
-        def unreadable(error: OSError) -> None:
-            raise GateError("GATE_INVENTORY_UNREADABLE") from error
-
-        for directory, directories, files in os.walk(root, onerror=unreadable):
+        # Follow directory links, tracking resolved paths to terminate cycles.
+        # No remote is necessary for `git push URL`.
+        for directory, directories, files in os.walk(
+            root, onerror=unreadable, followlinks=True,
+        ):
+            repo = Path(directory).resolve()
+            if repo in visited:
+                directories.clear()
+                continue
+            visited.add(repo)
             if ".git" in directories or ".git" in files:
-                repo = Path(directory)
-                # SSH aliases/URL rewrites cannot be resolved safely. Include
-                # every remote-bearing repository under a configured root.
-                if git(repo, "remote"):
+                candidates.append(repo)
+            elif "HEAD" in files and "objects" in directories:
+                if git(repo, "rev-parse", "--is-bare-repository", optional=True) == "true":
+                    raise GateError("GATE_BARE_REPOSITORY_UNSUPPORTED")
+                if git(repo, "rev-parse", "--git-dir", optional=True):
                     candidates.append(repo)
             directories[:] = [name for name in directories if name != ".git"]
+
+    for root in (*config.repositories, *config.roots):
+        discover(root)
     repositories: list[Path] = []
     for candidate in candidates:
+        if git(candidate, "rev-parse", "--is-bare-repository") == "true":
+            raise GateError("GATE_BARE_REPOSITORY_UNSUPPORTED")
         repo = Path(git(candidate, "rev-parse", "--show-toplevel")).resolve()
         if repo not in repositories:
             repositories.append(repo)
-            candidates.extend(
-                Path(line[9:])
-                for line in git(repo, "worktree", "list", "--porcelain").splitlines()
-                if line.startswith("worktree ")
+            linked = tuple(
+                Path(field[9:])
+                for field in git(repo, "worktree", "list", "--porcelain", "-z").split("\0")
+                if field.startswith("worktree ")
             )
+            candidates.extend(linked)
+            # Initialized submodules/nested repos in every linked worktree count.
+            for worktree in linked:
+                discover(worktree)
     return tuple(repositories)
 
 
@@ -295,7 +316,25 @@ def install_gate(repo: Path, template: GateTemplate, *, force: bool = False) -> 
             atomic_write(path, content, mode)
 
 
-def install_hook(repo: Path, template: GateTemplate) -> None:
+def check_hook_overwrite(repo: Path, template: GateTemplate, *, force: bool = False) -> None:
+    if force:
+        return
+    configured = git(repo, "config", "--get", "core.hooksPath", optional=True)
+    if configured:
+        target = Path(configured)
+        if not target.is_absolute():
+            target = repo / target
+        if target.resolve() != (repo / "githooks").resolve():
+            raise GateError("GATE_HOOK_OVERWRITE_REFUSED")
+    path = repo / "githooks/pre-push"
+    if path.exists() or path.is_symlink():
+        expected, _ = template.render(repo)["githooks/pre-push"]
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != expected:
+            raise GateError("GATE_HOOK_OVERWRITE_REFUSED")
+
+
+def install_hook(repo: Path, template: GateTemplate, *, force: bool = False) -> None:
+    check_hook_overwrite(repo, template, force=force)
     content, mode = template.render(repo)["githooks/pre-push"]
     atomic_write(repo / "githooks/pre-push", content, mode)
     # Worktree-local configuration when enabled, otherwise Git's local config.
