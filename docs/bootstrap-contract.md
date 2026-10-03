@@ -386,3 +386,232 @@ This posture means the component repos must be natively Windows-correct
 (DPAPI or ACL, not `chmod 0o600`), and idiomatic config/state directories.
 A `windows-latest` CI job per repo (Plan 003 WI-5.1) catches import-time and
 attribute crashes cheaply and permanently.
+
+## BR-50 / AC-58: GitHub credentials and pinned identifier gate
+
+`bootstrap --github-credential [--dry-run] [--force-identifier-gate] [--json]`
+selects the entire GitHub transaction. Regular bootstrap also appends it when
+`AGENT_SUITE_GITHUB_TOKEN_REF` is configured, after the existing suite steps
+succeed. There is no credential-only installation path. The only adapter is
+`token`; App tokens, deploy keys and SSH keys return
+`GITHUB_CREDENTIAL_ADAPTER_UNSUPPORTED`.
+
+Configure `AGENT_SUITE_GITHUB_TOKEN_REF` and
+`AGENT_SUITE_GITHUB_DENYLIST_REF` with regista backend references, plus
+`AGENT_SUITE_GITHUB_REPOSITORIES` (a JSON array of explicit worktree paths).
+`AGENT_SUITE_GITHUB_REPOSITORY_ROOTS` optionally lists roots to walk for every
+push-capable Git worktree, including those with no configured remote, directory
+symlinks/junctions, initialized submodules, nested repos and registered linked
+worktrees. Explicitly listed repositories include their nested repos and all
+linked worktrees too. Directory cycles are deduplicated by resolved path. Bare
+repositories are detected and refused as `GATE_BARE_REPOSITORY_UNSUPPORTED`: the
+pinned hook requires a working tree, so bare repos cannot be silently excluded.
+Empty inventory refuses installation. Missing or unreadable inventory paths
+refuse verification. The inventory is an operator assertion of coverage;
+repositories outside configured paths and roots are not discovered.
+
+Under a host lock the order is denylist, gate, hook, verification, credential.
+The denylist is resolved through regista, validated with the pinned parser, and
+written atomically to `$HOME/.config/agent-suite/forbidden-identifiers` (0600,
+parent 0700). An existing group/world-readable denylist refuses provisioning.
+Native Windows token installation returns `GITHUB_CREDENTIAL_PLATFORM_UNSUPPORTED`
+until ACL-backed denylist delivery is available; dry run remains supported. The package ships all ten template files and a content lock from
+commit `5233019143546395b13ee2219045dace75587fb3`. The lock itself is pinned by
+SHA-256 in the installer. Lock or snapshot drift refuses provisioning.
+`scripts/vendor-gate-template.py SOURCE FULL_COMMIT_SHA` regenerates the snapshot
+and lock using Git commit objects; a dirty source, short SHA or an unrecognized
+canonical digest is refused. Nonregular Git blobs (including symlinks) are
+refused, as are replace refs and grafts. Git object reads disable replacements
+and compare each payload with its actual blob object. The source must be on main, and the commit must be an ancestor of
+local main HEAD. The template repository has no remote; this local ancestry
+check proves lineage, while review of the suite lock change authorizes the release.
+The lock records PR review of the lock change as its review
+provenance; the source's own hash registry is a consistency check, not proof
+of review. Re-pinning also requires updating the installer's
+pin and lock hash after gate review. The package snapshot is the backed-up suite
+release artifact; the local source checkout is not needed on deployed hosts.
+Git attributes preserve byte-exact snapshot and lock contents on Windows
+checkouts regardless of `core.autocrlf`; verification never normalizes bytes.
+
+Repository leaf names must match `[A-Za-z0-9_.-]+` (excluding `.` and `..`);
+unsafe names return `GATE_REPOSITORY_NAME_UNSAFE` before rendering Bash. Parent
+directory names may contain spaces.
+
+Provisioning renders the five MANIFEST payloads, preserves a detectable existing
+denylist variable, installs the pinned executable pre-push hook, sets the local
+`core.hooksPath` (worktree config when enabled), then verifies all payloads and
+the host denylist. A repo-local `.identifiers-denylist.local` must be absent
+or byte-for-byte equal to the host denylist. Nonempty environment variables ending
+in `FORBIDDEN_IDENTIFIERS` must have the same keyed fingerprint as the delivered
+denylist; mismatches make doctor MISPROVISIONED and prevent token installation. A preferred `.venv/bin/python`
+must resolve to, or be a byte copy of, the suite Python; unfamiliar executables
+are refused without running repository code. This checks binary identity only.
+Entries in the gate's `scripts/` directory that shadow standard-library modules
+(including package directories and Python extension modules), stray `*.pyc`
+files and `__pycache__` directories make doctor MISPROVISIONED and prevent
+credential installation. Ordinary data files such as `json.md` are allowed.
+Python startup customization (`.pth`, `sitecustomize`, external imports) is not inspected;
+doctor names that gap. This is accident prevention, not interpreter attestation.
+Recreate such venvs with the suite Python. It installs only canonical-at-pin. Stale known canonicals
+are upgraded; accepted variants and unknown copies require explicit
+`--force-identifier-gate`. An existing different `core.hooksPath` or pre-push body
+also requires explicit force. When `core.hooksPath` is unset, active nonsample
+hooks in Git's default hooks directory require force too, including the shared
+hooks directory of a linked worktree. Symlinked or junction hook ancestors
+are unhealthy. No unknown bytes are merged into the canonical.
+Hook effectiveness uses `git rev-parse --git-path hooks` from each worktree:
+the returned directory must exist and identify the installed `githooks` directory
+via `samefile`. Lexical path normalization does not establish hook effectiveness.
+Included hook configuration, including currently inactive `includeIf` files,
+is named `GATE_HOOK_CONFIG_UNVERIFIED`: the suite cannot certify future conditional
+configuration changes. Provisioning requires force for these configurations;
+after writing hooksPath it verifies Git's effective directory again. An include
+that still overrides it prevents credential installation even with force.
+
+Only after verification does `gh auth login --hostname github.com --with-token`
+receive the resolved token on stdin. Captured child output is never forwarded.
+A 0600 state file records keyed fingerprints, transaction metadata and a random
+per-host fingerprint key. A separate 0600 ownership journal records the token
+fingerprint, its key and transaction phase, so damage to health state cannot
+bypass owned rollback. Token fingerprints use HMAC-SHA256 with the
+`github-token` domain prefix; denylist comparisons and output use HMAC-SHA256
+with the same host key. Raw hashes, secret values and the key are never emitted.
+Legacy token SHA-256 metadata is read only to establish prior ownership, then
+migrated to keyed metadata or discarded when the old credential is gone.
+
+Failed logins and failed re-runs remove suite-owned credentials with
+`gh auth logout --hostname github.com` only when token readback matches the
+transaction fingerprint, even if the journal currently says `removed` or
+`replaced`. A proven-owned token is logged out before any rollback metadata
+write. Metadata updates after removal are best-effort; damaged state paths,
+symlinks and unavailable storage cannot block that logout. The first failure
+code remains the returned error;
+cleanup failure has a separate recovery code in the private journal and doctor
+output. Recovery distinguishes three cases:
+
+- A readable matching token is suite-owned and can be removed before retrying.
+  A healthy rerun can label a matching residual credential without adopting it
+  anew; a failed rerun still removes that proven-owned credential.
+- Failed token and status probes, with no GitHub host entry, token environment
+  value, with Git configuration successfully inspected, prove the old gh token
+  absent. Credential helpers are a separate ambient path. Recovery
+  clears the pending phase and continues, including a crash before login or an
+  operator logout. An empty or other-host `hosts.yml` is not a GitHub credential.
+- A readable different token from a previous transaction relinquishes ownership
+  without logout. Further provisioning treats the operator's credential as
+  ambient. During the current login transaction, a different readback is
+  unverified rather than replaced: the suite may have installed an inactive
+  account. Recovery stays pending until the matching account is readable again
+  or the operator confirms removal. Failed token commands with nonempty stdout
+  never prove absence.
+
+The host-entry rule follows [gh's logout implementation](https://github.com/cli/cli/blob/trunk/internal/config/config.go):
+last-user logout removes the host entry; with multiple users, gh removes the
+selected user and retains the remaining host configuration. Unsupported,
+malformed or unreadable host configuration remains unverified rather than proving
+absence. The supported subset is a single block document with string keys,
+nested mappings, simple string scalars, empty maps and full-line comments, or
+a JSON mapping of host mappings. Unsupported syntax, duplicate keys,
+malformed quoting, invalid indentation or an unparseable document stays
+unverified. Probe errors and timeouts are unverified too. A configured helper
+is an ambient credential path whose stored credentials are not inspected.
+Provisioning reports it and still installs denylist, gate, hook and verification
+before the gh token. It never adopts, modifies or revokes the helper. Doctor
+keeps this path unverified; a complete verified gate is healthy with the named
+note `git credential helper not inspected`.
+
+Unverifiable ownership retains `rollback_pending` and doctor stays non-ok. For
+manual recovery, the operator repairs gh/config access and reruns provisioning. If
+removal is intended, the operator logs out the applicable GitHub account and
+checks that no token environment value or gh host entry still supplies a credential,
+then reruns. Do not delete the ownership journal to bypass recovery. If journal
+metadata or its key is damaged, restore the private metadata from backup, or
+independently confirm the recorded credential is gone before archiving damaged
+metadata and reprovisioning. No unknown credential is revoked. Missing health
+state or a missing health fingerprint key is named
+`GITHUB_STATE_REPROVISION_REQUIRED`; doctor stays non-ok and read-only. A rerun
+can restore the health key when a valid independently protected journal retains
+the original key. If both the journal and original fingerprint key are lost,
+a live credential cannot be identified by the old fingerprint. Generating a new key cannot prove prior token ownership.
+Provisioning preserves that evidence and returns `GITHUB_STATE_REPROVISION_REQUIRED`
+without creating an invalid journal. Restore the original key from private
+backup, then rerun; restoring an arbitrary new key cannot authenticate the old
+fingerprint. If token and status probes plus configuration prove the old gh
+credential absent, provisioning can discard that obsolete fingerprint and
+converge without a backup. A damaged journal must be restored from backup or
+archived only after independently confirming the credential gone; a state-only
+repair does not repair a damaged journal.
+If state and journal keys disagree, or the journal key is invalid, doctor reports
+`GITHUB_OWNERSHIP_KEY_UNVERIFIED` and provisioning refuses. Neither key is rewritten
+and ownership is never relinquished on that evidence. On failure, either intact
+record can independently prove a matching live token and authorize logout before
+metadata writes; divergent records remain unchanged for manual repair. Restore
+the original matching private records from backup, then rerun provisioning.
+
+A pre-existing ambient login is reported and is never adopted or revoked. This
+includes `GH_TOKEN` and `GITHUB_TOKEN`; the suite does not install, take ownership
+of, or revoke those ambient values. SIGINT or process termination can leave an
+`installing` recovery marker: doctor reports it as MISPROVISIONED and the next
+run applies the same matching/absent/replaced recovery rules. Reruns
+repair missing hooks and complete recorded install steps. Missing or changed
+supporting MANIFEST payloads classify as unknown and require explicit force;
+runs do not silently overwrite them. Dry run emits only the ordered plan, resolves no secrets, probes
+no credentials, and writes nothing.
+
+Doctor performs only read-only probes: `gh auth status --hostname github.com`
+plus available classic-token scopes. Unknown fine-grained push capability is
+named as unverified; mere helper/token-file presence with failed auth is
+`unverified`, never `absent`. Configuration lookup honours `GH_CONFIG_DIR`, then
+`XDG_CONFIG_HOME/gh`, then the native Windows `APPDATA/GitHub CLI` or
+`HOME/.config/gh` fallback. Present but unverified credentials undergo the
+same guard checks; any incomplete guard makes doctor non-ok and exits 1.
+The credential label unverified is not proof of authentication or push capability;
+a healthy gate with that label only certifies the inspected guard, including the
+named inspection gaps. An existing gh login without suite configuration remains
+MISPROVISIONED. Configure the repository inventory and denylist/token backend
+references in suite.env, run `agent-suite bootstrap --github-credential`, then
+`agent-suite doctor`; doctor prints that remediation when inventory is empty.
+Missing or unreadable `scripts/` is named separately from an import-shadow issue.
+Working authentication with empty inventory,
+missing/invalid/readable/stale denylist, invalid template lock, a stale/unknown/
+missing gate, or an absent/mismatched/non-executable/misdirected hook is
+`MISPROVISIONED`. Installed denylist bytes must match the recorded digest and,
+when resolvable, the current backend secret digest. An accepted variant is a
+named healthy state, labeled `accepted variant (not the pinned canonical)`,
+when its hook and supporting MANIFEST payloads match the pinned render;
+provisioning still requires force to replace its gate body. `MISPROVISIONED` always reds `suite_ok` and exits 1 in both
+text and JSON, even without `--exit-code`.
+
+Provisioning and health are per invoking user: each pushing account needs its
+own delivered denylist and state under its own HOME. Running doctor as the
+installer does not certify another user. SSH keys, SSH configuration and
+ssh-agent credentials are outside the current inspection boundary; every
+doctor report names the gap `ssh credential not inspected`. Doctor performs
+no SSH network probes.
+
+### AC-58 remains partially unsatisfied at pin 5233019
+
+This release implements host provisioning and drift health. It does **not**
+claim AC-58 fully satisfied. Executing observations and the open-item registry
+in `tests/test_ac58_pinned_gate.py` pin these defects without xfails or POSIX skips. On native Windows, tests
+requiring the explicitly unsupported POSIX token adapter are skipped with a
+recorded reason; refusal and audit-isolation tests still run:
+
+- Item 4: the pre-push hook and range scanner check messages, but miss outgoing
+  diffs, author names and committer identity. The artifact includes no CI
+  full-range installation or scheduled full-history job. A removed historical
+  diff is invisible to its tracked-tree scan and message-only range scan.
+- Item 5: the hook logs INACTIVE and passes when the denylist is missing. The
+  scanner itself fails closed on public repositories, but the hook does not
+  invoke it in that case. `GATE_ALLOW_NO_DENYLIST` has no implemented effect or
+  explicit opt-out log at this pin.
+- Item 6: tracked `.venv` content is skipped by the pinned tree scanner.
+- Item 8 (template diagnostics): pinned violation reports print denylisted values
+  and matching content. Suite provisioning and doctor suppress child output;
+  directly executing the copied scanner/hook still exposes those diagnostics.
+
+The empty-HOME visibility probe returns `1 1 1 0` for public, Public, typo and
+private-until-review. Closing an open item requires a reviewed template re-pin;
+its current-behavior test must then fail and the registry must be updated.
+AOS repository-operation admission and approved ruleset rollout remain outside
+this repository's implementation scope.

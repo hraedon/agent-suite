@@ -270,12 +270,13 @@ def test_steps_for_tier_all_includes_everything() -> None:
     steps = _steps_for_tier(BootstrapTier.ALL)
     assert StepKind.CAPABILITIES in steps
     assert StepKind.SIGNALING in steps
-    assert len(steps) == len(StepKind)
+    assert len(steps) == len(StepKind) - 1
+    assert StepKind.GITHUB_CREDENTIALS not in steps
 
 
 def test_step_order_is_documented_order() -> None:
     steps = _steps_for_tier(BootstrapTier.ALL)
-    expected = list(StepKind)
+    expected = [step for step in StepKind if step is not StepKind.GITHUB_CREDENTIALS]
     assert steps == expected
 
 
@@ -947,3 +948,34 @@ def test_a_skipped_schema_check_is_not_a_pass() -> None:
     assert result.ok is False
     step = next(s for s in result.steps if s.step is StepKind.PROJECTIONS)
     assert step.status is StepStatus.FAILED
+
+
+def test_github_only_bootstrap_runs_complete_transaction_plan() -> None:
+    result = run_bootstrap(
+        github_credential=True, dry_run=True,
+        env={"AGENT_SUITE_GITHUB_TOKEN_REF": "env:EXAMPLE_TOKEN",
+             "AGENT_SUITE_GITHUB_DENYLIST_REF": "env:EXAMPLE_DENYLIST"},
+        runner=lambda _: (_ for _ in ()).throw(AssertionError("child must not run")),
+    )
+    assert result.ok
+    assert [step.step for step in result.steps] == [StepKind.GITHUB_CREDENTIALS]
+    assert result.steps[0].status is StepStatus.PENDING
+    assert "denylist -> gate -> hook -> verify -> credential" in result.steps[0].detail
+
+
+def test_github_only_bootstrap_refuses_unsupported_adapter() -> None:
+    result = run_bootstrap(github_credential=True,
+                           env={"AGENT_SUITE_GITHUB_ADAPTER": "deploy-key"})
+    assert not result.ok
+    assert result.steps[0].detail == "GITHUB_CREDENTIAL_ADAPTER_UNSUPPORTED"
+
+
+def test_github_transaction_cannot_run_user_onboarding_after_credential() -> None:
+    result = run_bootstrap(github_credential=True, user="example-user", env={})
+    assert not result.ok
+    assert result.steps[0].detail == "GITHUB_PROVISIONING_FLAG_CONFLICT"
+
+
+@pytest.mark.parametrize("status", [StepStatus.PENDING, StepStatus.SKIPPED])
+def test_r5_incomplete_github_step_is_not_success(status: StepStatus) -> None:
+    assert not _compute_ok([StepResult(StepKind.GITHUB_CREDENTIALS, status)])

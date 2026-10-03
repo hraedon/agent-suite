@@ -6,17 +6,21 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Generator
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import Any, NoReturn
 from urllib.parse import urlparse
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
@@ -95,6 +99,208 @@ def pytest_configure(config: pytest.Config) -> None:
         )
     except CodeUnderTestError as exc:
         raise pytest.UsageError(str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Host configuration is never a test fixture (BR-50 regression).
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HostConfigGuard:
+    """Reject actual subprocess launches/config reads outside test isolation.
+
+    The audit hook runs immediately before process creation, including callers
+    that imported Popen before fixture setup. Diagnostics never include argv or
+    environment values. Test-specific fake gh executables remain permitted.
+    """
+
+    temporary_root: Path
+    protected_paths: tuple[Path, ...]
+    active: bool = False
+
+    def protected(self, path: Path) -> bool:
+        resolved = path.resolve()
+        return any(resolved == root or resolved.is_relative_to(root)
+                   for root in self.protected_paths)
+
+    def audit(self, event: str, arguments: tuple[object, ...]) -> None:
+        if not self.active:
+            return
+        if event in {"open", "os.listdir", "os.scandir"}:
+            raw_path = arguments[0]
+            if isinstance(raw_path, (str, bytes, os.PathLike)):
+                if self.protected(Path(os.fsdecode(raw_path))):
+                    pytest.fail("Test isolation blocked real gh/git/agent-suite config access")
+        elif event == "subprocess.Popen":
+            executable, argv, cwd, environment = arguments
+            source = os.environ if environment is None else environment
+            assert isinstance(source, dict) or source is os.environ
+            if executable is None:
+                # Windows passes executable=None and a rendered command line.
+                if isinstance(argv, (str, bytes)):
+                    # argv[0] has Windows' simple program-name quoting rules.
+                    # Later arguments may contain escaped quotes/Python code;
+                    # parsing them with a POSIX lexer is both wrong and needless.
+                    match = re.match(r'^\s*(?:"([^"]+)"|([^\s]+))', os.fsdecode(argv))
+                    executable = (match.group(1) or match.group(2)) if match else None
+                elif isinstance(argv, (list, tuple)) and argv:
+                    executable = argv[0]
+            if not isinstance(executable, (str, bytes, os.PathLike)):
+                pytest.fail("Test isolation could not identify subprocess executable")
+            command = os.fsdecode(executable)
+            working = Path(os.fsdecode(cwd)) if cwd is not None else Path.cwd()
+            selected = command if os.path.dirname(command) else shutil.which(
+                command, path=os.pathsep.join(os.get_exec_path(source)),
+            )
+            if selected is None:
+                if Path(command).name.lower() in {"gh", "gh.exe", "gh.cmd", "gh.bat"}:
+                    pytest.fail("Test isolation blocked unresolved gh execution")
+                return
+            path = Path(selected)
+            if not path.is_absolute():
+                path = working / path
+            if path.name.lower() in {"gh", "gh.exe", "gh.cmd", "gh.bat"}:
+                if not path.resolve().is_relative_to(self.temporary_root):
+                    pytest.fail("Test isolation blocked real gh execution")
+            if path.name.lower() in {"git", "git.exe"}:
+                for key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"):
+                    configured = source.get(key)
+                    if not configured or self.protected(Path(configured)):
+                        pytest.fail("Test isolation blocked real Git configuration")
+                if source.get("GIT_CONFIG_NOSYSTEM") != "1":
+                    pytest.fail("Test isolation requires disabled system Git configuration")
+
+
+@pytest.fixture(scope="session")
+def host_config_guard(tmp_path_factory: pytest.TempPathFactory) -> HostConfigGuard:
+    """Capture paths only; do not inspect any operator config contents."""
+    home = Path.home()
+    config = Path(os.environ.get("XDG_CONFIG_HOME", str(home / ".config")))
+    paths = [home / ".config/gh", home / ".config/agent-suite", home / ".gitconfig",
+             config / "gh", config / "agent-suite", config / "git/config",
+             Path("/etc/gitconfig"), Path("/etc/agent-suite")]
+    for key in ("GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "AGENT_SUITE_CONFIG"):
+        value = os.environ.get(key)
+        if value:
+            paths.append(Path(value).expanduser())
+    if os.environ.get("APPDATA"):
+        paths.append(Path(os.environ["APPDATA"]) / "agent-suite")
+        paths.append(Path(os.environ["APPDATA"]) / "GitHub CLI")
+    guard = HostConfigGuard(tmp_path_factory.getbasetemp().resolve(),
+                            tuple(path.resolve() for path in paths))
+    sys.addaudithook(guard.audit)
+    return guard
+
+
+@pytest.fixture(scope="session")
+def isolated_build_wheels(tmp_path_factory: pytest.TempPathFactory) -> Path | None:
+    """Keep isolated wheel-build tests offline when HOME hides the pip cache.
+
+    Stage the already installed build backend and its dependencies as wheels;
+    this changes no app artifact and needs neither downloads nor host config.
+    """
+    try:
+        distribution("hatchling")
+    except PackageNotFoundError:
+        return None  # Existing packaging guards handle missing dev dependencies.
+    from packaging.requirements import Requirement
+
+    directory = tmp_path_factory.mktemp("isolated-build-wheels")
+    pending = ["hatchling"]
+    visited: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        package = distribution(name)
+        filename = f"{name.replace('-', '_')}-{package.version}-py3-none-any.whl"
+        with ZipFile(directory / filename, "w", ZIP_DEFLATED) as archive:
+            for member in package.files or ():
+                source = package.locate_file(member)
+                if ".." not in member.parts and source.is_file():
+                    archive.write(source, str(member))
+        for dependency in package.requires or ():
+            requirement = Requirement(dependency)
+            if requirement.marker is None or requirement.marker.evaluate({"extra": ""}):
+                pending.append(requirement.name)
+    return directory
+
+
+@pytest.fixture(autouse=True)
+def isolate_host_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host_config_guard: HostConfigGuard,
+    isolated_build_wheels: Path | None,
+) -> Generator[Path, None, None]:
+    """Every test gets a clean HOME, Git config and unauthenticated fake gh.
+
+    Function scope prevents one test's login/config from becoming the next
+    test's ambient credential. Subprocesses inherit the same isolation.
+    """
+    from agent_suite import config, doctor
+
+    for key in list(os.environ):
+        if key.startswith(("GH_", "GITHUB_", "AGENT_SUITE_GITHUB_", "GIT_CONFIG_")) or (
+            "FORBIDDEN_IDENTIFIERS" in key
+            or key in {"GIT_DIR", "GIT_WORK_TREE", "REGISTA_KEY_PATH", "DOSSIER_USERS_PATH"}
+        ):
+            monkeypatch.delenv(key)
+    if isolated_build_wheels is not None:
+        monkeypatch.setenv("PIP_NO_INDEX", "1")
+        monkeypatch.setenv("PIP_FIND_LINKS", str(isolated_build_wheels))
+    # Windows ownership probes classify paths below USERPROFILE as user-owned.
+    # Include all this test's artifacts there, as on the real runner profile.
+    home = tmp_path if os.name == "nt" else tmp_path / "isolated-home"
+    home.mkdir(exist_ok=True)
+    values = {
+        "HOME": str(home), "USERPROFILE": str(home),
+        "APPDATA": str(home / "AppData/Roaming"),
+        "LOCALAPPDATA": str(home / "AppData/Local"),
+        "ProgramData": str(home / "ProgramData"),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "XDG_STATE_HOME": str(home / ".local/state"),
+        "GH_CONFIG_DIR": str(home / ".config/gh"),
+        "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"),
+        "GIT_CONFIG_SYSTEM": str(home / "system-gitconfig"),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "AGENT_SUITE_CONFIG": str(home / ".config/agent-suite/suite.env"),
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    system_env = home / "system-suite.env"
+    monkeypatch.setattr(config, "system_suite_env_path", lambda: system_env)
+    monkeypatch.setattr(doctor, "system_suite_env_path", lambda: system_env)
+    binary_directory = tmp_path / "isolated-bin"
+    binary_directory.mkdir()
+    executable = binary_directory / ("gh.cmd" if os.name == "nt" else "gh")
+    executable.write_text(
+        "@exit /b 1\n" if os.name == "nt" else f"#!{sys.executable}\nraise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(binary_directory) + os.pathsep + os.environ.get("PATH", ""))
+    original_popen_init = subprocess.Popen.__init__
+
+    def isolated_popen_init(process: Any, *args: Any, **kwargs: Any) -> None:
+        # Some existing tests deliberately pass a minimal child environment.
+        # Preserve their explicit settings, but supply the isolation defaults
+        # they omit so Git in that child cannot fall back to system config.
+        child_env = kwargs.get("env")
+        if child_env is not None:
+            child_env = dict(child_env)
+            for key, default in values.items():
+                child_env.setdefault(key, os.environ.get(key, default))
+            child_env.setdefault("PATH", os.environ.get("PATH", str(binary_directory)))
+            kwargs["env"] = child_env
+        original_popen_init(process, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", isolated_popen_init)
+    host_config_guard.active = True
+    try:
+        yield home
+    finally:
+        host_config_guard.active = False
 
 
 # ---------------------------------------------------------------------------

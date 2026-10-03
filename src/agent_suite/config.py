@@ -391,3 +391,35 @@ class EntraEnvConfig:
             issuer=issuer,
             audience=self.audience,
         )
+
+
+@dataclass(frozen=True)
+class GitHubCredentialConfig:
+    """Reference-only GitHub provisioning and explicit repository inventory."""
+
+    token_ref: str | None = None
+    denylist_ref: str | None = None
+    adapter: str = "token"
+    repositories: tuple[Path, ...] = ()
+    roots: tuple[Path, ...] = ()
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> GitHubCredentialConfig:
+        import json
+
+        source = os.environ if env is None else env
+
+        def paths(key: str) -> tuple[Path, ...]:
+            raw = source.get(key, "[]")
+            value = json.loads(raw)
+            if not isinstance(value, list) or any(not isinstance(p, str) or not p for p in value):
+                raise ValueError("GitHub inventory must be a JSON array of paths")
+            return tuple(Path(p).expanduser().absolute() for p in value)
+
+        return cls(
+            token_ref=source.get("AGENT_SUITE_GITHUB_TOKEN_REF") or None,
+            denylist_ref=source.get("AGENT_SUITE_GITHUB_DENYLIST_REF") or None,
+            adapter=source.get("AGENT_SUITE_GITHUB_ADAPTER", "token"),
+            repositories=paths("AGENT_SUITE_GITHUB_REPOSITORIES"),
+            roots=paths("AGENT_SUITE_GITHUB_REPOSITORY_ROOTS"),
+        )

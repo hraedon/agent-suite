@@ -1,0 +1,18 @@
+# sha256 (first 16) of check_committed_identifiers.py versions that are known
+# canonical output, with the denylist var name normalised by
+#   sed -E 's/[A-Z][A-Z0-9_]*_FORBIDDEN_IDENTIFIERS/XX/g'
+# (the bare org name FORBIDDEN_IDENTIFIERS is NOT normalised by that regex, so a
+# render with the bare name has its own line). A repo whose gate matches none of
+# these has been edited locally; overwriting it would silently drop that work,
+# which is how touchstone nearly lost its deploy/k8s/secret-* rule. --apply
+# refuses on an unknown hash unless --force says otherwise.
+#
+# Hardened variants of OTHER lineages (org family, cert-watch, gpo-studio,
+# switchboard, ...) are deliberately NOT listed here: see VARIANTS.
+34c91c522e4a2419  current canonical (2026-10-01 follow-up: shallow/partial/graft/commit-graph/fsck absence verdict; per-repo prefixed var)
+827fd9bcf64237dd  current canonical rendered with the bare org var FORBIDDEN_IDENTIFIERS
+93dec6f49825a3c2  previous canonical (2026-10-01 hardening; per-repo prefixed var)
+4c171236b05495be  previous canonical rendered with the bare org var FORBIDDEN_IDENTIFIERS
+212d8625d7b9ef2b  previous canonical (2026-09-15 fail-closed + visibility fix only)
+162a26b75127fc03  older canonical (the four open PRs of 2026-09-15)
+29eb851bd8631c67  common ancestor (five identical copies)

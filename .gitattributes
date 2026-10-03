@@ -3,3 +3,7 @@
 # the reference copies must check out as LF on every host, including the
 # Windows CI runner whose git defaults to core.autocrlf=true.
 deploy/systemd/* text eol=lf
+
+# Reviewed gate artifact: hashes cover the exact commit bytes on every OS.
+src/agent_suite/data/gate-template/** -text
+src/agent_suite/data/gate-template.lock.json -text

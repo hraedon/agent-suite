@@ -37,11 +37,15 @@ path = "src/agent_suite/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_suite"]
+artifacts = ["src/agent_suite/data/gate-template.lock.json",
+             "src/agent_suite/data/gate-template/5233019/*"]
 
 [tool.mypy]
 strict = true
 python_version = "3.12"
 files = ["src"]
+# The vendored gate template is pinned bytes, not suite source (BR-50).
+exclude = ["^src/agent_suite/data/"]
 
 [[tool.mypy.overrides]]
 module = "jwt.*"

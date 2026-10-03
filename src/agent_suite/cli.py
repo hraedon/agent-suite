@@ -142,6 +142,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     lock.add_argument("--json", action="store_true", help="emit the lock or drift report as JSON")
     bootstrap = sub.add_parser(Command.BOOTSTRAP.value, help="run the ordered idempotent install")
+    bootstrap.add_argument(
+        "--github-credential", action="store_true",
+        help="run only the denylist/gate/hook/verification/GitHub token transaction",
+    )
+    bootstrap.add_argument(
+        "--force-identifier-gate", action="store_true",
+        help="explicitly replace unknown or accepted variant gates with the pinned canonical",
+    )
     bootstrap.add_argument("--dry-run", action="store_true", help="print the plan; act on nothing")
     bootstrap.add_argument(
         "--tier",
@@ -752,7 +760,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(_json.dumps(report.to_dict(), indent=2, default=str))
             else:
                 print(format_text(report))
-            return 1 if (getattr(args, "exit_code", False) and not report.suite_ok) else 0
+            misprovisioned = report.github_health is not None and not report.github_health.ok
+            return 1 if misprovisioned or (args.exit_code and not report.suite_ok) else 0
         case Command.LOCK:
 
             from agent_suite.doctor import aggregate
@@ -870,6 +879,8 @@ def main(argv: list[str] | None = None) -> int:
             mp_config = memory_provider_config()
             bs_result = run_bootstrap(
                 dry_run=args.dry_run,
+                github_credential=args.github_credential,
+                force_identifier_gate=args.force_identifier_gate,
                 tier=args.tier,
                 user=args.user,
                 dossier_user=getattr(args, "dossier_user", None),
@@ -884,6 +895,16 @@ def main(argv: list[str] | None = None) -> int:
                     else None
                 ),
             )
+            for step in bs_result.steps:
+                if step.step.value == "github_credentials" and step.status.value == "refused":
+                    return emit_error(step.detail, "GitHub credential provisioning refused",
+                                      json_mode=args.json)
+                if (step.step.value == "github_credentials"
+                        and step.status.value not in {"done", "already_done"}
+                        and not (args.dry_run and step.status.value == "pending")):
+                    return emit_error("GITHUB_PROVISIONING_INCOMPLETE",
+                                      "GitHub credential transaction did not complete",
+                                      json_mode=args.json)
             if getattr(args, "json", False):
                 import json as _json
 

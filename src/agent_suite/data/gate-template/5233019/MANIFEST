@@ -1,0 +1,15 @@
+# Files the identifier gate is composed of, and where each lands in a repo.
+# Format: <template-file> <destination-path> <mode>
+check_committed_identifiers.py  scripts/check_committed_identifiers.py  644
+check_publication_plumbing.py   scripts/check_publication_plumbing.py   644
+test_identifier_gate.py         tests/test_identifier_gate.py           644
+pre-push                        githooks/pre-push                       755
+test_identifier_gate_visibility.py tests/test_identifier_gate_visibility.py 644
+#
+# tests/test_identifier_gate_visibility.py is the fleet-shared behavioural contract
+# (identical in every gate repo). As of 2026-10-01 follow-up it also pins: shallow,
+# partial (--filter), replace-ref, grafts, forged commit-graph, corrupt-object and
+# broken/unborn-HEAD histories refused on the absence path; a staged 120000 symlink
+# whose target is valid private TOML; non-UTF-8 declarations under a forced cp1252
+# locale (staged/worktree/history); the absence verdict under a strict ASCII locale
+# (why _git_or_none has no UnicodeDecodeError arm); per-test HOME cleaned up.

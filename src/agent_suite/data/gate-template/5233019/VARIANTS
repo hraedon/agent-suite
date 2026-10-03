@@ -1,0 +1,34 @@
+# Hardened identifier-gate variants that are NOT this template's lineage.
+#
+# The gate is copied, so the fleet carries several independently-evolved code
+# bodies. As of 2026-10-01 every one of them implements the SAME fail-closed
+# contract, pinned behaviourally by the shared stdlib test
+# tests/test_identifier_gate_visibility.py (this template's
+# test_identifier_gate_visibility.py, identical in every gate repo), and each
+# passed the same six-round two-lineage executing review. They are NOT in
+# KNOWN_GATE_HASHES on purpose: sync-identifier-gate.sh must refuse to overwrite
+# them, because each carries rules the canonical body does not have.
+#
+# Consolidating a variant onto the canonical body is a port, not a sync: diff
+# it, carry its extra rules into the canonical (or into a repo-local hunk like
+# touchstone's), and put the result through executing review.
+#
+# hash (same normalisation as KNOWN_GATE_HASHES)  lineage      repos (default branch, 2026-10-01 follow-up merge)
+7b5d4904e0f328c8  org family A        hraedon-labs/{agentic-onboarding,agent-wake,cert-watch-factory-failed,frontier-lag,modern-moo2,openbia,patina,socratic-specification}
+1784ae903b7336c6  org family B        hraedon-labs/{acme-adcs-ra,adcs-lens,gpo-lens,sluice}   
+e41251c80b0507f3  org family B + mypy-visible annotation   hraedon-labs/windows-evidence-lab
+9f159c7a8369dde2  ad-remedy (tuple-returning scan_files)   hraedon/ad-remedy
+bf1b07edce32efc7  diagnostics-architect-curriculum         hraedon/diagnostics-architect-curriculum
+3970aad16c39fbf6  cert-watch (own bytes-level _run_git_bytes path)   hraedon/cert-watch
+c75c6b06ef226322  gpo-studio (falls back to ~/.config/agent-suite/forbidden-identifiers when the var is unset)   hraedon/gpo-studio
+641662867a1c0607  switchboard -- AHEAD of canonical and stricter: scans commit ranges and tree
+                  blobs, handles LFS pointers, sniffs encodings, redacts identifiers in its own
+                  output; its --ci mode is stricter than its hooks (over-blocks only). Never
+                  overwrite it; it is the candidate to upstream FROM.   hraedon/switchboard
+#
+# Template-lineage repos (render from this template; hash 34c91c52 / 827fd9bc):
+#   hraedon/{dossier,agent-suite,sysadmin_competence_evaluation}, hraedon-labs/ad-steward,
+#   and (2026-10-01 port) hraedon/{usage-dashboard,regista,vitrine,agent-provenance,
+#   agent-capability-broker,agent-notes}; hraedon/touchstone = canonical + repo-local
+#   hunks (data/ guarded dir, deploy/k8s/secret-*.yaml refused; gate 2b8de190) -> unknown hash, use --force
+#   and re-apply its hunks.
