@@ -659,6 +659,42 @@ def test_lock_check_exits_nonzero_when_no_lock(monkeypatch: pytest.MonkeyPatch) 
     assert main(["lock", "--check"]) == 1
 
 
+@pytest.mark.parametrize("json_mode", [False, True], ids=["text", "json"])
+def test_lock_check_reports_non_string_revision_as_unreadable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str], json_mode: bool,
+) -> None:
+    from agent_suite import config, runtime_provenance
+
+    load_lock_file = lock_mod.load_lock_file
+    _stub_aggregate(monkeypatch, suite_ok=True)
+    _stub_lock(monkeypatch)
+    lock_path = tmp_path / "SUITE.lock"
+    lock_path.write_text(
+        "[suite]\nrelease='1.0'\n"
+        "[components.regista]\nrepo='YOUR-ORG/regista'\nversion='0.5.1'\nrevision=123\n",
+        encoding="utf-8",
+    )
+    # Exercise the real file loader and parser; every runtime probe is synthetic.
+    monkeypatch.setattr(
+        lock_mod, "load_lock_file",
+        lambda path=None: load_lock_file(lock_path),
+    )
+    monkeypatch.setattr(runtime_provenance, "read_runtime_revisions", lambda: {})
+    monkeypatch.setattr(config, "memory_provider_config", lambda: {"engine": "native"})
+    assert main(["lock", "--check", *(["--json"] if json_mode else [])]) == 1
+    captured = capsys.readouterr()
+    if json_mode:
+        result = json.loads(captured.out)
+        assert result["ok"] is False
+        assert result["error"]["code"] == "LOCK_UNREADABLE"
+        assert "components.regista.revision must be a string" in result["error"]["message"]
+        assert captured.err == ""
+    else:
+        assert captured.out == ""
+        assert "components.regista.revision must be a string" in captured.err
+
+
 def test_lock_check_exits_nonzero_on_drift(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_aggregate(monkeypatch, suite_ok=True)
     from agent_suite.lock import ComponentPin, SuiteLock

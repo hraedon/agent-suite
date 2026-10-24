@@ -274,6 +274,10 @@ wheels, production installs) also omit it. When present, it is the full git SHA
 what makes the lock a *reproducible candidate definition* rather than a version
 hint: a version can be republished, but a SHA cannot.
 
+A present non-string `revision` makes the lock unreadable; it cannot silently
+turn a revision pin into a version-only check. Omitted revisions and the existing
+empty/whitespace-only string form still mean no revision pin.
+
 `agent-suite lock` refuses to combine an installed version with a different
 candidate checkout version. This prevents internally false pins such as a
 runtime `0.5.1` paired with the SHA of a `0.5.3` checkout.
