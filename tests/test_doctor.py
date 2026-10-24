@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from agent_suite.components import COMPONENTS, Component, Locality, Tier
+from agent_suite.config import MemoryProviderConfig
 from agent_suite.doctor import (
     ComponentReport,
     ComponentStatus,
@@ -479,6 +480,43 @@ def test_doctor_survives_malformed_lock(tmp_path: Path) -> None:
     )
     assert report.lock.matches is False
     assert "unreadable" in report.lock.note
+
+
+@pytest.mark.parametrize(
+    ("revision", "readable"),
+    [("123", False), (None, True), ("''", True), ("'" + "a" * 40 + "'", True)],
+    ids=["non-string", "omitted", "blank", "sha"],
+)
+def test_component_revision_type_controls_lock_health(
+    tmp_path: Path, revision: str | None, readable: bool,
+) -> None:
+    text = "[suite]\nrelease='1.0'\n"
+    for component in COMPONENTS:
+        text += (
+            f"[components.{component.ident}]\nrepo='{component.repo}'\nversion='1.0.0'\n"
+        )
+        if component.ident == "regista" and revision is not None:
+            text += f"revision={revision}\n"
+    lock_path = tmp_path / "SUITE.lock"
+    lock_path.write_text(text, encoding="utf-8")
+    outputs = {c.doctor_cmd[0]: _ok_json(c.ident) for c in COMPONENTS}
+    report = aggregate(
+        installed=_installed_all(),
+        runner=_runner_for(outputs),
+        lock_path=lock_path,
+        version_installed=lambda _: False,
+        revision_probe=lambda: {"regista": "a" * 40},
+        key_watch_checks=False,
+        memory_provider_checks=False,
+        memory_provider_config=MemoryProviderConfig(),
+        codex_health_checks=False,
+    )
+    assert all(component.ok for component in report.components)
+    assert report.lock.matches is readable
+    assert report.suite_ok is readable
+    if not readable:
+        assert "unreadable" in report.lock.note
+        assert "components.regista.revision must be a string" in report.lock.note
 
 
 # --- verify-restore wiring (WI-4.2) -------------------------------------------

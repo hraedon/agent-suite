@@ -164,6 +164,30 @@ def test_deserialize_rejects_non_string_version() -> None:
         deserialize_lock(text)
 
 
+@pytest.mark.parametrize(
+    "revision",
+    [
+        "123", "0", "true", "false", "1.5", "inf", "nan", "[]",
+        "['candidate']", "{}", "{sha = 'candidate'}", "2026-01-02",
+        "03:04:05", "2026-01-02T03:04:05Z",
+    ],
+)
+def test_non_string_revision_is_unreadable(revision: str, tmp_path: Path) -> None:
+    text = (
+        "[suite]\nrelease='1.0'\n"
+        "[components.regista]\nrepo='YOUR-ORG/regista'\nversion='0.5.1'\n"
+        f"revision={revision}\n"
+    )
+    message = r"components\.regista\.revision must be a string"
+    with pytest.raises(ValueError, match=message):
+        deserialize_lock(text)
+
+    path = tmp_path / "SUITE.lock"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_lock_file(path)
+
+
 def test_deserialize_rejects_incomplete_quad() -> None:
     text = "[suite]\nrelease='1.0'\nregista_library_version='0.4'\n"
     with pytest.raises(ValueError, match="invalid regista quad"):

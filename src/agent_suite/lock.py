@@ -723,6 +723,8 @@ def deserialize_lock(text: str) -> SuiteLock:
                 )
             else:
                 revision = stripped
+        elif "revision" in raw:
+            raise ValueError(f"SUITE.lock: components.{ident}.revision must be a string")
         else:
             revision = None
         pins[ident] = ComponentPin(repo=repo, version=version, revision=revision)
